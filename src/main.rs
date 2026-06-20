@@ -6,6 +6,7 @@
 
 mod block;
 mod client;
+mod daylight;
 mod entity;
 mod net;
 mod protocol;

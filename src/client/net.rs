@@ -57,6 +57,18 @@ pub enum NetEvent {
     EntityDespawn {
         id: EntityId,
     },
+    EntityHealth {
+        id: EntityId,
+        health: i32,
+        max_health: i32,
+    },
+    TimeOfDay {
+        t: f32,
+    },
+    Respawn {
+        x: f32,
+        y: f32,
+    },
     /// Connection closed (or never established). `reason` is human-readable.
     Disconnected {
         reason: String,
@@ -68,6 +80,8 @@ pub enum NetCommand {
     SetBlock { x: i32, y: i32, block: BlockId },
     PlayerMove { x: f32, y: f32 },
     RequestChunk { cx: i32, cy: i32 },
+    Attack { target: EntityId },
+    FallDamage { amount: i32 },
     Disconnect,
 }
 
@@ -182,6 +196,8 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::SetBlock { x, y, block } => ClientMessage::SetBlock { x, y, block },
         NetCommand::PlayerMove { x, y } => ClientMessage::PlayerMove { x, y },
         NetCommand::RequestChunk { cx, cy } => ClientMessage::RequestChunk { cx, cy },
+        NetCommand::Attack { target } => ClientMessage::Attack { target },
+        NetCommand::FallDamage { amount } => ClientMessage::FallDamage { amount },
         NetCommand::Disconnect => unreachable!("handled before conversion"),
     }
 }
@@ -204,6 +220,17 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
             NetEvent::EntityMoved { id, x, y, vx, vy }
         }
         ServerMessage::EntityDespawn { id } => NetEvent::EntityDespawn { id },
+        ServerMessage::EntityHealth {
+            id,
+            health,
+            max_health,
+        } => NetEvent::EntityHealth {
+            id,
+            health,
+            max_health,
+        },
+        ServerMessage::TimeOfDay { t } => NetEvent::TimeOfDay { t },
+        ServerMessage::Respawn { x, y } => NetEvent::Respawn { x, y },
     };
     if ev_tx.send(ev).is_err() {
         std::ops::ControlFlow::Break(())

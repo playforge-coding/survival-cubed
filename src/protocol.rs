@@ -25,6 +25,12 @@ pub enum ClientMessage {
     SetBlock { x: i32, y: i32, block: BlockId },
     /// Report the owning player entity's position (pixels, world space).
     PlayerMove { x: f32, y: f32 },
+    /// Melee-attack another entity (e.g. a slime). The server validates range
+    /// before applying damage.
+    Attack { target: EntityId },
+    /// Report fall damage the client computed from its own landing. The server
+    /// is authoritative over the resulting health.
+    FallDamage { amount: i32 },
 }
 
 /// Sent from server to client over the single bidirectional stream.
@@ -58,4 +64,18 @@ pub enum ServerMessage {
     },
     /// An entity was removed from the world.
     EntityDespawn { id: EntityId },
+    /// An entity's health changed (damage, healing, or an initial value). Sent
+    /// to every client, including the owner of a player entity (whose avatar is
+    /// otherwise never mirrored).
+    EntityHealth {
+        id: EntityId,
+        health: i32,
+        max_health: i32,
+    },
+    /// Current normalized time of day in `[0, 1)` (see [`crate::daylight`]).
+    /// Broadcast periodically; clients advance it locally in between.
+    TimeOfDay { t: f32 },
+    /// Instruct the owning client to move its player avatar back to a spawn
+    /// point (after death). Health is restored via a separate `EntityHealth`.
+    Respawn { x: f32, y: f32 },
 }

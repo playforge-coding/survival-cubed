@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
@@ -17,7 +17,8 @@ use quinn::Endpoint;
 use tokio::sync::mpsc;
 
 use crate::block::BlockRegistry;
-use crate::entity::{Entities, Entity, EntityId, EntityKind, SLIME_SIZE};
+use crate::daylight;
+use crate::entity::{Entities, Entity, EntityId, EntityKind, PLAYER_SIZE, SLIME_SIZE};
 use crate::net::{fingerprint, read_msg, write_msg};
 use crate::protocol::{ALPN, BlockId, ClientMessage, ServerMessage};
 use crate::world::{CHUNK_AREA, CHUNK_SIZE, TILE_SIZE, World};
@@ -36,6 +37,20 @@ const MAX_FALL: f32 = 900.0;
 /// Collision skin: keeps an entity's trailing edge from snapping into the next
 /// cell when it is flush against a block boundary.
 const EPS: f32 = 0.01;
+/// How far (px) a slime notices and chases a player after dark.
+const SLIME_AGGRO: f32 = 140.0;
+/// Maximum gap (px between AABBs) at which a slime can land a hit.
+const SLIME_ATTACK_RANGE: f32 = 4.0;
+/// Damage a slime deals per bite.
+const SLIME_DAMAGE: i32 = 3;
+/// Seconds a slime waits between bites.
+const SLIME_ATTACK_INTERVAL: f32 = 1.0;
+/// Damage the player's melee swing deals.
+const PLAYER_ATTACK_DAMAGE: i32 = 4;
+/// Player melee reach (max gap, px, between attacker and target AABBs).
+const PLAYER_ATTACK_REACH: f32 = 12.0;
+/// How often the server broadcasts the current time of day, in seconds.
+const TIME_BROADCAST_SECS: f32 = 2.0;
 
 /// Handle to a server running on its own thread + tokio runtime.
 pub struct RunningServer {
@@ -107,11 +122,18 @@ struct Shared {
     entities: Mutex<Entities>,
     next_id: AtomicU32,
     spawn: (f32, f32),
+    /// When the world was created; drives the shared day/night clock.
+    start: Instant,
 }
 
 impl Shared {
     fn alloc_id(&self) -> EntityId {
         self.next_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// Current normalized time of day in `[0, 1)`.
+    fn time_of_day(&self) -> f32 {
+        daylight::time_of_day(self.start.elapsed().as_secs_f32())
     }
 }
 
@@ -127,6 +149,13 @@ impl Shared {
             if *id != except {
                 let _ = h.tx.send(msg.clone());
             }
+        }
+    }
+
+    /// Send a message to a single client by id, if still connected.
+    fn send_to(&self, id: u32, msg: ServerMessage) {
+        if let Some(h) = self.clients.lock().get(&id) {
+            let _ = h.tx.send(msg);
         }
     }
 }
@@ -237,6 +266,7 @@ fn build_endpoint(bind: SocketAddr, seed: i32) -> Result<(Endpoint, [u8; 32], Ar
         entities: Mutex::new(Entities::new()),
         next_id: AtomicU32::new(1),
         spawn,
+        start: Instant::now(),
     });
 
     spawn_slimes(&shared);
@@ -273,48 +303,97 @@ fn spawn_slimes(shared: &Shared) {
     }
 }
 
-/// Periodically simulates non-player entities and broadcasts their motion.
+/// Periodically simulates non-player entities, applies survival rules, and
+/// broadcasts the results (motion, health, time of day, respawns).
 async fn entity_tick_loop(shared: Arc<Shared>) {
     let mut interval = tokio::time::interval(Duration::from_secs_f32(TICK_DT));
+    let mut since_time_bcast = 0.0f32;
     loop {
         interval.tick().await;
-        for msg in step_entities(&shared) {
+
+        let Step {
+            broadcasts,
+            respawns,
+        } = step_entities(&shared);
+        for msg in broadcasts {
             shared.broadcast_all(msg);
+        }
+        for (id, x, y) in respawns {
+            shared.send_to(id, ServerMessage::Respawn { x, y });
+        }
+
+        // Keep every client's day/night clock in sync.
+        since_time_bcast += TICK_DT;
+        if since_time_bcast >= TIME_BROADCAST_SECS {
+            since_time_bcast = 0.0;
+            shared.broadcast_all(ServerMessage::TimeOfDay {
+                t: shared.time_of_day(),
+            });
         }
     }
 }
 
-/// Advance every server-simulated entity by one tick and return the movement
-/// updates to broadcast. Players are skipped — they are authoritative on their
-/// owning client.
+/// Outcome of one simulation tick: messages to broadcast to everyone, and
+/// per-player respawn targets to send to their owners.
+struct Step {
+    broadcasts: Vec<ServerMessage>,
+    respawns: Vec<(EntityId, f32, f32)>,
+}
+
+/// Advance every server-simulated entity by one tick. Players are skipped for
+/// motion (they are authoritative on their owning client) but can still be
+/// targeted and bitten by slimes at night.
 ///
 /// Locks `world` then `entities` for the whole step, matching the order used by
 /// [`spawn_slimes`] so the two can never deadlock.
-fn step_entities(shared: &Shared) -> Vec<ServerMessage> {
+fn step_entities(shared: &Shared) -> Step {
+    let night = daylight::is_night(shared.time_of_day());
     let mut world = shared.world.lock();
     let mut entities = shared.entities.lock();
 
-    let ids: Vec<EntityId> = entities
+    // Snapshot player positions up front so slime targeting doesn't fight the
+    // borrow checker over a second mutable handle into the map.
+    let players: Vec<(EntityId, f32, f32)> = entities
+        .values()
+        .filter(|e| e.kind.is_player())
+        .map(|e| (e.id, e.x, e.y))
+        .collect();
+
+    let slime_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| !e.kind.is_player())
         .map(|e| e.id)
         .collect();
-    if ids.is_empty() {
-        return Vec::new();
-    }
 
-    let mut updates = Vec::with_capacity(ids.len());
-    for id in ids {
+    let mut broadcasts = Vec::new();
+    // Players a slime bit this tick; applied after the movement loop so we
+    // never hold two mutable entity borrows at once.
+    let mut bites: Vec<EntityId> = Vec::new();
+
+    for id in slime_ids {
         let Some(e) = entities.get_mut(id) else {
             continue;
         };
         let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
 
-        // Keep walking in the current heading; spawn (vx == 0) starts rightward.
-        let mut vx = if e.vx < 0.0 {
-            -SLIME_SPEED
+        // At night, lock onto the nearest player within aggro range.
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+        let target = if night {
+            nearest_player(&players, scx, scy, SLIME_AGGRO)
         } else {
-            SLIME_SPEED
+            None
+        };
+        let chasing = target.is_some();
+
+        // Heading: toward the target when chasing, else continue patrolling
+        // (spawn — vx == 0 — starts rightward).
+        let mut vx = match target {
+            Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -SLIME_SPEED,
+            Some(_) => SLIME_SPEED,
+            None if e.vx < 0.0 => -SLIME_SPEED,
+            None => SLIME_SPEED,
         };
         let mut vy = (e.vy + GRAVITY * TICK_DT).min(MAX_FALL);
 
@@ -324,9 +403,9 @@ fn step_entities(shared: &Shared) -> Vec<ServerMessage> {
         if on_ground {
             vy = 0.0;
         }
-        // Turn around at walls, and at ledges so slimes patrol rather than
-        // walk off into the infinite distance.
-        if hit_wall || (on_ground && at_ledge(&mut world, x, y, w, h, vx)) {
+        // Turn at walls always; turn at ledges only when patrolling, so a
+        // chasing slime will pursue a player off a drop.
+        if hit_wall || (!chasing && on_ground && at_ledge(&mut world, x, y, w, h, vx)) {
             vx = -vx;
         }
 
@@ -334,9 +413,104 @@ fn step_entities(shared: &Shared) -> Vec<ServerMessage> {
         e.y = y;
         e.vx = vx;
         e.vy = vy;
-        updates.push(ServerMessage::EntityMoved { id, x, y, vx, vy });
+        broadcasts.push(ServerMessage::EntityMoved { id, x, y, vx, vy });
+
+        // Bite the target if it is in reach and the slime is off cooldown.
+        if let Some((pid, px, py)) = target {
+            if e.attack_cd <= 0.0
+                && aabb_gap(x, y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1) <= SLIME_ATTACK_RANGE
+            {
+                e.attack_cd = SLIME_ATTACK_INTERVAL;
+                bites.push(pid);
+            }
+        }
     }
-    updates
+
+    let mut respawns = Vec::new();
+    for pid in bites {
+        let (msgs, respawn) = apply_damage(&mut entities, pid, SLIME_DAMAGE, shared.spawn);
+        broadcasts.extend(msgs);
+        if let Some(r) = respawn {
+            respawns.push(r);
+        }
+    }
+
+    Step {
+        broadcasts,
+        respawns,
+    }
+}
+
+/// Nearest player (returned as its top-left `(id, x, y)`) whose center is within
+/// `range` of `(x, y)`, or `None` if none are close enough.
+fn nearest_player(
+    players: &[(EntityId, f32, f32)],
+    x: f32,
+    y: f32,
+    range: f32,
+) -> Option<(EntityId, f32, f32)> {
+    let mut best: Option<(EntityId, f32, f32, f32)> = None;
+    for &(pid, px, py) in players {
+        let dx = (px + PLAYER_SIZE.0 * 0.5) - x;
+        let dy = (py + PLAYER_SIZE.1 * 0.5) - y;
+        let d2 = dx * dx + dy * dy;
+        if d2 <= range * range && best.is_none_or(|(_, _, _, bd)| d2 < bd) {
+            best = Some((pid, px, py, d2));
+        }
+    }
+    best.map(|(pid, px, py, _)| (pid, px, py))
+}
+
+/// Smallest gap (px) between two AABBs; `0.0` when they overlap.
+fn aabb_gap(ax: f32, ay: f32, aw: f32, ah: f32, bx: f32, by: f32, bw: f32, bh: f32) -> f32 {
+    let gx = (bx - (ax + aw)).max(ax - (bx + bw)).max(0.0);
+    let gy = (by - (ay + ah)).max(ay - (by + bh)).max(0.0);
+    gx.max(gy)
+}
+
+/// Apply `amount` damage to entity `id` (caller already holds the entities
+/// lock). Returns the messages to broadcast and, if a *player* died, the
+/// `(id, x, y)` respawn target to send to its owner. A non-player that dies is
+/// removed from the world.
+fn apply_damage(
+    entities: &mut Entities,
+    id: EntityId,
+    amount: i32,
+    spawn: (f32, f32),
+) -> (Vec<ServerMessage>, Option<(EntityId, f32, f32)>) {
+    let Some(e) = entities.get_mut(id) else {
+        return (Vec::new(), None);
+    };
+    e.health = (e.health - amount).max(0);
+
+    if e.health > 0 {
+        let msg = ServerMessage::EntityHealth {
+            id,
+            health: e.health,
+            max_health: e.max_health,
+        };
+        return (vec![msg], None);
+    }
+
+    if e.kind.is_player() {
+        // Death = respawn at full health back at spawn.
+        e.health = e.max_health;
+        e.x = spawn.0;
+        e.y = spawn.1;
+        let health = e.health;
+        let max_health = e.max_health;
+        (
+            vec![ServerMessage::EntityHealth {
+                id,
+                health,
+                max_health,
+            }],
+            Some((id, spawn.0, spawn.1)),
+        )
+    } else {
+        entities.remove(id);
+        (vec![ServerMessage::EntityDespawn { id }], None)
+    }
 }
 
 /// Move an AABB horizontally by `dx`, stopping at the first solid column.
@@ -421,6 +595,16 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
         spawn_x: sx,
         spawn_y: sy,
     });
+    // Tell the owner its starting health (its own avatar is never mirrored via
+    // EntitySpawn) and the current time of day.
+    let _ = tx.send(ServerMessage::EntityHealth {
+        id,
+        health: crate::entity::PLAYER_MAX_HEALTH,
+        max_health: crate::entity::PLAYER_MAX_HEALTH,
+    });
+    let _ = tx.send(ServerMessage::TimeOfDay {
+        t: shared.time_of_day(),
+    });
 
     // Send the newcomer a snapshot of every existing entity, then register and
     // announce their own player entity to everyone else.
@@ -482,6 +666,46 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             vy: 0.0,
                         },
                     );
+                }
+                ClientMessage::Attack { target } => {
+                    // Validate the attacker is actually within melee reach.
+                    let in_reach = {
+                        let entities = shared.entities.lock();
+                        match (entities.get(id), entities.get(target)) {
+                            (Some(a), Some(b)) => {
+                                let (aw, ah) = a.size();
+                                let (bw, bh) = b.size();
+                                aabb_gap(a.x, a.y, aw, ah, b.x, b.y, bw, bh) <= PLAYER_ATTACK_REACH
+                            }
+                            _ => false,
+                        }
+                    };
+                    if in_reach {
+                        let (msgs, respawn) = {
+                            let mut entities = shared.entities.lock();
+                            apply_damage(&mut entities, target, PLAYER_ATTACK_DAMAGE, shared.spawn)
+                        };
+                        for m in msgs {
+                            shared.broadcast_all(m);
+                        }
+                        if let Some((rid, rx, ry)) = respawn {
+                            shared.send_to(rid, ServerMessage::Respawn { x: rx, y: ry });
+                        }
+                    }
+                }
+                ClientMessage::FallDamage { amount } => {
+                    if amount > 0 {
+                        let (msgs, respawn) = {
+                            let mut entities = shared.entities.lock();
+                            apply_damage(&mut entities, id, amount, shared.spawn)
+                        };
+                        for m in msgs {
+                            shared.broadcast_all(m);
+                        }
+                        if let Some((rid, rx, ry)) = respawn {
+                            shared.send_to(rid, ServerMessage::Respawn { x: rx, y: ry });
+                        }
+                    }
                 }
             }
         }

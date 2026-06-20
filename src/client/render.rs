@@ -126,6 +126,12 @@ impl Atlas {
         }
     }
 
+    /// UV rect of the solid-white cell, for tinted flat quads (e.g. the
+    /// block-breaking overlay or entity health bars).
+    pub fn white(&self) -> UvRect {
+        self.white_uv
+    }
+
     /// UV rect for a block id.
     pub fn block(&self, id: BlockId) -> UvRect {
         self.block_uv
@@ -641,6 +647,7 @@ impl Gfx {
         &mut self,
         tiles: &[TileInstance],
         camera: CameraUniform,
+        sky: [f32; 4],
         mut egui_frame: EguiFrame,
     ) {
         // Grow the instance buffer if needed.
@@ -707,10 +714,10 @@ impl Gfx {
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 0.45,
-                                g: 0.62,
-                                b: 0.86,
-                                a: 1.0,
+                                r: sky[0] as f64,
+                                g: sky[1] as f64,
+                                b: sky[2] as f64,
+                                a: sky[3] as f64,
                             }),
                             store: wgpu::StoreOp::Store,
                         },

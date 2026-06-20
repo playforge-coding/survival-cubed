@@ -24,6 +24,11 @@ pub const PLAYER_SIZE: (f32, f32) = (16.0, 32.0);
 /// Collision/draw size (width, height) in pixels of a slime.
 pub const SLIME_SIZE: (f32, f32) = (12.0, 12.0);
 
+/// Maximum health of a player, in hit points.
+pub const PLAYER_MAX_HEALTH: i32 = 20;
+/// Maximum health of a slime, in hit points.
+pub const SLIME_MAX_HEALTH: i32 = 8;
+
 /// What an entity *is*. Adding a new creature/object means adding a variant
 /// here plus (for server-simulated kinds) a branch in the server tick loop.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -49,6 +54,16 @@ impl EntityKind {
     pub fn is_player(&self) -> bool {
         matches!(self, EntityKind::Player { .. })
     }
+
+    /// Full health for this kind of entity. Players cap at
+    /// [`PLAYER_MAX_HEALTH`]; other creatures have their own (see the
+    /// constants above).
+    pub fn max_health(&self) -> i32 {
+        match self {
+            EntityKind::Player { .. } => PLAYER_MAX_HEALTH,
+            EntityKind::Slime => SLIME_MAX_HEALTH,
+        }
+    }
 }
 
 /// A live entity: its identity, kind, and current motion state. Position is the
@@ -61,11 +76,21 @@ pub struct Entity {
     pub y: f32,
     pub vx: f32,
     pub vy: f32,
+    /// Current health in hit points. Starts at [`EntityKind::max_health`].
+    pub health: i32,
+    /// Full health for this entity, mirrored from its kind for convenience on
+    /// the client (so health bars know their denominator without a registry).
+    pub max_health: i32,
+    /// Server-only: seconds until this creature can attack again. Never sent
+    /// over the wire (defaults to `0.0` on the client).
+    #[serde(skip)]
+    pub attack_cd: f32,
 }
 
 impl Entity {
-    /// Create an entity at rest at `(x, y)`.
+    /// Create an entity at rest and at full health at `(x, y)`.
     pub fn new(id: EntityId, kind: EntityKind, x: f32, y: f32) -> Self {
+        let max_health = kind.max_health();
         Entity {
             id,
             kind,
@@ -73,6 +98,9 @@ impl Entity {
             y,
             vx: 0.0,
             vy: 0.0,
+            health: max_health,
+            max_health,
+            attack_cd: 0.0,
         }
     }
 
@@ -103,6 +131,10 @@ impl Entities {
 
     pub fn remove(&mut self, id: EntityId) -> Option<Entity> {
         self.map.remove(&id)
+    }
+
+    pub fn get(&self, id: EntityId) -> Option<&Entity> {
+        self.map.get(&id)
     }
 
     pub fn get_mut(&mut self, id: EntityId) -> Option<&mut Entity> {

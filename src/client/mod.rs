@@ -18,7 +18,8 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::block::{AIR, BlockRegistry, DIRT, GRASS, STONE};
-use crate::entity::{Entities, EntityId};
+use crate::daylight;
+use crate::entity::{Entities, EntityId, PLAYER_MAX_HEALTH};
 use crate::protocol::BlockId;
 use crate::server::{self, RunningServer};
 use crate::world::{CHUNK_SIZE, TILE_SIZE, WORLD_HEIGHT, World, to_chunk};
@@ -35,10 +36,16 @@ const JUMP_VELOCITY: f32 = -440.0;
 const PLAYER_W: f32 = crate::entity::PLAYER_SIZE.0;
 const PLAYER_H: f32 = crate::entity::PLAYER_SIZE.1;
 const ZOOM: f32 = 3.0;
-/// How often (seconds) a held mouse button breaks/places.
+/// How often (seconds) a held mouse button places a block or swings a melee hit.
 const ACTION_COOLDOWN: f32 = 0.12;
 /// Extra chunks loaded beyond the screen edges.
 const CHUNK_MARGIN: i32 = 1;
+/// Falls shorter than this (in tiles) are harmless.
+const SAFE_FALL_TILES: f32 = 3.0;
+/// Hit points lost per tile fallen beyond [`SAFE_FALL_TILES`].
+const FALL_DAMAGE_PER_TILE: f32 = 1.0;
+/// Max gap (px between AABBs) at which the player can melee a creature.
+const PLAYER_ATTACK_REACH: f32 = 12.0;
 
 /// Locate a textures subdirectory: `<assets>/textures/<sub>`.
 ///
@@ -123,6 +130,20 @@ struct GameState {
     action_timer: f32,
     move_send_timer: f32,
     last_sent: Vec2,
+    /// Local player health, authoritative on the server but mirrored here for
+    /// the HUD.
+    health: i32,
+    max_health: i32,
+    /// Normalized time of day in `[0, 1)`; advanced locally and corrected by the
+    /// server (see [`crate::daylight`]).
+    time_of_day: f32,
+    /// Cell currently being mined and how long it has been held, driving the
+    /// breaking delay and its overlay.
+    break_target: Option<(i32, i32)>,
+    break_progress: f32,
+    /// Highest point (smallest `y`) reached since leaving the ground, used to
+    /// measure fall distance for fall damage.
+    air_min_y: f32,
 }
 
 impl GameState {
@@ -141,6 +162,12 @@ impl GameState {
             action_timer: 0.0,
             move_send_timer: 0.0,
             last_sent: spawn,
+            health: PLAYER_MAX_HEALTH,
+            max_health: PLAYER_MAX_HEALTH,
+            time_of_day: 0.0,
+            break_target: None,
+            break_progress: 0.0,
+            air_min_y: spawn.y,
         }
     }
 }
@@ -333,6 +360,34 @@ impl App {
                     g.facing.remove(&id);
                 }
             }
+            NetEvent::EntityHealth {
+                id,
+                health,
+                max_health,
+            } => {
+                if let Some(g) = &mut self.game {
+                    if id == g.entity_id {
+                        g.health = health;
+                        g.max_health = max_health;
+                    } else if let Some(e) = g.entities.get_mut(id) {
+                        e.health = health;
+                        e.max_health = max_health;
+                    }
+                }
+            }
+            NetEvent::TimeOfDay { t } => {
+                if let Some(g) = &mut self.game {
+                    g.time_of_day = t;
+                }
+            }
+            NetEvent::Respawn { x, y } => {
+                if let Some(g) = &mut self.game {
+                    g.pos = Vec2::new(x, y);
+                    g.vel = Vec2::ZERO;
+                    g.air_min_y = y;
+                    g.last_sent = g.pos;
+                }
+            }
             NetEvent::Disconnected { reason } => {
                 self.status = format!("Disconnected: {reason}");
                 self.net = None;
@@ -354,7 +409,14 @@ impl App {
         let input = &self.input;
         let game = self.game.as_mut().unwrap();
 
-        step_physics(game, reg, input, dt);
+        // Advance the day/night clock locally; the server corrects it via
+        // TimeOfDay messages.
+        game.time_of_day = (game.time_of_day + dt / daylight::DAY_LENGTH_SECS).rem_euclid(1.0);
+
+        let fall_damage = step_physics(game, reg, input, dt);
+        if let (Some(amount), Some(net)) = (fall_damage, &self.net) {
+            let _ = net.commands.send(NetCommand::FallDamage { amount });
+        }
         request_chunks(game, self.gfx.as_ref(), self.net.as_ref());
         handle_block_actions(game, reg, input, self.gfx.as_ref(), self.net.as_ref(), dt);
 
@@ -493,24 +555,32 @@ impl App {
     }
 
     fn hud_ui(&mut self, ui: &mut egui::Ui) {
-        let (sel_name, other_players, pos) = {
+        let (sel_name, other_players, pos, health, max_health, time_of_day) = {
             let g = self.game.as_ref().unwrap();
             (
                 self.registry.get(g.selected).name.to_string(),
                 g.entities.player_count(),
                 g.pos,
+                g.health,
+                g.max_health,
+                g.time_of_day,
             )
         };
+        let night = daylight::is_night(time_of_day);
 
         egui::Panel::top("hud").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Survival Cubed").strong());
                 ui.separator();
+                health_bar(ui, health, max_health);
+                ui.separator();
+                ui.label(if night { "🌙 Night" } else { "☀ Day" });
+                ui.separator();
                 ui.label(format!("Selected: {sel_name}"));
                 ui.separator();
                 ui.label("[1] Stone  [2] Dirt  [3] Grass");
                 ui.separator();
-                ui.label("Move: A/D · Jump: Space · Break: LMB · Place: RMB");
+                ui.label("Move: A/D · Jump: Space · Mine/Attack: LMB · Place: RMB");
                 ui.separator();
                 ui.label(format!("Players online: {}", other_players + 1));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -543,11 +613,17 @@ impl App {
         let jobs = ctx.tessellate(full.shapes, full.pixels_per_point);
 
         let (tiles, camera) = self.build_scene();
+        let sky = self
+            .game
+            .as_ref()
+            .map(|g| daylight::sky_color(g.time_of_day))
+            .unwrap_or([0.45, 0.62, 0.86, 1.0]);
 
         if let Some(gfx) = self.gfx.as_mut() {
             gfx.render(
                 &tiles,
                 camera,
+                sky,
                 EguiFrame {
                     jobs,
                     textures_delta: full.textures_delta,
@@ -572,6 +648,10 @@ impl App {
 
         let mut tiles = Vec::new();
 
+        // Daylight tint: everything in the world dims toward night.
+        let b = daylight::brightness(g.time_of_day);
+        let tint = [b, b, b, 1.0];
+
         let left = (offset.x / TILE_SIZE).floor() as i32 - CHUNK_MARGIN;
         let right = ((offset.x + view_w) / TILE_SIZE).ceil() as i32 + CHUNK_MARGIN;
         let top = ((offset.y / TILE_SIZE).floor() as i32 - CHUNK_MARGIN).max(0);
@@ -591,8 +671,25 @@ impl App {
                     size: [TILE_SIZE, TILE_SIZE],
                     uv_min: uv.min,
                     uv_max: uv.max,
-                    color: [1.0, 1.0, 1.0, 1.0],
+                    color: tint,
                 });
+            }
+        }
+
+        // Block-breaking overlay: darken the targeted cell as mining progresses.
+        if let Some((tx, ty)) = g.break_target {
+            let block = g.world.get_block(tx, ty);
+            let secs = self.registry.get(block).break_secs;
+            if block != AIR && secs > 0.0 {
+                let frac = (g.break_progress / secs).clamp(0.0, 1.0);
+                tiles.push(flat_quad(
+                    self.atlas.white(),
+                    tx as f32 * TILE_SIZE,
+                    ty as f32 * TILE_SIZE,
+                    TILE_SIZE,
+                    TILE_SIZE,
+                    [0.0, 0.0, 0.0, frac * 0.7],
+                ));
             }
         }
 
@@ -609,7 +706,20 @@ impl App {
                 w,
                 h,
                 facing,
+                tint,
             ));
+            // A small health bar floats over any wounded creature.
+            if e.health < e.max_health && e.max_health > 0 {
+                push_health_bar(
+                    &mut tiles,
+                    self.atlas.white(),
+                    e.x,
+                    e.y,
+                    w,
+                    e.health,
+                    e.max_health,
+                );
+            }
         }
         // Self (the special, locally-simulated player entity).
         let def = &sprite::PLAYER_SPRITE;
@@ -621,6 +731,7 @@ impl App {
             PLAYER_W,
             PLAYER_H,
             g.player_facing,
+            tint,
         ));
 
         (
@@ -630,12 +741,72 @@ impl App {
     }
 }
 
+/// Append a two-quad (red fill over dark backing) health bar centered above an
+/// entity of width `w` whose top-left is at `(x, y)`.
+fn push_health_bar(
+    tiles: &mut Vec<TileInstance>,
+    white: UvRect,
+    x: f32,
+    y: f32,
+    w: f32,
+    health: i32,
+    max_health: i32,
+) {
+    const BAR_H: f32 = 1.5;
+    const PAD: f32 = 2.0;
+    let frac = (health as f32 / max_health as f32).clamp(0.0, 1.0);
+    let bx = x - PAD * 0.5;
+    let bw = w + PAD;
+    let by = y - BAR_H - 1.0;
+    tiles.push(flat_quad(white, bx, by, bw, BAR_H, [0.15, 0.0, 0.0, 0.85]));
+    tiles.push(flat_quad(
+        white,
+        bx,
+        by,
+        bw * frac,
+        BAR_H,
+        [0.85, 0.1, 0.1, 0.95],
+    ));
+}
+
 // --- Free functions (kept out of `&mut self` to ease borrow checking) ----
+
+/// Paint the player's HUD health bar: a red fill over a dark backing with a
+/// `♥ current / max` readout.
+fn health_bar(ui: &mut egui::Ui, health: i32, max_health: i32) {
+    let frac = if max_health > 0 {
+        (health as f32 / max_health as f32).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(130.0, 16.0), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let radius = egui::CornerRadius::same(3);
+    painter.rect_filled(rect, radius, egui::Color32::from_rgb(40, 12, 12));
+    let mut fill = rect;
+    fill.set_width(rect.width() * frac);
+    painter.rect_filled(fill, radius, egui::Color32::from_rgb(200, 40, 40));
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        format!("♥ {health} / {max_health}"),
+        egui::FontId::proportional(12.0),
+        egui::Color32::WHITE,
+    );
+}
 
 /// Build a textured quad for an entity, mirroring the sprite horizontally when
 /// it faces left (the shader interpolates uv across the quad, so swapping the U
 /// bounds flips it).
-fn entity_instance(uv: UvRect, x: f32, y: f32, w: f32, h: f32, facing_right: bool) -> TileInstance {
+fn entity_instance(
+    uv: UvRect,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    facing_right: bool,
+    tint: [f32; 4],
+) -> TileInstance {
     let (u0, u1) = if facing_right {
         (uv.min[0], uv.max[0])
     } else {
@@ -646,11 +817,27 @@ fn entity_instance(uv: UvRect, x: f32, y: f32, w: f32, h: f32, facing_right: boo
         size: [w, h],
         uv_min: [u0, uv.min[1]],
         uv_max: [u1, uv.max[1]],
-        color: [1.0, 1.0, 1.0, 1.0],
+        color: tint,
     }
 }
 
-fn step_physics(game: &mut GameState, reg: &BlockRegistry, input: &Input, dt: f32) {
+/// Build a solid-color flat quad (using the atlas's white cell) for overlays
+/// like the mining indicator and entity health bars.
+fn flat_quad(white: UvRect, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) -> TileInstance {
+    TileInstance {
+        pos: [x, y],
+        size: [w, h],
+        uv_min: white.min,
+        uv_max: white.max,
+        color,
+    }
+}
+
+/// Advance the local player one physics step. Returns fall damage (hit points)
+/// to apply if the player just landed from a damaging fall.
+fn step_physics(game: &mut GameState, reg: &BlockRegistry, input: &Input, dt: f32) -> Option<i32> {
+    let was_grounded = game.on_ground;
+
     // Horizontal intent.
     let dir = (input.right as i32 - input.left as i32) as f32;
     game.vel.x = dir * MOVE_SPEED;
@@ -673,6 +860,24 @@ fn step_physics(game: &mut GameState, reg: &BlockRegistry, input: &Input, dt: f3
     move_x(game, reg, game.vel.x * dt);
     let landed = move_y(game, reg, game.vel.y * dt);
     game.on_ground = landed;
+
+    // Track the apex of any airborne arc so a fall is measured from its top.
+    if !game.on_ground {
+        game.air_min_y = game.air_min_y.min(game.pos.y);
+        return None;
+    }
+
+    // Just landed: convert the drop beyond the safe distance into damage.
+    let mut damage = None;
+    if !was_grounded {
+        let fall_tiles = (game.pos.y - game.air_min_y) / TILE_SIZE;
+        let over = fall_tiles - SAFE_FALL_TILES;
+        if over > 0.0 {
+            damage = Some((over * FALL_DAMAGE_PER_TILE).floor() as i32);
+        }
+    }
+    game.air_min_y = game.pos.y;
+    damage
 }
 
 const EPS: f32 = 0.01;
@@ -777,18 +982,12 @@ fn handle_block_actions(
     dt: f32,
 ) {
     game.action_timer -= dt;
-    if !(input.breaking || input.placing) {
-        game.action_timer = 0.0;
-        return;
-    }
-    if game.action_timer > 0.0 {
-        return;
-    }
+
     let (Some(gfx), Some(net)) = (gfx, net) else {
         return;
     };
 
-    // Mouse (physical px) -> world cell.
+    // Mouse (physical px) -> world point + cell.
     let view_w = gfx.size.width.max(1) as f32 / ZOOM;
     let view_h = gfx.size.height.max(1) as f32 / ZOOM;
     let center = game.pos + Vec2::new(PLAYER_W * 0.5, PLAYER_H * 0.5);
@@ -797,32 +996,103 @@ fn handle_block_actions(
     let tx = (world.x / TILE_SIZE).floor() as i32;
     let ty = (world.y / TILE_SIZE).floor() as i32;
 
-    if ty < 0 || ty >= WORLD_HEIGHT {
-        return;
+    // Left button: swing at a creature under the cursor, else mine the block.
+    if input.breaking {
+        if let Some(target) = creature_at(game, world) {
+            game.break_target = None;
+            game.break_progress = 0.0;
+            if game.action_timer <= 0.0 {
+                let _ = net.commands.send(NetCommand::Attack { target });
+                game.action_timer = ACTION_COOLDOWN;
+            }
+        } else {
+            mine_block(game, reg, net, tx, ty, dt);
+        }
+    } else {
+        game.break_target = None;
+        game.break_progress = 0.0;
     }
 
-    let current = game.world.get_block(tx, ty);
-    if input.breaking {
-        if current != AIR {
-            game.world.set_block(tx, ty, AIR);
+    // Right button: place a block on a fixed cooldown.
+    if input.placing && game.action_timer <= 0.0 && (0..WORLD_HEIGHT).contains(&ty) {
+        let current = game.world.get_block(tx, ty);
+        if current == AIR && !overlaps_player(game, tx, ty) {
+            let block = game.selected;
+            game.world.set_block(tx, ty, block);
             let _ = net.commands.send(NetCommand::SetBlock {
                 x: tx,
                 y: ty,
-                block: AIR,
+                block,
             });
             game.action_timer = ACTION_COOLDOWN;
         }
-    } else if input.placing && current == AIR && !overlaps_player(game, tx, ty) {
-        let block = game.selected;
-        let _ = reg; // reserved for future placement rules
-        game.world.set_block(tx, ty, block);
+    }
+}
+
+/// Accumulate mining progress on the targeted cell, breaking it once the block's
+/// [`break_secs`](crate::block::BlockDef::break_secs) delay has elapsed.
+fn mine_block(
+    game: &mut GameState,
+    reg: &BlockRegistry,
+    net: &NetHandle,
+    tx: i32,
+    ty: i32,
+    dt: f32,
+) {
+    let current = if (0..WORLD_HEIGHT).contains(&ty) {
+        game.world.get_block(tx, ty)
+    } else {
+        AIR
+    };
+    if current == AIR {
+        game.break_target = None;
+        game.break_progress = 0.0;
+        return;
+    }
+
+    // Restart progress whenever the targeted cell changes.
+    if game.break_target != Some((tx, ty)) {
+        game.break_target = Some((tx, ty));
+        game.break_progress = 0.0;
+    }
+    game.break_progress += dt;
+
+    if game.break_progress >= reg.get(current).break_secs {
+        game.world.set_block(tx, ty, AIR);
         let _ = net.commands.send(NetCommand::SetBlock {
             x: tx,
             y: ty,
-            block,
+            block: AIR,
         });
-        game.action_timer = ACTION_COOLDOWN;
+        game.break_target = None;
+        game.break_progress = 0.0;
     }
+}
+
+/// Id of a non-player creature whose AABB contains `world` and is within melee
+/// reach of the player, if any.
+fn creature_at(game: &GameState, world: Vec2) -> Option<EntityId> {
+    for e in game.entities.values() {
+        if e.kind.is_player() {
+            continue;
+        }
+        let (w, h) = e.size();
+        let inside = world.x >= e.x && world.x <= e.x + w && world.y >= e.y && world.y <= e.y + h;
+        if inside
+            && aabb_gap_px(game.pos.x, game.pos.y, PLAYER_W, PLAYER_H, e.x, e.y, w, h)
+                <= PLAYER_ATTACK_REACH
+        {
+            return Some(e.id);
+        }
+    }
+    None
+}
+
+/// Smallest gap (px) between two AABBs; `0.0` when they overlap.
+fn aabb_gap_px(ax: f32, ay: f32, aw: f32, ah: f32, bx: f32, by: f32, bw: f32, bh: f32) -> f32 {
+    let gx = (bx - (ax + aw)).max(ax - (bx + bw)).max(0.0);
+    let gy = (by - (ay + ah)).max(ay - (by + bh)).max(0.0);
+    gx.max(gy)
 }
 
 fn overlaps_player(game: &GameState, tx: i32, ty: i32) -> bool {

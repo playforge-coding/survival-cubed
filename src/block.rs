@@ -36,6 +36,9 @@ pub struct BlockDef {
     pub solid: bool,
     /// Whether the block is drawn (air is not).
     pub visible: bool,
+    /// Seconds of sustained mining needed to break this block (the breaking
+    /// delay). Tougher blocks take longer; air is `0.0`.
+    pub break_secs: f32,
     /// Optional procedural fallback used to write a starter `<name>.png` when
     /// no texture file exists yet.
     pub default_tex: Option<TexFn>,
@@ -51,10 +54,10 @@ impl BlockRegistry {
     pub fn new() -> Self {
         let mut r = BlockRegistry { defs: Vec::new() };
         // Order matters: defines the AIR/STONE/DIRT/GRASS ids above.
-        r.register("air", false, false, None);
-        r.register("stone", true, true, Some(tex_stone));
-        r.register("dirt", true, true, Some(tex_dirt));
-        r.register("grass", true, true, Some(tex_grass));
+        r.register("air", false, false, 0.0, None);
+        r.register("stone", true, true, 1.2, Some(tex_stone));
+        r.register("dirt", true, true, 0.5, Some(tex_dirt));
+        r.register("grass", true, true, 0.5, Some(tex_grass));
         r
     }
 
@@ -64,6 +67,7 @@ impl BlockRegistry {
         name: &'static str,
         solid: bool,
         visible: bool,
+        break_secs: f32,
         default_tex: Option<TexFn>,
     ) -> BlockId {
         let id = self.defs.len() as BlockId;
@@ -72,6 +76,7 @@ impl BlockRegistry {
             name,
             solid,
             visible,
+            break_secs,
             default_tex,
         });
         id
