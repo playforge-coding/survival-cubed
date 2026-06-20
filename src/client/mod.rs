@@ -1,0 +1,975 @@
+//! Client application: window + event loop (winit), egui UI, input, player
+//! physics, and the bridge to the networking thread.
+
+mod net;
+mod render;
+mod sprite;
+
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Instant;
+
+use glam::Vec2;
+use winit::application::ApplicationHandler;
+use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::window::{Window, WindowId};
+
+use crate::block::{AIR, BlockRegistry, DIRT, GRASS, STONE};
+use crate::entity::{Entities, EntityId};
+use crate::protocol::BlockId;
+use crate::server::{self, RunningServer};
+use crate::world::{CHUNK_SIZE, TILE_SIZE, WORLD_HEIGHT, World, to_chunk};
+
+use net::{NetCommand, NetEvent, NetHandle, connect};
+use render::{Atlas, CameraUniform, EguiFrame, Gfx, TileInstance, UvRect};
+
+// --- Tunables ------------------------------------------------------------
+
+const GRAVITY: f32 = 1400.0;
+const MOVE_SPEED: f32 = 150.0;
+const JUMP_VELOCITY: f32 = -440.0;
+// The local player is just a (special) entity; reuse its shared size.
+const PLAYER_W: f32 = crate::entity::PLAYER_SIZE.0;
+const PLAYER_H: f32 = crate::entity::PLAYER_SIZE.1;
+const ZOOM: f32 = 3.0;
+/// How often (seconds) a held mouse button breaks/places.
+const ACTION_COOLDOWN: f32 = 0.12;
+/// Extra chunks loaded beyond the screen edges.
+const CHUNK_MARGIN: i32 = 1;
+
+/// Locate a textures subdirectory: `<assets>/textures/<sub>`.
+///
+/// Resolution order: `$SURVIVAL_CUBED_ASSETS`, then `./assets` (next to the
+/// project / working dir), then `assets` beside the executable. The first
+/// existing candidate wins; otherwise the working-dir path is returned so the
+/// atlas loader can create it and drop starter textures there.
+fn textures_dir(sub: &str) -> PathBuf {
+    if let Ok(dir) = std::env::var("SURVIVAL_CUBED_ASSETS") {
+        return PathBuf::from(dir).join("textures").join(sub);
+    }
+    let mut candidates = vec![PathBuf::from("assets").join("textures").join(sub)];
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join("assets").join("textures").join(sub));
+        }
+    }
+    candidates
+        .iter()
+        .find(|c| c.exists())
+        .cloned()
+        .unwrap_or_else(|| candidates.remove(0))
+}
+
+fn blocks_texture_dir() -> PathBuf {
+    textures_dir("blocks")
+}
+
+fn entities_texture_dir() -> PathBuf {
+    textures_dir("entities")
+}
+
+/// Entry point: build the app and run the winit event loop.
+pub fn run() -> anyhow::Result<()> {
+    let event_loop = EventLoop::new()?;
+    let mut app = App::new();
+    event_loop.run_app(&mut app)?;
+    Ok(())
+}
+
+#[derive(PartialEq)]
+enum Screen {
+    Menu,
+    Connecting,
+    InGame,
+}
+
+struct PendingTofu {
+    host: String,
+    fingerprint: String,
+    respond: crossbeam_channel::Sender<bool>,
+}
+
+#[derive(Default)]
+struct Input {
+    left: bool,
+    right: bool,
+    jump: bool,
+    mouse: (f32, f32),
+    breaking: bool,
+    placing: bool,
+}
+
+struct GameState {
+    /// Id of this client's own player entity. That entity is the "special" one:
+    /// it is simulated locally (below) rather than mirrored from the server, so
+    /// it is deliberately *not* stored in `entities`.
+    entity_id: EntityId,
+    pos: Vec2,
+    vel: Vec2,
+    on_ground: bool,
+    world: World,
+    /// All other entities (remote players and server creatures), mirrored from
+    /// the server.
+    entities: Entities,
+    /// Facing per remote entity (`true` = right), remembered while it is idle.
+    facing: HashMap<EntityId, bool>,
+    /// Facing of this client's own player avatar.
+    player_facing: bool,
+    requested: HashSet<(i32, i32)>,
+    selected: BlockId,
+    action_timer: f32,
+    move_send_timer: f32,
+    last_sent: Vec2,
+}
+
+impl GameState {
+    fn new(entity_id: EntityId, spawn: Vec2) -> Self {
+        GameState {
+            entity_id,
+            pos: spawn,
+            vel: Vec2::ZERO,
+            on_ground: false,
+            world: World::new(),
+            entities: Entities::new(),
+            facing: HashMap::new(),
+            player_facing: true,
+            requested: HashSet::new(),
+            selected: STONE,
+            action_timer: 0.0,
+            move_send_timer: 0.0,
+            last_sent: spawn,
+        }
+    }
+}
+
+struct App {
+    window: Option<Arc<Window>>,
+    gfx: Option<Gfx>,
+    egui_ctx: egui::Context,
+    egui_state: Option<egui_winit::State>,
+
+    registry: Arc<BlockRegistry>,
+    atlas: Atlas,
+
+    screen: Screen,
+    status: String,
+    address_input: String,
+    port_input: String,
+
+    net: Option<NetHandle>,
+    server: Option<RunningServer>,
+    pending_tofu: Option<PendingTofu>,
+    game: Option<GameState>,
+
+    input: Input,
+    last_frame: Instant,
+    /// Seconds elapsed, used to drive sprite animation.
+    anim_time: f32,
+}
+
+impl App {
+    fn new() -> Self {
+        let registry = Arc::new(BlockRegistry::new());
+        let atlas = Atlas::build(&registry, &blocks_texture_dir(), &entities_texture_dir());
+        App {
+            window: None,
+            gfx: None,
+            egui_ctx: egui::Context::default(),
+            egui_state: None,
+            registry,
+            atlas,
+            screen: Screen::Menu,
+            status: String::new(),
+            address_input: "127.0.0.1:5000".to_string(),
+            port_input: "5000".to_string(),
+            net: None,
+            server: None,
+            pending_tofu: None,
+            game: None,
+            input: Input::default(),
+            last_frame: Instant::now(),
+            anim_time: 0.0,
+        }
+    }
+
+    // --- Session lifecycle ---
+
+    fn seed() -> i32 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i32)
+            .unwrap_or(1337)
+    }
+
+    fn start_singleplayer(&mut self) {
+        match server::start_server(server::local_bind(), Self::seed()) {
+            Ok(srv) => {
+                let handle = connect(srv.addr, "singleplayer".to_string(), Some(srv.fingerprint));
+                self.server = Some(srv);
+                self.net = Some(handle);
+                self.screen = Screen::Connecting;
+                self.status = "Starting singleplayer world...".to_string();
+            }
+            Err(e) => self.status = format!("Failed to start server: {e:#}"),
+        }
+    }
+
+    fn start_host(&mut self) {
+        let port: u16 = self.port_input.trim().parse().unwrap_or(5000);
+        match server::start_server(server::host_bind(port), Self::seed()) {
+            Ok(srv) => {
+                let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+                let handle = connect(addr, format!("127.0.0.1:{port}"), Some(srv.fingerprint));
+                self.server = Some(srv);
+                self.net = Some(handle);
+                self.screen = Screen::Connecting;
+                self.status = format!("Hosting on port {port}...");
+            }
+            Err(e) => self.status = format!("Failed to host: {e:#}"),
+        }
+    }
+
+    fn start_connect(&mut self) {
+        let label = self.address_input.trim().to_string();
+        let addr = match label.parse::<std::net::SocketAddr>() {
+            Ok(a) => a,
+            Err(_) => {
+                self.status = format!("Invalid address: {label}");
+                return;
+            }
+        };
+        let handle = connect(addr, label.clone(), None);
+        self.net = Some(handle);
+        self.screen = Screen::Connecting;
+        self.status = format!("Connecting to {label}...");
+    }
+
+    fn leave(&mut self) {
+        if let Some(net) = &self.net {
+            let _ = net.commands.send(NetCommand::Disconnect);
+        }
+        self.net = None;
+        self.server = None; // dropping closes the embedded server
+        self.game = None;
+        self.pending_tofu = None;
+        self.input = Input::default();
+        self.screen = Screen::Menu;
+    }
+
+    // --- Networking ---
+
+    fn poll_net(&mut self) {
+        let events: Vec<NetEvent> = match &self.net {
+            Some(net) => net.events.try_iter().collect(),
+            None => return,
+        };
+        for ev in events {
+            self.handle_net_event(ev);
+        }
+    }
+
+    fn handle_net_event(&mut self, ev: NetEvent) {
+        match ev {
+            NetEvent::TofuPrompt {
+                host,
+                fingerprint,
+                respond,
+            } => {
+                self.pending_tofu = Some(PendingTofu {
+                    host,
+                    fingerprint,
+                    respond,
+                });
+            }
+            NetEvent::Connected {
+                entity_id,
+                spawn_x,
+                spawn_y,
+            } => {
+                self.game = Some(GameState::new(entity_id, Vec2::new(spawn_x, spawn_y)));
+                self.screen = Screen::InGame;
+                self.status.clear();
+            }
+            NetEvent::Chunk { cx, cy, blocks } => {
+                if let Some(g) = &mut self.game {
+                    g.world
+                        .insert_chunk((cx, cy), crate::world::Chunk::from_vec(blocks));
+                }
+            }
+            NetEvent::BlockUpdate { x, y, block } => {
+                if let Some(g) = &mut self.game {
+                    g.world.set_block(x, y, block);
+                }
+            }
+            NetEvent::EntitySpawn { entity } => {
+                if let Some(g) = &mut self.game {
+                    // The server never spawns us our own avatar, but guard anyway.
+                    if entity.id != g.entity_id {
+                        g.entities.insert(entity);
+                    }
+                }
+            }
+            NetEvent::EntityMoved { id, x, y, vx, vy } => {
+                if let Some(g) = &mut self.game {
+                    if id != g.entity_id {
+                        if let Some(e) = g.entities.get_mut(id) {
+                            e.x = x;
+                            e.y = y;
+                            e.vx = vx;
+                            e.vy = vy;
+                        }
+                        if vx != 0.0 {
+                            g.facing.insert(id, vx > 0.0);
+                        }
+                    }
+                }
+            }
+            NetEvent::EntityDespawn { id } => {
+                if let Some(g) = &mut self.game {
+                    g.entities.remove(id);
+                    g.facing.remove(&id);
+                }
+            }
+            NetEvent::Disconnected { reason } => {
+                self.status = format!("Disconnected: {reason}");
+                self.net = None;
+                self.server = None;
+                self.game = None;
+                self.pending_tofu = None;
+                self.screen = Screen::Menu;
+            }
+        }
+    }
+
+    // --- Per-frame update ---
+
+    fn update(&mut self, dt: f32) {
+        if self.game.is_none() {
+            return;
+        }
+        let reg = &self.registry;
+        let input = &self.input;
+        let game = self.game.as_mut().unwrap();
+
+        step_physics(game, reg, input, dt);
+        request_chunks(game, self.gfx.as_ref(), self.net.as_ref());
+        handle_block_actions(game, reg, input, self.gfx.as_ref(), self.net.as_ref(), dt);
+
+        // Throttle position updates to the server.
+        game.move_send_timer -= dt;
+        if game.move_send_timer <= 0.0 && game.pos.distance(game.last_sent) > 0.25 {
+            if let Some(net) = &self.net {
+                let _ = net.commands.send(NetCommand::PlayerMove {
+                    x: game.pos.x,
+                    y: game.pos.y,
+                });
+            }
+            game.last_sent = game.pos;
+            game.move_send_timer = 0.05;
+        }
+    }
+
+    // --- egui UI ---
+
+    fn build_ui(&mut self, ui: &mut egui::Ui) {
+        // TOFU prompt takes priority and is shown as a modal-ish window.
+        if self.pending_tofu.is_some() {
+            self.tofu_window(ui);
+        }
+
+        match self.screen {
+            Screen::Menu => self.menu_ui(ui),
+            Screen::Connecting => {
+                egui::CentralPanel::default().show_inside(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(120.0);
+                        ui.heading("Survival Cubed");
+                        ui.add_space(20.0);
+                        ui.label(&self.status);
+                        ui.spinner();
+                        if ui.button("Cancel").clicked() {
+                            self.leave();
+                        }
+                    });
+                });
+            }
+            Screen::InGame => self.hud_ui(ui),
+        }
+    }
+
+    fn menu_ui(&mut self, ui: &mut egui::Ui) {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(80.0);
+                ui.heading("Survival Cubed");
+                ui.add_space(8.0);
+                ui.label("A multiplayer-first 2D block game.");
+                ui.add_space(24.0);
+
+                if ui.button("  Singleplayer  ").clicked() {
+                    self.start_singleplayer();
+                }
+                ui.add_space(16.0);
+
+                ui.group(|ui| {
+                    ui.label("Host a server");
+                    ui.horizontal(|ui| {
+                        ui.label("Port:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.port_input).desired_width(80.0),
+                        );
+                        if ui.button("Host").clicked() {
+                            self.start_host();
+                        }
+                    });
+                });
+                ui.add_space(8.0);
+
+                ui.group(|ui| {
+                    ui.label("Join a server");
+                    ui.horizontal(|ui| {
+                        ui.label("Address:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.address_input)
+                                .desired_width(180.0),
+                        );
+                        if ui.button("Connect").clicked() {
+                            self.start_connect();
+                        }
+                    });
+                });
+
+                ui.add_space(20.0);
+                if !self.status.is_empty() {
+                    ui.colored_label(egui::Color32::LIGHT_RED, &self.status);
+                }
+            });
+        });
+    }
+
+    fn tofu_window(&mut self, ui: &mut egui::Ui) {
+        let Some(tofu) = &self.pending_tofu else {
+            return;
+        };
+        let host = tofu.host.clone();
+        let fingerprint = tofu.fingerprint.clone();
+        let mut decision: Option<bool> = None;
+
+        egui::Window::new("Unknown server certificate")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                ui.label(format!(
+                    "The authenticity of host '{host}' can't be established."
+                ));
+                ui.add_space(4.0);
+                ui.label("SHA-256 certificate fingerprint:");
+                ui.monospace(&fingerprint);
+                ui.add_space(8.0);
+                ui.label("Are you sure you want to continue connecting?");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Accept & connect").clicked() {
+                        decision = Some(true);
+                    }
+                    if ui.button("Decline").clicked() {
+                        decision = Some(false);
+                    }
+                });
+            });
+
+        if let Some(accept) = decision {
+            if let Some(tofu) = self.pending_tofu.take() {
+                let _ = tofu.respond.send(accept);
+            }
+            if !accept {
+                self.status = "Connection declined.".to_string();
+            }
+        }
+    }
+
+    fn hud_ui(&mut self, ui: &mut egui::Ui) {
+        let (sel_name, other_players, pos) = {
+            let g = self.game.as_ref().unwrap();
+            (
+                self.registry.get(g.selected).name.to_string(),
+                g.entities.player_count(),
+                g.pos,
+            )
+        };
+
+        egui::Panel::top("hud").show_inside(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Survival Cubed").strong());
+                ui.separator();
+                ui.label(format!("Selected: {sel_name}"));
+                ui.separator();
+                ui.label("[1] Stone  [2] Dirt  [3] Grass");
+                ui.separator();
+                ui.label("Move: A/D · Jump: Space · Break: LMB · Place: RMB");
+                ui.separator();
+                ui.label(format!("Players online: {}", other_players + 1));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Leave").clicked() {
+                        self.leave();
+                    }
+                    ui.label(format!("({:.0}, {:.0})", pos.x, pos.y));
+                });
+            });
+        });
+    }
+
+    // --- Rendering ---
+
+    fn render_frame(&mut self) {
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        if self.gfx.is_none() || self.egui_state.is_none() {
+            return;
+        }
+
+        let raw = self.egui_state.as_mut().unwrap().take_egui_input(&window);
+        let ctx = self.egui_ctx.clone();
+        let full = ctx.run_ui(raw, |ui| self.build_ui(ui));
+        self.egui_state
+            .as_mut()
+            .unwrap()
+            .handle_platform_output(&window, full.platform_output);
+        let jobs = ctx.tessellate(full.shapes, full.pixels_per_point);
+
+        let (tiles, camera) = self.build_scene();
+
+        if let Some(gfx) = self.gfx.as_mut() {
+            gfx.render(
+                &tiles,
+                camera,
+                EguiFrame {
+                    jobs,
+                    textures_delta: full.textures_delta,
+                    pixels_per_point: full.pixels_per_point,
+                },
+            );
+        }
+    }
+
+    fn build_scene(&self) -> (Vec<TileInstance>, CameraUniform) {
+        let gfx = self.gfx.as_ref().unwrap();
+        let (vw, vh) = (gfx.size.width.max(1) as f32, gfx.size.height.max(1) as f32);
+
+        let Some(g) = &self.game else {
+            return (Vec::new(), CameraUniform::new([0.0, 0.0], [vw, vh], ZOOM));
+        };
+
+        let view_w = vw / ZOOM;
+        let view_h = vh / ZOOM;
+        let center = g.pos + Vec2::new(PLAYER_W * 0.5, PLAYER_H * 0.5);
+        let offset = center - Vec2::new(view_w * 0.5, view_h * 0.5);
+
+        let mut tiles = Vec::new();
+
+        let left = (offset.x / TILE_SIZE).floor() as i32 - CHUNK_MARGIN;
+        let right = ((offset.x + view_w) / TILE_SIZE).ceil() as i32 + CHUNK_MARGIN;
+        let top = ((offset.y / TILE_SIZE).floor() as i32 - CHUNK_MARGIN).max(0);
+        let bottom =
+            (((offset.y + view_h) / TILE_SIZE).ceil() as i32 + CHUNK_MARGIN).min(WORLD_HEIGHT);
+
+        for ty in top..bottom {
+            for tx in left..right {
+                let id = g.world.get_block(tx, ty);
+                let def = self.registry.get(id);
+                if !def.visible {
+                    continue;
+                }
+                let uv = self.atlas.block(id);
+                tiles.push(TileInstance {
+                    pos: [tx as f32 * TILE_SIZE, ty as f32 * TILE_SIZE],
+                    size: [TILE_SIZE, TILE_SIZE],
+                    uv_min: uv.min,
+                    uv_max: uv.max,
+                    color: [1.0, 1.0, 1.0, 1.0],
+                });
+            }
+        }
+
+        // Other entities — remote players and server creatures (drawn over tiles).
+        for e in g.entities.values() {
+            let (w, h) = e.size();
+            let def = sprite::sprite_for(&e.kind);
+            let frame = sprite::frame_index(e.vx.abs() > 1.0, self.anim_time, def);
+            let facing = g.facing.get(&e.id).copied().unwrap_or(true);
+            tiles.push(entity_instance(
+                self.atlas.sprite_frame(def.name, frame),
+                e.x,
+                e.y,
+                w,
+                h,
+                facing,
+            ));
+        }
+        // Self (the special, locally-simulated player entity).
+        let def = &sprite::PLAYER_SPRITE;
+        let frame = sprite::frame_index(g.vel.x.abs() > 1.0, self.anim_time, def);
+        tiles.push(entity_instance(
+            self.atlas.sprite_frame(def.name, frame),
+            g.pos.x,
+            g.pos.y,
+            PLAYER_W,
+            PLAYER_H,
+            g.player_facing,
+        ));
+
+        (
+            tiles,
+            CameraUniform::new([offset.x, offset.y], [vw, vh], ZOOM),
+        )
+    }
+}
+
+// --- Free functions (kept out of `&mut self` to ease borrow checking) ----
+
+/// Build a textured quad for an entity, mirroring the sprite horizontally when
+/// it faces left (the shader interpolates uv across the quad, so swapping the U
+/// bounds flips it).
+fn entity_instance(uv: UvRect, x: f32, y: f32, w: f32, h: f32, facing_right: bool) -> TileInstance {
+    let (u0, u1) = if facing_right {
+        (uv.min[0], uv.max[0])
+    } else {
+        (uv.max[0], uv.min[0])
+    };
+    TileInstance {
+        pos: [x, y],
+        size: [w, h],
+        uv_min: [u0, uv.min[1]],
+        uv_max: [u1, uv.max[1]],
+        color: [1.0, 1.0, 1.0, 1.0],
+    }
+}
+
+fn step_physics(game: &mut GameState, reg: &BlockRegistry, input: &Input, dt: f32) {
+    // Horizontal intent.
+    let dir = (input.right as i32 - input.left as i32) as f32;
+    game.vel.x = dir * MOVE_SPEED;
+    if dir > 0.0 {
+        game.player_facing = true;
+    } else if dir < 0.0 {
+        game.player_facing = false;
+    }
+
+    // Jump (only when grounded).
+    if input.jump && game.on_ground {
+        game.vel.y = JUMP_VELOCITY;
+        game.on_ground = false;
+    }
+
+    // Gravity.
+    game.vel.y = (game.vel.y + GRAVITY * dt).min(900.0);
+
+    // Move and resolve on each axis independently.
+    move_x(game, reg, game.vel.x * dt);
+    let landed = move_y(game, reg, game.vel.y * dt);
+    game.on_ground = landed;
+}
+
+const EPS: f32 = 0.01;
+
+fn move_x(game: &mut GameState, reg: &BlockRegistry, dx: f32) {
+    if dx == 0.0 {
+        return;
+    }
+    let new_x = game.pos.x + dx;
+    let y0 = (game.pos.y / TILE_SIZE).floor() as i32;
+    let y1 = ((game.pos.y + PLAYER_H - EPS) / TILE_SIZE).floor() as i32;
+    if dx > 0.0 {
+        let tx = ((new_x + PLAYER_W - EPS) / TILE_SIZE).floor() as i32;
+        if column_solid(game, reg, tx, y0, y1) {
+            game.pos.x = tx as f32 * TILE_SIZE - PLAYER_W;
+            game.vel.x = 0.0;
+            return;
+        }
+    } else {
+        let tx = (new_x / TILE_SIZE).floor() as i32;
+        if column_solid(game, reg, tx, y0, y1) {
+            game.pos.x = (tx + 1) as f32 * TILE_SIZE;
+            game.vel.x = 0.0;
+            return;
+        }
+    }
+    game.pos.x = new_x;
+}
+
+/// Returns whether the player is resting on the ground after the move.
+fn move_y(game: &mut GameState, reg: &BlockRegistry, dy: f32) -> bool {
+    if dy == 0.0 {
+        return game.on_ground;
+    }
+    let new_y = game.pos.y + dy;
+    let x0 = (game.pos.x / TILE_SIZE).floor() as i32;
+    let x1 = ((game.pos.x + PLAYER_W - EPS) / TILE_SIZE).floor() as i32;
+    if dy > 0.0 {
+        let ty = ((new_y + PLAYER_H - EPS) / TILE_SIZE).floor() as i32;
+        if row_solid(game, reg, ty, x0, x1) {
+            game.pos.y = ty as f32 * TILE_SIZE - PLAYER_H;
+            game.vel.y = 0.0;
+            return true;
+        }
+    } else {
+        let ty = (new_y / TILE_SIZE).floor() as i32;
+        if row_solid(game, reg, ty, x0, x1) {
+            game.pos.y = (ty + 1) as f32 * TILE_SIZE;
+            game.vel.y = 0.0;
+            return false;
+        }
+    }
+    game.pos.y = new_y;
+    false
+}
+
+fn column_solid(game: &GameState, reg: &BlockRegistry, tx: i32, y0: i32, y1: i32) -> bool {
+    (y0..=y1).any(|ty| reg.is_solid(game.world.get_block(tx, ty)))
+}
+
+fn row_solid(game: &GameState, reg: &BlockRegistry, ty: i32, x0: i32, x1: i32) -> bool {
+    (x0..=x1).any(|tx| reg.is_solid(game.world.get_block(tx, ty)))
+}
+
+fn request_chunks(game: &mut GameState, gfx: Option<&Gfx>, net: Option<&NetHandle>) {
+    let (Some(gfx), Some(net)) = (gfx, net) else {
+        return;
+    };
+    let view_w = gfx.size.width.max(1) as f32 / ZOOM;
+    let view_h = gfx.size.height.max(1) as f32 / ZOOM;
+    let center = game.pos + Vec2::new(PLAYER_W * 0.5, PLAYER_H * 0.5);
+    let min = center - Vec2::new(view_w * 0.5, view_h * 0.5);
+    let max = center + Vec2::new(view_w * 0.5, view_h * 0.5);
+
+    let (cmin, _) = to_chunk(
+        (min.x / TILE_SIZE).floor() as i32,
+        (min.y / TILE_SIZE).floor() as i32,
+    );
+    let (cmax, _) = to_chunk(
+        (max.x / TILE_SIZE).ceil() as i32,
+        (max.y / TILE_SIZE).ceil() as i32,
+    );
+
+    for cy in (cmin.1 - CHUNK_MARGIN)..=(cmax.1 + CHUNK_MARGIN) {
+        for cx in (cmin.0 - CHUNK_MARGIN)..=(cmax.0 + CHUNK_MARGIN) {
+            if cy < 0 || cy * CHUNK_SIZE >= WORLD_HEIGHT {
+                continue;
+            }
+            if game.requested.insert((cx, cy)) {
+                let _ = net.commands.send(NetCommand::RequestChunk { cx, cy });
+            }
+        }
+    }
+}
+
+fn handle_block_actions(
+    game: &mut GameState,
+    reg: &BlockRegistry,
+    input: &Input,
+    gfx: Option<&Gfx>,
+    net: Option<&NetHandle>,
+    dt: f32,
+) {
+    game.action_timer -= dt;
+    if !(input.breaking || input.placing) {
+        game.action_timer = 0.0;
+        return;
+    }
+    if game.action_timer > 0.0 {
+        return;
+    }
+    let (Some(gfx), Some(net)) = (gfx, net) else {
+        return;
+    };
+
+    // Mouse (physical px) -> world cell.
+    let view_w = gfx.size.width.max(1) as f32 / ZOOM;
+    let view_h = gfx.size.height.max(1) as f32 / ZOOM;
+    let center = game.pos + Vec2::new(PLAYER_W * 0.5, PLAYER_H * 0.5);
+    let offset = center - Vec2::new(view_w * 0.5, view_h * 0.5);
+    let world = offset + Vec2::new(input.mouse.0 / ZOOM, input.mouse.1 / ZOOM);
+    let tx = (world.x / TILE_SIZE).floor() as i32;
+    let ty = (world.y / TILE_SIZE).floor() as i32;
+
+    if ty < 0 || ty >= WORLD_HEIGHT {
+        return;
+    }
+
+    let current = game.world.get_block(tx, ty);
+    if input.breaking {
+        if current != AIR {
+            game.world.set_block(tx, ty, AIR);
+            let _ = net.commands.send(NetCommand::SetBlock {
+                x: tx,
+                y: ty,
+                block: AIR,
+            });
+            game.action_timer = ACTION_COOLDOWN;
+        }
+    } else if input.placing && current == AIR && !overlaps_player(game, tx, ty) {
+        let block = game.selected;
+        let _ = reg; // reserved for future placement rules
+        game.world.set_block(tx, ty, block);
+        let _ = net.commands.send(NetCommand::SetBlock {
+            x: tx,
+            y: ty,
+            block,
+        });
+        game.action_timer = ACTION_COOLDOWN;
+    }
+}
+
+fn overlaps_player(game: &GameState, tx: i32, ty: i32) -> bool {
+    let bx0 = tx as f32 * TILE_SIZE;
+    let by0 = ty as f32 * TILE_SIZE;
+    let bx1 = bx0 + TILE_SIZE;
+    let by1 = by0 + TILE_SIZE;
+    let px0 = game.pos.x;
+    let py0 = game.pos.y;
+    let px1 = px0 + PLAYER_W;
+    let py1 = py0 + PLAYER_H;
+    px0 < bx1 && px1 > bx0 && py0 < by1 && py1 > by0
+}
+
+// --- winit application handler -------------------------------------------
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        let attrs = Window::default_attributes()
+            .with_title("Survival Cubed")
+            .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
+        let window = match event_loop.create_window(attrs) {
+            Ok(w) => Arc::new(w),
+            Err(e) => {
+                log::error!("failed to create window: {e}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let gfx = match pollster::block_on(Gfx::new(window.clone(), &self.atlas)) {
+            Ok(g) => g,
+            Err(e) => {
+                log::error!("failed to init graphics: {e:#}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let egui_state = egui_winit::State::new(
+            self.egui_ctx.clone(),
+            egui::ViewportId::ROOT,
+            window.as_ref(),
+            Some(window.scale_factor() as f32),
+            None,
+            None,
+        );
+
+        self.window = Some(window);
+        self.gfx = Some(gfx);
+        self.egui_state = Some(egui_state);
+        self.last_frame = Instant::now();
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        // Let egui consume the event first.
+        if let (Some(state), Some(window)) = (self.egui_state.as_mut(), self.window.as_ref()) {
+            let _ = state.on_window_event(window, &event);
+        }
+
+        let wants_kb = self.egui_ctx.egui_wants_keyboard_input();
+        let wants_pointer = self.egui_ctx.egui_wants_pointer_input();
+
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(size) => {
+                if let Some(gfx) = self.gfx.as_mut() {
+                    gfx.resize(size);
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.input.mouse = (position.x as f32, position.y as f32);
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let pressed = state == ElementState::Pressed;
+                if pressed && wants_pointer {
+                    // Click landed on egui; ignore for world interaction.
+                } else {
+                    match button {
+                        MouseButton::Left => self.input.breaking = pressed,
+                        MouseButton::Right => self.input.placing = pressed,
+                        _ => {}
+                    }
+                }
+                if !pressed {
+                    // Always clear on release so buttons can't get stuck.
+                    match button {
+                        MouseButton::Left => self.input.breaking = false,
+                        MouseButton::Right => self.input.placing = false,
+                        _ => {}
+                    }
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                let pressed = event.state == ElementState::Pressed;
+                if let PhysicalKey::Code(code) = event.physical_key {
+                    if wants_kb {
+                        // Typing into a text field; don't drive the player.
+                        self.input.left = false;
+                        self.input.right = false;
+                        self.input.jump = false;
+                    } else {
+                        self.handle_key(code, pressed);
+                    }
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                let now = Instant::now();
+                let dt = (now - self.last_frame).as_secs_f32().min(0.05);
+                self.last_frame = now;
+                self.anim_time += dt;
+
+                self.poll_net();
+                self.update(dt);
+                self.render_frame();
+            }
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+}
+
+impl App {
+    fn handle_key(&mut self, code: KeyCode, pressed: bool) {
+        match code {
+            KeyCode::KeyA | KeyCode::ArrowLeft => self.input.left = pressed,
+            KeyCode::KeyD | KeyCode::ArrowRight => self.input.right = pressed,
+            KeyCode::Space | KeyCode::KeyW | KeyCode::ArrowUp => self.input.jump = pressed,
+            KeyCode::Digit1 if pressed => self.select(STONE),
+            KeyCode::Digit2 if pressed => self.select(DIRT),
+            KeyCode::Digit3 if pressed => self.select(GRASS),
+            KeyCode::Escape if pressed => self.leave(),
+            _ => {}
+        }
+    }
+
+    fn select(&mut self, block: BlockId) {
+        if let Some(g) = &mut self.game {
+            g.selected = block;
+        }
+    }
+}

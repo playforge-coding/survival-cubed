@@ -1,0 +1,314 @@
+//! Client-side networking: a background tokio thread driving a quinn
+//! connection, plus the trust-on-first-use certificate verifier.
+//!
+//! The main (winit) thread talks to this thread over channels: it reads
+//! [`NetEvent`]s and sends [`NetCommand`]s. When the server presents an
+//! unknown certificate, the verifier emits [`NetEvent::TofuPrompt`] and blocks
+//! its handshake until the UI sends back a decision.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use crossbeam_channel::{Receiver, Sender};
+use parking_lot::Mutex;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::crypto::WebPkiSupportedAlgorithms;
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, SignatureScheme};
+
+use crate::entity::{Entity, EntityId};
+use crate::net::{KnownHosts, fingerprint, fingerprint_hex, read_msg, write_msg};
+use crate::protocol::{ALPN, BlockId, ClientMessage, ServerMessage};
+
+/// Events flowing from the network thread to the UI.
+pub enum NetEvent {
+    /// Server certificate is unknown; ask the user. Reply via `respond`.
+    TofuPrompt {
+        host: String,
+        fingerprint: String,
+        respond: Sender<bool>,
+    },
+    /// Handshake + welcome complete.
+    Connected {
+        entity_id: EntityId,
+        spawn_x: f32,
+        spawn_y: f32,
+    },
+    Chunk {
+        cx: i32,
+        cy: i32,
+        blocks: Vec<BlockId>,
+    },
+    BlockUpdate {
+        x: i32,
+        y: i32,
+        block: BlockId,
+    },
+    EntitySpawn {
+        entity: Entity,
+    },
+    EntityMoved {
+        id: EntityId,
+        x: f32,
+        y: f32,
+        vx: f32,
+        vy: f32,
+    },
+    EntityDespawn {
+        id: EntityId,
+    },
+    /// Connection closed (or never established). `reason` is human-readable.
+    Disconnected {
+        reason: String,
+    },
+}
+
+/// Commands flowing from the UI to the network thread.
+pub enum NetCommand {
+    SetBlock { x: i32, y: i32, block: BlockId },
+    PlayerMove { x: f32, y: f32 },
+    RequestChunk { cx: i32, cy: i32 },
+    Disconnect,
+}
+
+/// The UI's handle to a network connection.
+pub struct NetHandle {
+    pub events: Receiver<NetEvent>,
+    pub commands: tokio::sync::mpsc::UnboundedSender<NetCommand>,
+}
+
+/// Connect to `addr`. `host_label` keys the `known_hosts` store and is shown in
+/// prompts. `trust`, if set, is a fingerprint to silently accept (used by the
+/// embedded singleplayer server).
+pub fn connect(addr: SocketAddr, host_label: String, trust: Option<[u8; 32]>) -> NetHandle {
+    let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<NetEvent>();
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<NetCommand>();
+
+    let ev_for_thread = ev_tx.clone();
+    std::thread::Builder::new()
+        .name("game-net".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    let _ = ev_for_thread.send(NetEvent::Disconnected {
+                        reason: format!("runtime error: {e}"),
+                    });
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                if let Err(e) = client_main(addr, host_label, trust, &ev_for_thread, cmd_rx).await {
+                    let _ = ev_for_thread.send(NetEvent::Disconnected {
+                        reason: format!("{e:#}"),
+                    });
+                }
+            });
+        })
+        .expect("spawn net thread");
+
+    NetHandle {
+        events: ev_rx,
+        commands: cmd_tx,
+    }
+}
+
+async fn client_main(
+    addr: SocketAddr,
+    host_label: String,
+    trust: Option<[u8; 32]>,
+    ev_tx: &Sender<NetEvent>,
+    mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<NetCommand>,
+) -> anyhow::Result<()> {
+    let verifier = Arc::new(TofuVerifier::new(host_label, trust, ev_tx.clone()));
+
+    let mut crypto = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+    crypto.alpn_protocols = vec![ALPN.to_vec()];
+
+    let qcc = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)?;
+    let client_config = quinn::ClientConfig::new(Arc::new(qcc));
+
+    let mut endpoint = quinn::Endpoint::client(SocketAddr::from(([0, 0, 0, 0], 0)))?;
+    endpoint.set_default_client_config(client_config);
+
+    let connection = endpoint.connect(addr, "localhost")?.await?;
+    let (mut send, mut recv) = connection.open_bi().await?;
+
+    write_msg(
+        &mut send,
+        &ClientMessage::Hello {
+            name: "player".to_string(),
+        },
+    )
+    .await?;
+
+    loop {
+        tokio::select! {
+            msg = read_msg::<ServerMessage>(&mut recv) => {
+                let msg = msg?;
+                if dispatch(msg, ev_tx).is_break() {
+                    break;
+                }
+            }
+            cmd = cmd_rx.recv() => {
+                match cmd {
+                    Some(NetCommand::Disconnect) | None => {
+                        let _ = send.finish();
+                        connection.close(0u32.into(), b"bye");
+                        break;
+                    }
+                    Some(cmd) => {
+                        write_msg(&mut send, &to_client_message(cmd)).await?;
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = ev_tx.send(NetEvent::Disconnected {
+        reason: "connection closed".to_string(),
+    });
+    Ok(())
+}
+
+fn to_client_message(cmd: NetCommand) -> ClientMessage {
+    match cmd {
+        NetCommand::SetBlock { x, y, block } => ClientMessage::SetBlock { x, y, block },
+        NetCommand::PlayerMove { x, y } => ClientMessage::PlayerMove { x, y },
+        NetCommand::RequestChunk { cx, cy } => ClientMessage::RequestChunk { cx, cy },
+        NetCommand::Disconnect => unreachable!("handled before conversion"),
+    }
+}
+
+fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFlow<()> {
+    let ev = match msg {
+        ServerMessage::Welcome {
+            entity_id,
+            spawn_x,
+            spawn_y,
+        } => NetEvent::Connected {
+            entity_id,
+            spawn_x,
+            spawn_y,
+        },
+        ServerMessage::Chunk { cx, cy, blocks } => NetEvent::Chunk { cx, cy, blocks },
+        ServerMessage::BlockUpdate { x, y, block } => NetEvent::BlockUpdate { x, y, block },
+        ServerMessage::EntitySpawn { entity } => NetEvent::EntitySpawn { entity },
+        ServerMessage::EntityMoved { id, x, y, vx, vy } => {
+            NetEvent::EntityMoved { id, x, y, vx, vy }
+        }
+        ServerMessage::EntityDespawn { id } => NetEvent::EntityDespawn { id },
+    };
+    if ev_tx.send(ev).is_err() {
+        std::ops::ControlFlow::Break(())
+    } else {
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
+// --- TOFU certificate verifier -------------------------------------------
+
+struct TofuVerifier {
+    host: String,
+    trust: Option<[u8; 32]>,
+    known: Mutex<KnownHosts>,
+    prompt_tx: Sender<NetEvent>,
+    algs: WebPkiSupportedAlgorithms,
+}
+
+impl TofuVerifier {
+    fn new(host: String, trust: Option<[u8; 32]>, prompt_tx: Sender<NetEvent>) -> Self {
+        TofuVerifier {
+            host,
+            trust,
+            known: Mutex::new(KnownHosts::load()),
+            prompt_tx,
+            algs: rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        }
+    }
+}
+
+impl std::fmt::Debug for TofuVerifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TofuVerifier")
+            .field("host", &self.host)
+            .finish()
+    }
+}
+
+impl ServerCertVerifier for TofuVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        let fp = fingerprint(end_entity.as_ref());
+
+        // Embedded / pre-trusted fingerprint: accept silently.
+        if let Some(trusted) = self.trust {
+            if trusted == fp {
+                return Ok(ServerCertVerified::assertion());
+            }
+        }
+
+        // Previously accepted host: compare against the pinned fingerprint.
+        if let Some(known) = self.known.lock().get(&self.host).copied() {
+            return if known == fp {
+                Ok(ServerCertVerified::assertion())
+            } else {
+                Err(rustls::Error::General(format!(
+                    "REMOTE HOST CERTIFICATE CHANGED for {} (possible MITM); refusing to connect",
+                    self.host
+                )))
+            };
+        }
+
+        // Unknown host: ask the user (SSH-style TOFU prompt).
+        let (resp_tx, resp_rx) = crossbeam_channel::bounded(1);
+        let _ = self.prompt_tx.send(NetEvent::TofuPrompt {
+            host: self.host.clone(),
+            fingerprint: fingerprint_hex(&fp),
+            respond: resp_tx,
+        });
+        match resp_rx.recv() {
+            Ok(true) => {
+                let _ = self.known.lock().add_and_save(&self.host, fp);
+                Ok(ServerCertVerified::assertion())
+            }
+            _ => Err(rustls::Error::General(
+                "certificate rejected by user".to_string(),
+            )),
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.algs)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.algs)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.algs.supported_schemes()
+    }
+}

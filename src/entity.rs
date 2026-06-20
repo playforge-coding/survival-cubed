@@ -1,0 +1,120 @@
+//! Entities: anything that lives in the world but isn't a block.
+//!
+//! Blocks are static cells on the world grid; entities are free-moving objects
+//! addressed by a unique [`EntityId`] and positioned in pixel/world space. Both
+//! client and server share these types so an entity can be described once and
+//! sent over the wire (see [`crate::protocol`]).
+//!
+//! The player is "just" an entity — see [`EntityKind::Player`] — but a *special*
+//! one: its position is authoritative from the client that owns it and the
+//! server never runs AI on it. Every other kind (e.g. [`EntityKind::Slime`])
+//! is simulated by the server's tick loop. That distinction is the whole point
+//! of [`EntityKind::is_player`].
+
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+
+/// Unique identifier of a live entity. Allocated by the server; `0` is never
+/// used so it can double as "no entity".
+pub type EntityId = u32;
+
+/// Collision/draw size (width, height) in pixels of a player avatar.
+pub const PLAYER_SIZE: (f32, f32) = (16.0, 32.0);
+/// Collision/draw size (width, height) in pixels of a slime.
+pub const SLIME_SIZE: (f32, f32) = (12.0, 12.0);
+
+/// What an entity *is*. Adding a new creature/object means adding a variant
+/// here plus (for server-simulated kinds) a branch in the server tick loop.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum EntityKind {
+    /// A player avatar driven by a connected client. Special: client-authoritative
+    /// position, never touched by server AI. Carries the player's display name.
+    Player { name: String },
+    /// A small creature that wanders the surface. Server-simulated.
+    Slime,
+}
+
+impl EntityKind {
+    /// Draw/collision size (width, height) in pixels for this kind.
+    pub fn size(&self) -> (f32, f32) {
+        match self {
+            EntityKind::Player { .. } => PLAYER_SIZE,
+            EntityKind::Slime => SLIME_SIZE,
+        }
+    }
+
+    /// Whether this is a player avatar (the "special" entity the owning client
+    /// simulates itself).
+    pub fn is_player(&self) -> bool {
+        matches!(self, EntityKind::Player { .. })
+    }
+}
+
+/// A live entity: its identity, kind, and current motion state. Position is the
+/// top-left corner in world pixels, matching how the player and tiles are drawn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Entity {
+    pub id: EntityId,
+    pub kind: EntityKind,
+    pub x: f32,
+    pub y: f32,
+    pub vx: f32,
+    pub vy: f32,
+}
+
+impl Entity {
+    /// Create an entity at rest at `(x, y)`.
+    pub fn new(id: EntityId, kind: EntityKind, x: f32, y: f32) -> Self {
+        Entity {
+            id,
+            kind,
+            x,
+            y,
+            vx: 0.0,
+            vy: 0.0,
+        }
+    }
+
+    /// Draw/collision size (width, height) in pixels.
+    pub fn size(&self) -> (f32, f32) {
+        self.kind.size()
+    }
+}
+
+/// A live collection of entities keyed by id. Used by the server (the
+/// authority) and mirrored on each client for everything *except* its own
+/// player avatar, which the client simulates locally.
+#[derive(Default)]
+pub struct Entities {
+    map: HashMap<EntityId, Entity>,
+}
+
+impl Entities {
+    pub fn new() -> Self {
+        Entities {
+            map: HashMap::new(),
+        }
+    }
+
+    pub fn insert(&mut self, entity: Entity) {
+        self.map.insert(entity.id, entity);
+    }
+
+    pub fn remove(&mut self, id: EntityId) -> Option<Entity> {
+        self.map.remove(&id)
+    }
+
+    pub fn get_mut(&mut self, id: EntityId) -> Option<&mut Entity> {
+        self.map.get_mut(&id)
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &Entity> {
+        self.map.values()
+    }
+
+    /// Number of player entities currently present.
+    pub fn player_count(&self) -> usize {
+        self.map.values().filter(|e| e.kind.is_player()).count()
+    }
+}
