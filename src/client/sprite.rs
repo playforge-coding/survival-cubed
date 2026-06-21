@@ -56,9 +56,19 @@ pub static CHICKEN_SPRITE: SpriteDef = SpriteDef {
     default: chicken_tex,
 };
 
+/// Goat: a stocky mountain grazer that ambles along on four legs.
+pub static GOAT_SPRITE: SpriteDef = SpriteDef {
+    name: "goat",
+    frame_w: 16,
+    frame_h: 16,
+    frames: 4,
+    fps: 6.0,
+    default: goat_tex,
+};
+
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 3] {
-    [&PLAYER_SPRITE, &SLIME_SPRITE, &CHICKEN_SPRITE]
+pub fn all() -> [&'static SpriteDef; 4] {
+    [&PLAYER_SPRITE, &SLIME_SPRITE, &CHICKEN_SPRITE, &GOAT_SPRITE]
 }
 
 /// The sprite to draw for a given entity kind.
@@ -67,6 +77,7 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         EntityKind::Player { .. } => &PLAYER_SPRITE,
         EntityKind::Slime => &SLIME_SPRITE,
         EntityKind::Chicken => &CHICKEN_SPRITE,
+        EntityKind::Goat => &GOAT_SPRITE,
         // Dropped items are drawn from their block texture, not an animation
         // sheet (see the client's scene builder), so this is never queried for
         // them; fall back to the slime sheet to keep the match total.
@@ -187,6 +198,50 @@ fn chicken_tex(frame: u32, x: u32, y: u32) -> [u8; 4] {
         let right = 7 - stride;
         if xi == left || xi == right {
             return LEG;
+        }
+    }
+    TRANS
+}
+
+fn goat_tex(frame: u32, x: u32, y: u32) -> [u8; 4] {
+    const TRANS: [u8; 4] = [0, 0, 0, 0];
+    const BODY: [u8; 4] = [190, 185, 175, 255];
+    const DARK: [u8; 4] = [150, 145, 135, 255];
+    const HORN: [u8; 4] = [110, 100, 85, 255];
+    const HOOF: [u8; 4] = [70, 65, 60, 255];
+    const EYE: [u8; 4] = [25, 25, 30, 255];
+    let (xi, yi) = (x as i32, y as i32);
+
+    // Four legs stride in two pairs so it reads as an amble.
+    let stride = [0i32, 1, 0, -1][(frame % 4) as usize];
+
+    // Curled horns sweeping back over the head (front of the goat is the left).
+    if yi == 3 && (xi == 3 || xi == 4) {
+        return HORN;
+    }
+    // Head/snout block at the front-left.
+    if (4..9).contains(&yi) && (1..5).contains(&xi) {
+        if yi == 5 && xi == 3 {
+            return EYE;
+        }
+        return BODY;
+    }
+    // Stocky body slab.
+    if (5..11).contains(&yi) && (4..14).contains(&xi) {
+        // A little belly shading along the underside.
+        if yi >= 9 {
+            return DARK;
+        }
+        return BODY;
+    }
+    // Four legs below the body, front pair and back pair countermarching.
+    if (11..15).contains(&yi) {
+        let fl = 5 - stride;
+        let fr = 7 - stride;
+        let bl = 11 + stride;
+        let br = 13 + stride;
+        if xi == fl || xi == fr || xi == bl || xi == br {
+            return if yi >= 14 { HOOF } else { DARK };
         }
     }
     TRANS

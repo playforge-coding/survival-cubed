@@ -27,6 +27,8 @@ pub const PLAYER_SIZE: (f32, f32) = (16.0, 32.0);
 pub const SLIME_SIZE: (f32, f32) = (12.0, 12.0);
 /// Collision/draw size (width, height) in pixels of a chicken.
 pub const CHICKEN_SIZE: (f32, f32) = (12.0, 14.0);
+/// Collision/draw size (width, height) in pixels of a goat.
+pub const GOAT_SIZE: (f32, f32) = (16.0, 16.0);
 /// Collision/draw size (width, height) in pixels of a dropped block item.
 pub const ITEM_SIZE: (f32, f32) = (8.0, 8.0);
 
@@ -36,6 +38,8 @@ pub const PLAYER_MAX_HEALTH: i32 = 20;
 pub const SLIME_MAX_HEALTH: i32 = 10;
 /// Maximum health of a chicken, in hit points.
 pub const CHICKEN_MAX_HEALTH: i32 = 8;
+/// Maximum health of a goat, in hit points. Sturdier than the surface critters.
+pub const GOAT_MAX_HEALTH: i32 = 16;
 
 /// What an entity *is*. Adding a new creature/object means adding a variant
 /// here plus (for server-simulated kinds) a branch in the server tick loop.
@@ -49,6 +53,9 @@ pub enum EntityKind {
     /// A harmless bird that pecks around the surface and bolts away from a
     /// player that hits it. Server-simulated.
     Chicken,
+    /// A sturdy mountain grazer that calmly roams the stone slopes. Native to
+    /// the mountains biome. Server-simulated.
+    Goat,
     /// A block lying on the ground after being mined, waiting to be walked into
     /// and picked up. Server-simulated (falls under gravity); carries the block
     /// id it will add to a player's inventory on pickup.
@@ -62,6 +69,7 @@ impl EntityKind {
             EntityKind::Player { .. } => PLAYER_SIZE,
             EntityKind::Slime => SLIME_SIZE,
             EntityKind::Chicken => CHICKEN_SIZE,
+            EntityKind::Goat => GOAT_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -85,6 +93,7 @@ impl EntityKind {
             EntityKind::Player { .. } => PLAYER_MAX_HEALTH,
             EntityKind::Slime => SLIME_MAX_HEALTH,
             EntityKind::Chicken => CHICKEN_MAX_HEALTH,
+            EntityKind::Goat => GOAT_MAX_HEALTH,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }

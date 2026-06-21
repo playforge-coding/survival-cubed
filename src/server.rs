@@ -22,30 +22,31 @@ use tokio::sync::mpsc;
 
 use crate::block::BlockRegistry;
 use crate::daylight;
-use crate::entity::{
-    CHICKEN_SIZE, Entities, Entity, EntityId, EntityKind, ITEM_SIZE, PLAYER_SIZE, SLIME_SIZE,
-};
+use crate::entity::{Entities, Entity, EntityId, EntityKind, ITEM_SIZE, PLAYER_SIZE};
 use crate::inventory::Inventory;
 use crate::net::{fingerprint, read_msg, write_msg};
 use crate::protocol::{ALPN, BlockId, ClientMessage, ServerMessage};
 use crate::save::{SavedPlayer, WorldMeta, WorldStore};
 use crate::world::{CHUNK_AREA, CHUNK_SIZE, ChunkCoord, TILE_SIZE, World};
-use crate::worldgen::{WorldGen, spawn_point};
+use crate::worldgen::{Biome, WorldGen, spawn_point};
 
 /// How often the server simulates non-player entities, in seconds.
 const TICK_DT: f32 = 0.05;
 /// Horizontal wander speed of a slime, in pixels/second.
 const SLIME_SPEED: f32 = 30.0;
-/// How many slimes to spawn near the world origin at startup.
-const SLIME_COUNT: i32 = 4;
 /// Leisurely wander speed of a chicken, in pixels/second.
 const CHICKEN_WANDER_SPEED: f32 = 22.0;
 /// Panicked run speed of a chicken fleeing a player, in pixels/second.
 const CHICKEN_FLEE_SPEED: f32 = 70.0;
-/// How many chickens to spawn near the world origin at startup.
-const CHICKEN_COUNT: i32 = 4;
 /// Seconds a chicken keeps bolting after being hit before settling down.
 const CHICKEN_FLEE_TIME: f32 = 4.0;
+/// Unhurried wander speed of a goat, in pixels/second.
+const GOAT_SPEED: f32 = 18.0;
+/// How many spawn slots to scatter around the origin at world start. Each slot
+/// spawns whatever creature its biome supports.
+const SPAWN_SLOTS: i32 = 12;
+/// Cell spacing between adjacent creature spawn slots.
+const SPAWN_SPACING: i32 = 7;
 /// Downward acceleration applied to simulated entities, in pixels/second².
 const GRAVITY: f32 = 1400.0;
 /// Terminal fall speed for simulated entities, in pixels/second.
@@ -208,6 +209,12 @@ impl ServerWorld {
     /// entities when they first spawn.
     fn surface(&self, world_x: i32) -> i32 {
         self.generator.surface_height(world_x)
+    }
+
+    /// Which biome a world column belongs to, used to spawn the right creatures
+    /// for the terrain a column sits in.
+    fn biome(&self, world_x: i32) -> Biome {
+        self.generator.biome_at(world_x)
     }
 
     /// Whether the block at world cell `(tx, ty)` collides with entities,
@@ -558,8 +565,7 @@ fn build_endpoint(
 
     // Only seed fresh creatures for a brand-new world; a loaded one keeps its own.
     if saved.is_none() {
-        spawn_slimes(&shared);
-        spawn_chickens(&shared);
+        spawn_creatures(&shared);
     }
 
     Ok((endpoint, fp, shared))
@@ -579,34 +585,33 @@ async fn accept_loop(ctx: AcceptCtx) {
     }
 }
 
-/// Populate the world with a handful of wandering slimes near the origin.
-fn spawn_slimes(shared: &Shared) {
-    let (_, h) = SLIME_SIZE;
+/// Populate the world with biome-appropriate creatures scattered around the
+/// origin: chickens roam the plains, while slimes and goats inhabit the
+/// mountains. Each spawn slot looks up its column's biome and spawns whatever
+/// belongs there.
+fn spawn_creatures(shared: &Shared) {
     let world = shared.world.lock();
     let mut entities = shared.entities.lock();
-    for i in 0..SLIME_COUNT {
-        let cell_x = (i - SLIME_COUNT / 2) * 6;
+    for i in 0..SPAWN_SLOTS {
+        let cell_x = (i - SPAWN_SLOTS / 2) * SPAWN_SPACING;
+        let kind = match world.biome(cell_x) {
+            // Plains: peaceful chickens.
+            Biome::Plains => EntityKind::Chicken,
+            // Mountains: hostile slimes interspersed with placid goats.
+            Biome::Mountains => {
+                if i % 2 == 0 {
+                    EntityKind::Slime
+                } else {
+                    EntityKind::Goat
+                }
+            }
+        };
+        let (_, h) = kind.size();
         let surface = world.surface(cell_x);
         let id = shared.alloc_id();
         let x = cell_x as f32 * TILE_SIZE;
         let y = surface as f32 * TILE_SIZE - h;
-        entities.insert(Entity::new(id, EntityKind::Slime, x, y));
-    }
-}
-
-/// Populate the world with a handful of chickens near the origin, offset from
-/// the slimes so the two flocks don't all stack on the same columns.
-fn spawn_chickens(shared: &Shared) {
-    let (_, h) = CHICKEN_SIZE;
-    let world = shared.world.lock();
-    let mut entities = shared.entities.lock();
-    for i in 0..CHICKEN_COUNT {
-        let cell_x = (i - CHICKEN_COUNT / 2) * 6 + 3;
-        let surface = world.surface(cell_x);
-        let id = shared.alloc_id();
-        let x = cell_x as f32 * TILE_SIZE;
-        let y = surface as f32 * TILE_SIZE - h;
-        entities.insert(Entity::new(id, EntityKind::Chicken, x, y));
+        entities.insert(Entity::new(id, kind, x, y));
     }
 }
 
@@ -713,6 +718,11 @@ fn step_entities(shared: &Shared) -> Step {
     let chicken_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::Chicken))
+        .map(|e| e.id)
+        .collect();
+    let goat_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Goat))
         .map(|e| e.id)
         .collect();
     let item_ids: Vec<EntityId> = entities
@@ -824,6 +834,30 @@ fn step_entities(shared: &Shared) -> Step {
         };
 
         let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, speed, fleeing);
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: m.vx,
+            vy: m.vy,
+        });
+    }
+
+    // Goats: calm grazers that simply amble around their home patch of mountain,
+    // negotiating one-block steps and turning back at walls and ledges.
+    for id in goat_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        let scx = e.x + w * 0.5;
+        let home = *e.home_x.get_or_insert(e.x);
+        let dir = wander_dir(scx, e.vx, home);
+        let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, GOAT_SPEED, false);
         e.x = m.x;
         e.y = m.y;
         e.vx = m.vx;
