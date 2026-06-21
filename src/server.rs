@@ -93,7 +93,7 @@ const SLIME_ATTACK_INTERVAL: f32 = 1.0;
 /// Damage the player's melee swing deals.
 const PLAYER_ATTACK_DAMAGE: i32 = 4;
 /// Player melee reach (max gap, px, between attacker and target AABBs).
-const PLAYER_ATTACK_REACH: f32 = 12.0;
+const PLAYER_ATTACK_REACH: f32 = 80.0;
 /// Horizontal knockback speed (px/s) shoved onto whatever a hit lands on, away
 /// from the attacker.
 const KNOCKBACK_X: f32 = 180.0;

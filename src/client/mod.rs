@@ -49,7 +49,7 @@ const SAFE_FALL_TILES: f32 = 10.0;
 /// Hit points lost per tile fallen beyond [`SAFE_FALL_TILES`].
 const FALL_DAMAGE_PER_TILE: f32 = 1.0;
 /// Max gap (px between AABBs) at which the player can melee a creature.
-const PLAYER_ATTACK_REACH: f32 = 12.0;
+const PLAYER_ATTACK_REACH: f32 = 80.0;
 /// Seconds an entity tints red after taking a hit.
 const HIT_FLASH_TIME: f32 = 0.25;
 /// Exponential decay rate (per second) of the player's horizontal knockback, so
