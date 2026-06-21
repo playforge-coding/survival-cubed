@@ -50,6 +50,9 @@ const CHICKEN_FLEE_TIME: f32 = 4.0;
 const GRAVITY: f32 = 1400.0;
 /// Terminal fall speed for simulated entities, in pixels/second.
 const MAX_FALL: f32 = 900.0;
+/// How far (px) a wandering creature strays from its home anchor before turning
+/// back, keeping it loitering in a general area instead of marching off forever.
+const WANDER_RANGE: f32 = 90.0;
 /// Upward velocity (px/s) a ground creature uses to hop a single-block step in
 /// its path. Tuned to clear one tile (16px) but not two, so creatures climb
 /// gentle terrain without scaling walls.
@@ -730,6 +733,7 @@ fn step_entities(shared: &Shared) -> Step {
         };
         let (w, h) = e.size();
         e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let home = *e.home_x.get_or_insert(e.x);
 
         // At night, lock onto the nearest player within aggro range.
         let scx = e.x + w * 0.5;
@@ -741,13 +745,12 @@ fn step_entities(shared: &Shared) -> Step {
         };
         let chasing = target.is_some();
 
-        // Heading: toward the target when chasing, else continue patrolling in
-        // its current direction (spawn — vx == 0 — starts rightward).
+        // Heading: toward the target when chasing, else wander within its home
+        // range (turning back once it strays too far).
         let dir = match target {
             Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -1.0,
             Some(_) => 1.0,
-            None if e.vx < 0.0 => -1.0,
-            None => 1.0,
+            None => wander_dir(scx, e.vx, home),
         };
 
         // A chasing slime commits to the chase (over ledges and cliffs); a
@@ -795,19 +798,24 @@ fn step_entities(shared: &Shared) -> Step {
         e.flee = (e.flee - TICK_DT).max(0.0);
         let fleeing = e.flee > 0.0;
         let scx = e.x + w * 0.5;
+        let home = *e.home_x.get_or_insert(e.x);
 
         let dir = if fleeing {
-            // Run directly away from the nearest player (any distance).
-            match nearest_player(&players, scx, e.y + h * 0.5, f32::INFINITY) {
+            // Run away from the nearest player, but if an unclimbable wall blocks
+            // that escape, veer the other way instead of running into it.
+            let away = match nearest_player(&players, scx, e.y + h * 0.5, f32::INFINITY) {
                 Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => 1.0,
                 Some(_) => -1.0,
                 None if e.vx < 0.0 => -1.0,
                 None => 1.0,
+            };
+            if blocked_ahead(&mut world, e.x, e.y, w, h, away) {
+                -away
+            } else {
+                away
             }
-        } else if e.vx < 0.0 {
-            -1.0
         } else {
-            1.0
+            wander_dir(scx, e.vx, home)
         };
         let speed = if fleeing {
             CHICKEN_FLEE_SPEED
@@ -1076,6 +1084,33 @@ fn step_ground(
         vx,
         vy,
     }
+}
+
+/// Heading (`-1.0`/`1.0`) for a wandering creature whose center is at `center_x`:
+/// keep going the way it was, but turn back toward `home_x` once it strays past
+/// [`WANDER_RANGE`], so it loiters in one area instead of marching off.
+fn wander_dir(center_x: f32, vx: f32, home_x: f32) -> f32 {
+    if center_x > home_x + WANDER_RANGE {
+        -1.0
+    } else if center_x < home_x - WANDER_RANGE {
+        1.0
+    } else if vx < 0.0 {
+        -1.0
+    } else {
+        1.0
+    }
+}
+
+/// Whether an unclimbable wall blocks a creature trying to move in direction
+/// `dir`: a solid cell ahead at body height that a single hop can't clear. Lets
+/// a fleeing creature veer around walls instead of running headlong into them.
+fn blocked_ahead(world: &mut ServerWorld, x: f32, y: f32, w: f32, h: f32, dir: f32) -> bool {
+    let ahead = if dir > 0.0 { x + w + EPS } else { x - EPS };
+    let tx = (ahead / TILE_SIZE).floor() as i32;
+    let y0 = (y / TILE_SIZE).floor() as i32;
+    let y1 = ((y + h - EPS) / TILE_SIZE).floor() as i32;
+    let wall = (y0..=y1).any(|ty| world.solid(tx, ty));
+    wall && !can_step_up(world, x, y, w, h, dir)
 }
 
 /// Whether an entity's AABB is resting on solid ground (a solid cell directly

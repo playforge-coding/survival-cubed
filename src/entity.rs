@@ -115,6 +115,12 @@ pub struct Entity {
     /// creature runs from the nearest player. Never sent over the wire.
     #[serde(skip)]
     pub flee: f32,
+    /// Server-only: the x (world px) a wandering creature treats as the center of
+    /// its home range, so it loiters nearby instead of drifting off forever. Set
+    /// lazily to wherever the creature first simulates (`None` until then), so it
+    /// survives a reload without needing to be persisted.
+    #[serde(skip)]
+    pub home_x: Option<f32>,
 }
 
 impl Entity {
@@ -132,6 +138,7 @@ impl Entity {
             max_health,
             attack_cd: 0.0,
             flee: 0.0,
+            home_x: None,
         }
     }
 
