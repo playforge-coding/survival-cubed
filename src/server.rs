@@ -119,6 +119,9 @@ const AUTOSAVE_SECS: f32 = 30.0;
 pub struct RunningServer {
     pub addr: SocketAddr,
     pub fingerprint: [u8; 32],
+    /// The dev secret this server will accept in `Hello` to authorize dev mode.
+    /// Passed to the creator's own client so only it can use dev tools.
+    pub dev_token: u64,
     // Keeping the endpoint alive keeps the server listening; dropping it (when
     // this handle is dropped) closes the server.
     _endpoint: Endpoint,
@@ -270,8 +273,14 @@ struct Shared {
     next_id: AtomicU32,
     spawn: (f32, f32),
     /// Reference instant the day/night clock counts from. Offset back in time on
-    /// load so a resumed world keeps the time of day it was saved at.
-    start: Instant,
+    /// load so a resumed world keeps the time of day it was saved at, and movable
+    /// at runtime by dev mode's `SetTime` (hence the `Mutex`).
+    start: Mutex<Instant>,
+    /// Per-server dev secret. Handed only to the creator's in-process client (via
+    /// [`RunningServer::dev_token`]); a connection that presents it in `Hello` is
+    /// authorized for dev-mode commands. Never sent to other clients, so a remote
+    /// joiner cannot guess it and grant itself dev powers.
+    dev_token: u64,
     /// Saved state of every player who has joined, keyed by name. A player is
     /// moved out of here (into a live entity) while connected and folded back in
     /// on disconnect, so it survives both reconnects and restarts.
@@ -292,7 +301,7 @@ impl Shared {
 
     /// Current normalized time of day in `[0, 1)`.
     fn time_of_day(&self) -> f32 {
-        daylight::time_of_day(self.start.elapsed().as_secs_f32())
+        daylight::time_of_day(self.start.lock().elapsed().as_secs_f32())
     }
 
     /// Flush the whole world to disk: dirty chunks plus a fresh `world.dat`
@@ -330,7 +339,7 @@ impl Shared {
 
         let meta = WorldMeta {
             seed,
-            elapsed_secs: self.start.elapsed().as_secs_f32(),
+            elapsed_secs: self.start.lock().elapsed().as_secs_f32(),
             next_id: self.next_id.load(Ordering::SeqCst),
             spawn: self.spawn,
             entities: creatures,
@@ -430,6 +439,7 @@ pub fn start_server(bind: SocketAddr, seed: i32, save_dir: PathBuf) -> Result<Ru
         Ok((addr, fp, endpoint, shared)) => Ok(RunningServer {
             addr,
             fingerprint: fp,
+            dev_token: shared.dev_token,
             _endpoint: endpoint,
             shared,
             _discovery: None,
@@ -567,6 +577,16 @@ fn build_endpoint(
     };
     let next_id = saved.as_ref().map(|m| m.next_id.max(1)).unwrap_or(1);
 
+    // Mint a per-server dev secret from the wall clock (mixed with next_id so two
+    // servers started in the same instant still differ). It is never broadcast,
+    // so a remote client can't learn it; only the creator's in-process client is
+    // handed it via RunningServer.
+    let dev_token = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0xD157_C0DE)
+        ^ (next_id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+
     // Restore saved creatures into the live world; players go to the saved set.
     let mut entities = Entities::new();
     let mut saved_players = HashMap::new();
@@ -591,7 +611,8 @@ fn build_endpoint(
         entities: Mutex::new(entities),
         next_id: AtomicU32::new(next_id),
         spawn,
-        start,
+        start: Mutex::new(start),
+        dev_token,
         saved_players: Mutex::new(saved_players),
         inventories: Mutex::new(HashMap::new()),
         shutdown: AtomicBool::new(false),
@@ -1555,12 +1576,21 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
     shared.send_inventory(id);
     log::info!("player {id} connected");
 
+    // Whether this connection is authorized for dev-mode commands. Set only when
+    // the client presents the correct per-server dev token in `Hello`, which the
+    // creator's own client is the only one to hold.
+    let mut is_dev = false;
+
     // Reader loop.
     let read_result: Result<()> = async {
         loop {
             let msg: ClientMessage = read_msg(&mut recv).await?;
             match msg {
-                ClientMessage::Hello { name } => {
+                ClientMessage::Hello { name, dev_token } => {
+                    is_dev = dev_token == Some(shared.dev_token);
+                    if is_dev {
+                        log::info!("player {id} authorized for dev mode");
+                    }
                     log::info!("player {id} is '{name}'");
                     // If this name has saved state, move them back into it.
                     let restored = shared.saved_players.lock().remove(&name);
@@ -1757,6 +1787,38 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             shared.send_to(rid, ServerMessage::Respawn { x: rx, y: ry });
                         }
                     }
+                }
+                // --- Dev-mode commands: honored only for the authorized creator.
+                ClientMessage::SetTime { t } if is_dev => {
+                    let t = t.rem_euclid(1.0);
+                    // Rewind the clock's origin so `elapsed()` now reads `t` of a day.
+                    let elapsed = Duration::from_secs_f32(t * daylight::DAY_LENGTH_SECS);
+                    let new_start = Instant::now()
+                        .checked_sub(elapsed)
+                        .unwrap_or_else(Instant::now);
+                    *shared.start.lock() = new_start;
+                    shared.broadcast_all(ServerMessage::TimeOfDay { t });
+                }
+                ClientMessage::SpawnEntity { kind, x, y } if is_dev => {
+                    // Never let dev spawn a player avatar (those are owned by a
+                    // connection); only server-simulated creatures.
+                    if !kind.is_player() {
+                        let eid = shared.alloc_id();
+                        let entity = Entity::new(eid, kind, x, y);
+                        shared.entities.lock().insert(entity.clone());
+                        shared.broadcast_all(ServerMessage::EntitySpawn { entity });
+                    }
+                }
+                ClientMessage::DebugSetBlock { x, y, block } if is_dev => {
+                    if shared.world.lock().set(x, y, block) {
+                        shared.broadcast_all(ServerMessage::BlockUpdate { x, y, block });
+                    }
+                }
+                // Unauthorized dev commands from a non-creator are ignored.
+                ClientMessage::SetTime { .. }
+                | ClientMessage::SpawnEntity { .. }
+                | ClientMessage::DebugSetBlock { .. } => {
+                    log::debug!("ignoring dev command from unauthorized player {id}");
                 }
             }
         }

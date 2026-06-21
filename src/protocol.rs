@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::entity::{Entity, EntityId};
+use crate::entity::{Entity, EntityId, EntityKind};
 use crate::inventory::Slot;
 
 /// Identifier of a block type. `0` is always air. See [`crate::block`].
@@ -18,8 +18,14 @@ pub const ALPN: &[u8] = b"survival-cubed/0";
 /// Sent from client to server over the single bidirectional stream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
-    /// First message after the stream opens.
-    Hello { name: String },
+    /// First message after the stream opens. `dev_token` is the per-server dev
+    /// secret: present (and matching) only for the client that created/hosted the
+    /// server, which authorizes that connection for dev-mode commands. Remote
+    /// joiners send `None` and are never dev-authorized.
+    Hello {
+        name: String,
+        dev_token: Option<u64>,
+    },
     /// Ask the server for the contents of a chunk.
     RequestChunk { cx: i32, cy: i32 },
     /// Break the block at a world cell (it drops on the ground to be collected).
@@ -38,6 +44,15 @@ pub enum ClientMessage {
     /// Report fall damage the client computed from its own landing. The server
     /// is authoritative over the resulting health.
     FallDamage { amount: i32 },
+    /// Debug: jump the world clock to normalized time of day `t` in `[0, 1)`.
+    /// The server adjusts its authoritative clock and rebroadcasts the time.
+    SetTime { t: f32 },
+    /// Debug: spawn a creature of `kind` at world pixel `(x, y)`. Player kinds
+    /// are ignored by the server.
+    SpawnEntity { kind: EntityKind, x: f32, y: f32 },
+    /// Debug: set the block at a world cell directly, with no inventory cost or
+    /// adjacency requirement (used by dev mode's infinite-block placement).
+    DebugSetBlock { x: i32, y: i32, block: BlockId },
 }
 
 /// Sent from server to client over the single bidirectional stream.

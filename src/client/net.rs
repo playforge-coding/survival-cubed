@@ -16,7 +16,7 @@ use rustls::crypto::WebPkiSupportedAlgorithms;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 
-use crate::entity::{Entity, EntityId};
+use crate::entity::{Entity, EntityId, EntityKind};
 use crate::inventory::Slot;
 use crate::net::{KnownHosts, fingerprint, fingerprint_hex, read_msg, write_msg};
 use crate::protocol::{ALPN, BlockId, ClientMessage, ServerMessage};
@@ -90,13 +90,50 @@ pub enum NetEvent {
 
 /// Commands flowing from the UI to the network thread.
 pub enum NetCommand {
-    SetBlock { x: i32, y: i32, block: BlockId },
-    PlaceBlock { x: i32, y: i32, slot: u8 },
-    MoveItem { from: u8, to: u8 },
-    PlayerMove { x: f32, y: f32 },
-    RequestChunk { cx: i32, cy: i32 },
-    Attack { target: EntityId },
-    FallDamage { amount: i32 },
+    SetBlock {
+        x: i32,
+        y: i32,
+        block: BlockId,
+    },
+    PlaceBlock {
+        x: i32,
+        y: i32,
+        slot: u8,
+    },
+    MoveItem {
+        from: u8,
+        to: u8,
+    },
+    PlayerMove {
+        x: f32,
+        y: f32,
+    },
+    RequestChunk {
+        cx: i32,
+        cy: i32,
+    },
+    Attack {
+        target: EntityId,
+    },
+    FallDamage {
+        amount: i32,
+    },
+    /// Dev mode: jump the world clock to time of day `t` in `[0, 1)`.
+    SetTime {
+        t: f32,
+    },
+    /// Dev mode: spawn a creature of `kind` at world pixel `(x, y)`.
+    SpawnEntity {
+        kind: EntityKind,
+        x: f32,
+        y: f32,
+    },
+    /// Dev mode: place `block` at a world cell for free (infinite blocks).
+    DebugSetBlock {
+        x: i32,
+        y: i32,
+        block: BlockId,
+    },
     Disconnect,
 }
 
@@ -108,8 +145,15 @@ pub struct NetHandle {
 
 /// Connect to `addr`. `host_label` keys the `known_hosts` store and is shown in
 /// prompts. `trust`, if set, is a fingerprint to silently accept (used by the
-/// embedded singleplayer server).
-pub fn connect(addr: SocketAddr, host_label: String, trust: Option<[u8; 32]>) -> NetHandle {
+/// embedded singleplayer server). `dev_token`, if set, is the per-server dev
+/// secret presented in `Hello` to authorize dev mode (only the creator's own
+/// client holds it).
+pub fn connect(
+    addr: SocketAddr,
+    host_label: String,
+    trust: Option<[u8; 32]>,
+    dev_token: Option<u64>,
+) -> NetHandle {
     let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<NetEvent>();
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<NetCommand>();
 
@@ -130,7 +174,9 @@ pub fn connect(addr: SocketAddr, host_label: String, trust: Option<[u8; 32]>) ->
                 }
             };
             rt.block_on(async move {
-                if let Err(e) = client_main(addr, host_label, trust, &ev_for_thread, cmd_rx).await {
+                if let Err(e) =
+                    client_main(addr, host_label, trust, dev_token, &ev_for_thread, cmd_rx).await
+                {
                     let _ = ev_for_thread.send(NetEvent::Disconnected {
                         reason: format!("{e:#}"),
                     });
@@ -149,6 +195,7 @@ async fn client_main(
     addr: SocketAddr,
     host_label: String,
     trust: Option<[u8; 32]>,
+    dev_token: Option<u64>,
     ev_tx: &Sender<NetEvent>,
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<NetCommand>,
 ) -> anyhow::Result<()> {
@@ -173,6 +220,7 @@ async fn client_main(
         &mut send,
         &ClientMessage::Hello {
             name: "player".to_string(),
+            dev_token,
         },
     )
     .await?;
@@ -215,6 +263,9 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::RequestChunk { cx, cy } => ClientMessage::RequestChunk { cx, cy },
         NetCommand::Attack { target } => ClientMessage::Attack { target },
         NetCommand::FallDamage { amount } => ClientMessage::FallDamage { amount },
+        NetCommand::SetTime { t } => ClientMessage::SetTime { t },
+        NetCommand::SpawnEntity { kind, x, y } => ClientMessage::SpawnEntity { kind, x, y },
+        NetCommand::DebugSetBlock { x, y, block } => ClientMessage::DebugSetBlock { x, y, block },
         NetCommand::Disconnect => unreachable!("handled before conversion"),
     }
 }

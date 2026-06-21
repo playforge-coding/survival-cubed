@@ -17,7 +17,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-use crate::block::{AIR, BlockRegistry};
+use crate::block::{AIR, BlockRegistry, DIRT, GRASS, LEAVES, LOG, STONE};
 use crate::daylight;
 use crate::discovery::{DiscoveredServer, LanBrowser};
 use crate::entity::{Entities, EntityId, EntityKind, PLAYER_MAX_HEALTH};
@@ -34,6 +34,8 @@ use render::{Atlas, CameraUniform, EguiFrame, Gfx, TileInstance, UvRect};
 const GRAVITY: f32 = 1400.0;
 const MOVE_SPEED: f32 = 150.0;
 const JUMP_VELOCITY: f32 = -440.0;
+/// Vertical speed (px/s) of the player while flying in dev mode.
+const FLY_SPEED: f32 = 240.0;
 // The local player is just a (special) entity; reuse its shared size.
 const PLAYER_W: f32 = crate::entity::PLAYER_SIZE.0;
 const PLAYER_H: f32 = crate::entity::PLAYER_SIZE.1;
@@ -128,6 +130,8 @@ struct Input {
     left: bool,
     right: bool,
     jump: bool,
+    /// Held while descending in dev-mode flight (S / ↓). Ignored on the ground.
+    down: bool,
     mouse: (f32, f32),
     breaking: bool,
     placing: bool,
@@ -184,6 +188,14 @@ struct GameState {
     /// and decayed each frame. Kept separate because [`step_physics`] recomputes
     /// `vel.x` from input every step, which would otherwise wipe out the shove.
     knockback_x: f32,
+    /// Whether dev mode is active for this session. Only ever `true` when this
+    /// client created/hosted the server (see [`App::debug_enabled`]); gates the
+    /// dev-tools window and the abilities below.
+    debug: bool,
+    /// Dev mode: whether the player is flying (gravity off, free vertical move).
+    fly: bool,
+    /// Dev mode: the block placed for free by infinite-block placement (RMB).
+    debug_block: BlockId,
 }
 
 impl GameState {
@@ -213,6 +225,9 @@ impl GameState {
             air_min_y: spawn.y,
             hit_flash: 0.0,
             knockback_x: 0.0,
+            debug: false,
+            fly: false,
+            debug_block: STONE,
         }
     }
 }
@@ -236,6 +251,15 @@ struct App {
     seed_input: String,
     /// Whether launching a world should also host it on the LAN.
     host_enabled: bool,
+    /// Recently typed letters on the menu, used to detect the dev-mode unlock
+    /// sequence ("IAMADEV").
+    dev_seq: String,
+    /// Whether the dev-mode unlock sequence has been entered, revealing the
+    /// dev-mode checkbox on the menu.
+    dev_unlocked: bool,
+    /// Whether dev mode is requested for the next world. Takes effect only when
+    /// this client creates/hosts the server (a remote join is never the creator).
+    debug_enabled: bool,
 
     net: Option<NetHandle>,
     server: Option<RunningServer>,
@@ -269,6 +293,9 @@ impl App {
             world_name_input: "world".to_string(),
             seed_input: String::new(),
             host_enabled: false,
+            dev_seq: String::new(),
+            dev_unlocked: false,
+            debug_enabled: false,
             net: None,
             server: None,
             pending_tofu: None,
@@ -350,7 +377,12 @@ impl App {
         let save_dir = crate::save::world_dir(&name);
         match server::start_server(server::local_bind(), seed, save_dir) {
             Ok(srv) => {
-                let handle = connect(srv.addr, name.clone(), Some(srv.fingerprint));
+                let handle = connect(
+                    srv.addr,
+                    name.clone(),
+                    Some(srv.fingerprint),
+                    Some(srv.dev_token),
+                );
                 self.server = Some(srv);
                 self.net = Some(handle);
                 self.screen = Screen::Connecting;
@@ -367,7 +399,12 @@ impl App {
             Ok(mut srv) => {
                 srv.advertise(&format!("Survival Cubed: {name} :{port}"));
                 let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-                let handle = connect(addr, name.clone(), Some(srv.fingerprint));
+                let handle = connect(
+                    addr,
+                    name.clone(),
+                    Some(srv.fingerprint),
+                    Some(srv.dev_token),
+                );
                 self.server = Some(srv);
                 self.net = Some(handle);
                 self.screen = Screen::Connecting;
@@ -386,7 +423,7 @@ impl App {
                 return;
             }
         };
-        let handle = connect(addr, label.clone(), None);
+        let handle = connect(addr, label.clone(), None, None);
         self.net = Some(handle);
         self.screen = Screen::Connecting;
         self.status = format!("Connecting to {label}...");
@@ -395,7 +432,12 @@ impl App {
     /// Join a server discovered on the LAN. Its advertised fingerprint is passed
     /// as a pre-trusted cert, so a LAN join needs no TOFU prompt.
     fn start_join_lan(&mut self, server: DiscoveredServer) {
-        let handle = connect(server.addr, server.addr.to_string(), server.fingerprint);
+        let handle = connect(
+            server.addr,
+            server.addr.to_string(),
+            server.fingerprint,
+            None,
+        );
         self.net = Some(handle);
         self.screen = Screen::Connecting;
         self.status = format!("Connecting to {}...", server.name);
@@ -443,7 +485,12 @@ impl App {
                 spawn_x,
                 spawn_y,
             } => {
-                self.game = Some(GameState::new(entity_id, Vec2::new(spawn_x, spawn_y)));
+                let mut game = GameState::new(entity_id, Vec2::new(spawn_x, spawn_y));
+                // Dev mode only applies to the creator of the server: it requires
+                // both the unlock toggle and an embedded server we own (the dev
+                // token the server authorizes against rides on that server).
+                game.debug = self.debug_enabled && self.server.is_some();
+                self.game = Some(game);
                 self.screen = Screen::InGame;
                 self.status.clear();
             }
@@ -634,6 +681,9 @@ impl App {
                 if self.game.as_ref().is_some_and(|g| g.inventory_open) {
                     self.inventory_window(ui);
                 }
+                if self.game.as_ref().is_some_and(|g| g.debug) {
+                    self.debug_window(ui);
+                }
             }
         }
     }
@@ -743,6 +793,14 @@ impl App {
                 ui.add_space(20.0);
                 if !self.status.is_empty() {
                     ui.colored_label(egui::Color32::LIGHT_RED, &self.status);
+                }
+
+                // Hidden until the "IAMADEV" unlock sequence is typed. Dev mode
+                // takes effect only in worlds this client creates or hosts.
+                if self.dev_unlocked {
+                    ui.add_space(12.0);
+                    ui.checkbox(&mut self.debug_enabled, "🛠 Developer mode");
+                    ui.weak("Applies to worlds you create or host.");
                 }
             });
         });
@@ -951,6 +1009,107 @@ impl App {
         if close && let Some(g) = self.game.as_mut() {
             g.inventory_open = false;
             g.move_from = None;
+        }
+    }
+
+    /// The dev-tools window, shown in-game when dev mode is active for this
+    /// session. Toggles flight, jumps the world clock, spawns creatures, and
+    /// picks the block placed for free by infinite-block placement.
+    fn debug_window(&mut self, ui: &mut egui::Ui) {
+        let (mut fly, mut time, mut debug_block, player_pos) = {
+            let g = self.game.as_ref().unwrap();
+            (g.fly, g.time_of_day, g.debug_block, g.pos)
+        };
+        let registry = self.registry.clone();
+        let mut set_time: Option<f32> = None;
+        let mut spawn: Option<EntityKind> = None;
+
+        egui::Window::new("🛠 Dev tools")
+            .anchor(egui::Align2::RIGHT_TOP, [-8.0, 56.0])
+            .resizable(false)
+            .collapsible(true)
+            .show(ui.ctx(), |ui| {
+                ui.checkbox(&mut fly, "Fly  (W/Space up · S/↓ down)");
+
+                ui.separator();
+                ui.label("Time of day");
+                let label = if daylight::is_night(time) {
+                    "🌙 night"
+                } else {
+                    "☀ day"
+                };
+                let resp = ui.add(
+                    egui::Slider::new(&mut time, 0.0..=0.999)
+                        .show_value(false)
+                        .text(label),
+                );
+                if resp.changed() {
+                    set_time = Some(time);
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("Dawn").clicked() {
+                        set_time = Some(0.0);
+                    }
+                    if ui.button("Noon").clicked() {
+                        set_time = Some(0.25);
+                    }
+                    if ui.button("Dusk").clicked() {
+                        set_time = Some(0.5);
+                    }
+                    if ui.button("Midnight").clicked() {
+                        set_time = Some(0.75);
+                    }
+                });
+
+                ui.separator();
+                ui.label("Spawn entity (at player)");
+                ui.horizontal(|ui| {
+                    if ui.button("Slime").clicked() {
+                        spawn = Some(EntityKind::Slime);
+                    }
+                    if ui.button("Chicken").clicked() {
+                        spawn = Some(EntityKind::Chicken);
+                    }
+                    if ui.button("Goat").clicked() {
+                        spawn = Some(EntityKind::Goat);
+                    }
+                    if ui.button("Zombie").clicked() {
+                        spawn = Some(EntityKind::Zombie);
+                    }
+                });
+
+                ui.separator();
+                ui.label("Infinite block (RMB places)");
+                ui.horizontal(|ui| {
+                    for block in [STONE, DIRT, GRASS, LOG, LEAVES] {
+                        let name = registry.get(block).name;
+                        if ui.selectable_label(debug_block == block, name).clicked() {
+                            debug_block = block;
+                        }
+                    }
+                });
+            });
+
+        // Apply UI changes back to game state.
+        if let Some(g) = self.game.as_mut() {
+            g.fly = fly;
+            g.debug_block = debug_block;
+            if let Some(t) = set_time {
+                g.time_of_day = t; // optimistic; the server confirms via TimeOfDay
+            }
+        }
+        // Forward authoritative-state changes to the server.
+        if let Some(net) = &self.net {
+            if let Some(t) = set_time {
+                let _ = net.commands.send(NetCommand::SetTime { t });
+            }
+            if let Some(kind) = spawn {
+                let _ = net.commands.send(NetCommand::SpawnEntity {
+                    kind,
+                    x: player_pos.x,
+                    y: player_pos.y,
+                });
+            }
         }
     }
 
@@ -1235,6 +1394,20 @@ fn slot_widget(
     resp
 }
 
+/// Map a keyboard key to its uppercase letter for the dev-unlock detector, or
+/// `None` for keys that aren't letters used by the sequence.
+fn dev_key_letter(code: KeyCode) -> Option<char> {
+    Some(match code {
+        KeyCode::KeyI => 'I',
+        KeyCode::KeyA => 'A',
+        KeyCode::KeyM => 'M',
+        KeyCode::KeyD => 'D',
+        KeyCode::KeyE => 'E',
+        KeyCode::KeyV => 'V',
+        _ => return None,
+    })
+}
+
 // --- Free functions (kept out of `&mut self` to ease borrow checking) ----
 
 /// Paint the player's HUD health bar: a red fill over a dark backing with a
@@ -1328,6 +1501,17 @@ fn step_physics(game: &mut GameState, reg: &BlockRegistry, input: &Input, dt: f3
         game.player_facing = true;
     } else if dir < 0.0 {
         game.player_facing = false;
+    }
+
+    // Dev-mode flight: no gravity; rise/fall from the jump/down inputs. Blocks
+    // still stop the player (fly, not noclip), and fall damage never applies.
+    if game.fly {
+        game.vel.y = (input.down as i32 - input.jump as i32) as f32 * FLY_SPEED;
+        move_x(game, reg, game.vel.x * dt);
+        let landed = move_y(game, reg, game.vel.y * dt);
+        game.on_ground = landed && game.vel.y >= 0.0;
+        game.air_min_y = game.pos.y;
+        return None;
     }
 
     // Jump (only when grounded).
@@ -1502,6 +1686,24 @@ fn handle_block_actions(
     } else {
         game.break_target = None;
         game.break_progress = 0.0;
+    }
+
+    // Dev mode: right button places the dev-selected block for free, with no
+    // inventory cost or adjacency requirement (infinite blocks).
+    if game.debug {
+        if input.placing && game.action_timer <= 0.0 && (0..WORLD_HEIGHT).contains(&ty) {
+            let block = game.debug_block;
+            if game.world.get_block(tx, ty) == AIR && !overlaps_player(game, tx, ty) {
+                game.world.set_block(tx, ty, block);
+                let _ = net.commands.send(NetCommand::DebugSetBlock {
+                    x: tx,
+                    y: ty,
+                    block,
+                });
+                game.action_timer = ACTION_COOLDOWN;
+            }
+        }
+        return;
     }
 
     // Right button: place the selected hotbar slot's block on a fixed cooldown,
@@ -1696,6 +1898,7 @@ impl ApplicationHandler for App {
                         self.input.left = false;
                         self.input.right = false;
                         self.input.jump = false;
+                        self.input.down = false;
                     } else {
                         self.handle_key(code, pressed);
                     }
@@ -1724,10 +1927,15 @@ impl ApplicationHandler for App {
 
 impl App {
     fn handle_key(&mut self, code: KeyCode, pressed: bool) {
+        // On the menu, watch for the dev-mode unlock sequence ("IAMADEV").
+        if pressed && self.screen == Screen::Menu {
+            self.feed_dev_sequence(code);
+        }
         match code {
             KeyCode::KeyA | KeyCode::ArrowLeft => self.input.left = pressed,
             KeyCode::KeyD | KeyCode::ArrowRight => self.input.right = pressed,
             KeyCode::Space | KeyCode::KeyW | KeyCode::ArrowUp => self.input.jump = pressed,
+            KeyCode::KeyS | KeyCode::ArrowDown => self.input.down = pressed,
             KeyCode::Digit1 if pressed => self.select_slot(0),
             KeyCode::Digit2 if pressed => self.select_slot(1),
             KeyCode::Digit3 if pressed => self.select_slot(2),
@@ -1750,6 +1958,25 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Feed one key press into the dev-mode unlock detector. Letter keys are
+    /// appended to a small rolling buffer; entering "IAMADEV" reveals the dev-mode
+    /// checkbox on the menu.
+    fn feed_dev_sequence(&mut self, code: KeyCode) {
+        const UNLOCK: &str = "IAMADEV";
+        let Some(c) = dev_key_letter(code) else {
+            return;
+        };
+        self.dev_seq.push(c);
+        // Keep only the last UNLOCK.len() characters so a near-miss can recover.
+        if self.dev_seq.len() > UNLOCK.len() {
+            let cut = self.dev_seq.len() - UNLOCK.len();
+            self.dev_seq.drain(..cut);
+        }
+        if self.dev_seq == UNLOCK {
+            self.dev_unlocked = true;
         }
     }
 
