@@ -1068,6 +1068,31 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     }
                 }
                 ClientMessage::PlaceBlock { x, y, slot } => {
+                    // A block may only be placed into an empty cell that is
+                    // orthogonally adjacent to an existing block, so players build
+                    // off the world rather than dropping blocks into open air.
+                    let supported = {
+                        let mut world = shared.world.lock();
+                        world.get(x, y) == crate::block::AIR
+                            && [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                                .iter()
+                                .any(|(dx, dy)| world.get(x + dx, y + dy) != crate::block::AIR)
+                    };
+                    if !supported {
+                        // Reject: resync the cell's true contents and the inventory
+                        // so the client's optimistic placement is undone.
+                        let actual = shared.world.lock().get(x, y);
+                        shared.send_to(
+                            id,
+                            ServerMessage::BlockUpdate {
+                                x,
+                                y,
+                                block: actual,
+                            },
+                        );
+                        shared.send_inventory(id);
+                        continue;
+                    }
                     // Read the block to place from the player's own slot, so they
                     // can only place what they actually hold.
                     match shared.take_from_slot(id, slot as usize) {
