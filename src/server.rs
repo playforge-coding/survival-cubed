@@ -158,20 +158,24 @@ struct ServerWorld {
 
 impl ServerWorld {
     /// Make sure chunk `(cx, cy)` is resident in memory: load it from disk if it
-    /// was saved before, otherwise generate it fresh from the seed.
-    fn ensure(&mut self, cx: i32, cy: i32) {
+    /// was saved before, otherwise generate it fresh from the seed. Returns
+    /// `true` only when the chunk was generated fresh this call (i.e. it had
+    /// never existed before), so callers can react to brand-new terrain coming
+    /// into being — e.g. seeding creatures into it.
+    fn ensure(&mut self, cx: i32, cy: i32) -> bool {
         if self.world.has_chunk((cx, cy)) {
-            return;
+            return false;
         }
-        let chunk = match self.store.load_chunk((cx, cy)) {
-            Ok(Some(chunk)) => chunk,
-            Ok(None) => self.generator.generate_chunk(cx, cy),
+        let (chunk, fresh) = match self.store.load_chunk((cx, cy)) {
+            Ok(Some(chunk)) => (chunk, false),
+            Ok(None) => (self.generator.generate_chunk(cx, cy), true),
             Err(e) => {
                 log::error!("failed to load chunk ({cx}, {cy}); regenerating: {e:#}");
-                self.generator.generate_chunk(cx, cy)
+                (self.generator.generate_chunk(cx, cy), true)
             }
         };
         self.world.insert_chunk((cx, cy), chunk);
+        fresh
     }
 
     /// Write every dirty chunk to disk, clearing the dirty set on success.
@@ -185,12 +189,16 @@ impl ServerWorld {
         }
     }
 
-    fn chunk_blocks(&mut self, cx: i32, cy: i32) -> Vec<BlockId> {
-        self.ensure(cx, cy);
-        self.world
+    /// Block contents of chunk `(cx, cy)`, alongside whether this call was what
+    /// first brought the chunk into existence (see [`ServerWorld::ensure`]).
+    fn chunk_blocks(&mut self, cx: i32, cy: i32) -> (Vec<BlockId>, bool) {
+        let fresh = self.ensure(cx, cy);
+        let blocks = self
+            .world
             .get_chunk((cx, cy))
             .map(|c| c.blocks.to_vec())
-            .unwrap_or_else(|| vec![0; CHUNK_AREA])
+            .unwrap_or_else(|| vec![0; CHUNK_AREA]);
+        (blocks, fresh)
     }
 
     /// Read the block at world cell `(x, y)`, generating its chunk on demand so
@@ -599,24 +607,98 @@ fn spawn_creatures(shared: &Shared) {
     let mut entities = shared.entities.lock();
     for i in 0..SPAWN_SLOTS {
         let cell_x = (i - SPAWN_SLOTS / 2) * SPAWN_SPACING;
-        let kind = match world.biome(cell_x) {
-            // Plains: peaceful chickens.
-            Biome::Plains => EntityKind::Chicken,
-            // Mountains: hostile slimes interspersed with placid goats.
-            Biome::Mountains => {
-                if i % 2 == 0 {
-                    EntityKind::Slime
-                } else {
-                    EntityKind::Goat
-                }
-            }
-        };
+        // Alternate hostile/placid creatures in mountains; `i` parity keeps the
+        // original mix around the origin.
+        let kind = creature_for_biome(world.biome(cell_x), i % 2 == 0);
         let (_, h) = kind.size();
         let surface = world.surface(cell_x);
         let id = shared.alloc_id();
         let x = cell_x as f32 * TILE_SIZE;
         let y = surface as f32 * TILE_SIZE - h;
         entities.insert(Entity::new(id, kind, x, y));
+    }
+}
+
+/// Which creature a column's biome supports. `hostile_slot` selects between the
+/// two mountain dwellers (slime when true, goat when false) so callers can mix
+/// them; plains always yield a chicken.
+fn creature_for_biome(biome: Biome, hostile_slot: bool) -> EntityKind {
+    match biome {
+        // Plains: peaceful chickens.
+        Biome::Plains => EntityKind::Chicken,
+        // Mountains: hostile slimes interspersed with placid goats.
+        Biome::Mountains => {
+            if hostile_slot {
+                EntityKind::Slime
+            } else {
+                EntityKind::Goat
+            }
+        }
+    }
+}
+
+/// Deterministic pseudo-random value for chunk `(cx, cy)` mixed with `salt`,
+/// derived from the world seed so the same chunk always makes the same spawn
+/// decision regardless of who explores it or when.
+fn chunk_hash(seed: i32, cx: i32, cy: i32, salt: u32) -> u32 {
+    let mut h = (seed as u32)
+        .wrapping_mul(374_761_393)
+        .wrapping_add((cx as u32).wrapping_mul(668_265_263))
+        .wrapping_add((cy as u32).wrapping_mul(2_246_822_519));
+    h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
+    h = h.wrapping_add(salt.wrapping_mul(0x9E37_79B9));
+    h ^ (h >> 16)
+}
+
+/// Percent chance that a freshly generated surface chunk seeds creatures.
+const CHUNK_SPAWN_CHANCE: u32 = 40;
+/// Most creatures a single chunk can seed at once.
+const CHUNK_SPAWN_MAX: u32 = 3;
+
+/// Possibly seed biome-appropriate creatures into a chunk that has just come
+/// into existence, broadcasting any spawns to connected clients. Only surface
+/// chunks (those the terrain's grass line passes through) are eligible, and the
+/// decision is deterministic per chunk via [`chunk_hash`], so exploring the same
+/// terrain never double-spawns. Mirrors [`spawn_creatures`] for placement.
+fn maybe_spawn_in_chunk(shared: &Shared, cx: i32, cy: i32) {
+    let world = shared.world.lock();
+    let seed = world.generator.seed();
+    if chunk_hash(seed, cx, cy, 0) % 100 >= CHUNK_SPAWN_CHANCE {
+        return;
+    }
+
+    let base_x = cx * CHUNK_SIZE;
+    let chunk_top = cy * CHUNK_SIZE;
+    let chunk_bottom = chunk_top + CHUNK_SIZE;
+    let count = 1 + chunk_hash(seed, cx, cy, 1) % CHUNK_SPAWN_MAX;
+
+    let mut spawned = Vec::new();
+    {
+        let mut entities = shared.entities.lock();
+        for n in 0..count {
+            // Scatter spawns across the chunk's columns.
+            let lx = chunk_hash(seed, cx, cy, 2 + n) % CHUNK_SIZE as u32;
+            let cell_x = base_x + lx as i32;
+            let surface = world.surface(cell_x);
+            // Only spawn where this chunk actually contains the ground surface,
+            // so creatures never appear buried in stone or floating in the sky.
+            if surface < chunk_top || surface >= chunk_bottom {
+                continue;
+            }
+            let kind = creature_for_biome(world.biome(cell_x), n % 2 == 0);
+            let (_, h) = kind.size();
+            let id = shared.alloc_id();
+            let x = cell_x as f32 * TILE_SIZE;
+            let y = surface as f32 * TILE_SIZE - h;
+            let entity = Entity::new(id, kind, x, y);
+            entities.insert(entity.clone());
+            spawned.push(entity);
+        }
+    }
+    drop(world);
+
+    for entity in spawned {
+        shared.broadcast_all(ServerMessage::EntitySpawn { entity });
     }
 }
 
@@ -1316,8 +1398,13 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     }
                 }
                 ClientMessage::RequestChunk { cx, cy } => {
-                    let blocks = shared.world.lock().chunk_blocks(cx, cy);
+                    let (blocks, fresh) = shared.world.lock().chunk_blocks(cx, cy);
                     let _ = tx.send(ServerMessage::Chunk { cx, cy, blocks });
+                    // A chunk coming into existence for the first time has a
+                    // medium chance to seed creatures into its terrain.
+                    if fresh {
+                        maybe_spawn_in_chunk(&shared, cx, cy);
+                    }
                 }
                 ClientMessage::SetBlock { x, y, block: _ } => {
                     // Breaking: clear the cell and drop its block on the ground
