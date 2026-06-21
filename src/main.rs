@@ -7,6 +7,7 @@
 mod block;
 mod client;
 mod daylight;
+mod discovery;
 mod entity;
 mod net;
 mod protocol;
@@ -44,7 +45,8 @@ fn run_dedicated(port: u16) -> anyhow::Result<()> {
         .unwrap_or(1337);
 
     let save_dir = save::world_dir(&format!("server-{port}"));
-    let srv = server::start_server(server::host_bind(port), seed, save_dir.clone())?;
+    let mut srv = server::start_server(server::host_bind(port), seed, save_dir.clone())?;
+    srv.advertise(&format!("Survival Cubed :{port}"));
     println!("Survival Cubed dedicated server");
     println!("  listening on : {}", srv.addr);
     println!("  world save   : {}", save_dir.display());

@@ -1,13 +1,15 @@
 //! Authoritative game server over QUIC (quinn).
 //!
-//! The server generates a fresh self-signed certificate on every launch. Its
-//! fingerprint is surfaced to the client so the TOFU flow (see
-//! [`crate::client::net`]) can pin it. For singleplayer the client embeds a
-//! server in-process and auto-trusts that fingerprint.
+//! The server uses a self-signed certificate persisted in its world directory,
+//! so its fingerprint stays stable across restarts and clients' pinned TOFU
+//! entries keep working. A brand-new world generates and saves a fresh pair on
+//! first launch. The fingerprint is surfaced to the client so the TOFU flow
+//! (see [`crate::client::net`]) can pin it. For singleplayer the client embeds
+//! a server in-process and auto-trusts that fingerprint.
 
 use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -15,6 +17,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use quinn::Endpoint;
+use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use tokio::sync::mpsc;
 
 use crate::block::BlockRegistry;
@@ -66,6 +69,24 @@ pub struct RunningServer {
     /// Shared state, kept so the world can be flushed to disk when this handle
     /// is dropped (e.g. the player leaves a singleplayer session).
     shared: Arc<Shared>,
+    /// Live LAN advertisement, if this server opted into discovery via
+    /// [`RunningServer::advertise`]. Dropped (unregistering the service) when
+    /// the server is.
+    _discovery: Option<crate::discovery::LanAdvertiser>,
+}
+
+impl RunningServer {
+    /// Announce this server on the local network under `name` so nearby clients
+    /// can discover and join it without typing an address. Best-effort: a
+    /// failure (no mDNS stack, firewall) is logged and otherwise ignored.
+    ///
+    /// Not called for the embedded singleplayer server, which binds loopback.
+    pub fn advertise(&mut self, name: &str) {
+        match crate::discovery::advertise(self.addr.port(), name, &self.fingerprint) {
+            Ok(a) => self._discovery = Some(a),
+            Err(e) => log::warn!("LAN discovery unavailable: {e:#}"),
+        }
+    }
 }
 
 impl Drop for RunningServer {
@@ -298,6 +319,7 @@ pub fn start_server(bind: SocketAddr, seed: i32, save_dir: PathBuf) -> Result<Ru
             fingerprint: fp,
             _endpoint: endpoint,
             shared,
+            _discovery: None,
         }),
         Err(e) => Err(e),
     }
@@ -336,17 +358,64 @@ async fn setup(
     }
 }
 
+/// File names for the persisted TLS identity, stored alongside the world.
+const CERT_FILE: &str = "cert.der";
+const KEY_FILE: &str = "key.der";
+
+/// Load the server's certificate and private key from `save_dir`, generating
+/// and persisting a fresh self-signed pair on first run (or if the saved pair
+/// is missing/unreadable). Persisting the pair keeps the certificate
+/// fingerprint stable across restarts, so clients that pinned it via TOFU don't
+/// see a (false) "certificate changed" alarm.
+fn load_or_create_identity(
+    save_dir: &Path,
+) -> Result<(CertificateDer<'static>, PrivatePkcs8KeyDer<'static>)> {
+    let cert_path = save_dir.join(CERT_FILE);
+    let key_path = save_dir.join(KEY_FILE);
+
+    // Reuse the saved pair when both files are present and readable.
+    if let (Ok(cert), Ok(key)) = (std::fs::read(&cert_path), std::fs::read(&key_path)) {
+        return Ok((CertificateDer::from(cert), PrivatePkcs8KeyDer::from(key)));
+    }
+
+    // First launch (or unreadable): mint a fresh pair and persist it.
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+        .context("generating self-signed certificate")?;
+    let cert_der = cert.cert.der().to_vec();
+    let key_der = cert.signing_key.serialize_der();
+
+    std::fs::create_dir_all(save_dir)
+        .with_context(|| format!("creating {}", save_dir.display()))?;
+    write_private_key(&key_path, &key_der)?;
+    std::fs::write(&cert_path, &cert_der)
+        .with_context(|| format!("writing {}", cert_path.display()))?;
+
+    Ok((
+        CertificateDer::from(cert_der),
+        PrivatePkcs8KeyDer::from(key_der),
+    ))
+}
+
+/// Write a private key to disk, restricting it to the owner on Unix.
+fn write_private_key(path: &Path, bytes: &[u8]) -> Result<()> {
+    std::fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
 fn build_endpoint(
     bind: SocketAddr,
     seed: i32,
     save_dir: PathBuf,
 ) -> Result<(Endpoint, [u8; 32], Arc<Shared>)> {
-    // Self-signed certificate for "localhost".
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-        .context("generating self-signed certificate")?;
-    let cert_der = cert.cert.der().clone();
+    // Self-signed certificate for "localhost", persisted so the fingerprint is
+    // stable across restarts.
+    let (cert_der, key_der) = load_or_create_identity(&save_dir)?;
     let fp = fingerprint(cert_der.as_ref());
-    let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der());
 
     let mut crypto = rustls::ServerConfig::builder()
         .with_no_client_auth()

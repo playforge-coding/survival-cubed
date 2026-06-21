@@ -110,7 +110,7 @@ impl KnownHosts {
     }
 }
 
-fn parse_fingerprint(hex: &str) -> Option<[u8; 32]> {
+pub fn parse_fingerprint(hex: &str) -> Option<[u8; 32]> {
     let bytes: Vec<&str> = hex.split(':').collect();
     if bytes.len() != 32 {
         return None;

@@ -19,6 +19,7 @@ use winit::window::{Window, WindowId};
 
 use crate::block::{AIR, BlockRegistry, DIRT, GRASS, STONE};
 use crate::daylight;
+use crate::discovery::{DiscoveredServer, LanBrowser};
 use crate::entity::{Entities, EntityId, PLAYER_MAX_HEALTH};
 use crate::protocol::BlockId;
 use crate::server::{self, RunningServer};
@@ -190,6 +191,9 @@ struct App {
     server: Option<RunningServer>,
     pending_tofu: Option<PendingTofu>,
     game: Option<GameState>,
+    /// Background mDNS browser feeding the menu's LAN server list, if discovery
+    /// could be started.
+    lan: Option<LanBrowser>,
 
     input: Input,
     last_frame: Instant,
@@ -216,6 +220,13 @@ impl App {
             server: None,
             pending_tofu: None,
             game: None,
+            lan: match crate::discovery::browse() {
+                Ok(b) => Some(b),
+                Err(e) => {
+                    log::warn!("LAN discovery unavailable: {e:#}");
+                    None
+                }
+            },
             input: Input::default(),
             last_frame: Instant::now(),
             anim_time: 0.0,
@@ -249,7 +260,8 @@ impl App {
         let port: u16 = self.port_input.trim().parse().unwrap_or(5000);
         let save_dir = crate::save::world_dir(&format!("host-{port}"));
         match server::start_server(server::host_bind(port), Self::seed(), save_dir) {
-            Ok(srv) => {
+            Ok(mut srv) => {
+                srv.advertise(&format!("Survival Cubed :{port}"));
                 let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
                 let handle = connect(addr, format!("127.0.0.1:{port}"), Some(srv.fingerprint));
                 self.server = Some(srv);
@@ -274,6 +286,15 @@ impl App {
         self.net = Some(handle);
         self.screen = Screen::Connecting;
         self.status = format!("Connecting to {label}...");
+    }
+
+    /// Join a server discovered on the LAN. Its advertised fingerprint is passed
+    /// as a pre-trusted cert, so a LAN join needs no TOFU prompt.
+    fn start_join_lan(&mut self, server: DiscoveredServer) {
+        let handle = connect(server.addr, server.addr.to_string(), server.fingerprint);
+        self.net = Some(handle);
+        self.screen = Screen::Connecting;
+        self.status = format!("Connecting to {}...", server.name);
     }
 
     fn leave(&mut self) {
@@ -465,6 +486,9 @@ impl App {
     }
 
     fn menu_ui(&mut self, ui: &mut egui::Ui) {
+        // Snapshot the LAN list up front so the closures below can freely borrow
+        // `self` to launch a join.
+        let lan_servers = self.lan.as_ref().map(|b| b.servers()).unwrap_or_default();
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(80.0);
@@ -504,6 +528,25 @@ impl App {
                             self.start_connect();
                         }
                     });
+                });
+                ui.add_space(8.0);
+
+                ui.group(|ui| {
+                    ui.label("LAN games");
+                    if self.lan.is_none() {
+                        ui.weak("Discovery unavailable.");
+                    } else if lan_servers.is_empty() {
+                        ui.weak("Searching for nearby games...");
+                    } else {
+                        for server in &lan_servers {
+                            ui.horizontal(|ui| {
+                                if ui.button("Join").clicked() {
+                                    self.start_join_lan(server.clone());
+                                }
+                                ui.label(format!("{}  ({})", server.name, server.addr));
+                            });
+                        }
+                    }
                 });
 
                 ui.add_space(20.0);
