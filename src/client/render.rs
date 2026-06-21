@@ -329,9 +329,10 @@ mod tests {
         let reg = BlockRegistry::new();
         let atlas = Atlas::build(&reg, &blocks, &entities);
 
-        // Starter sprite sheets were written to disk as real PNGs.
-        assert!(entities.join("player.png").exists());
-        assert!(entities.join("slime.png").exists());
+        // Starter sprite frames were written to disk as real per-frame PNGs.
+        assert!(entities.join("player").join("0.png").exists());
+        assert!(entities.join("slime").join("0.png").exists());
+        assert!(entities.join("chicken").join("0.png").exists());
 
         // Texture is tall enough for the tallest sprite (the 32px player).
         assert_eq!(atlas.height, sprite::PLAYER_SPRITE.frame_h);

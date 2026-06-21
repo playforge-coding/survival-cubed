@@ -25,6 +25,8 @@ pub type EntityId = u32;
 pub const PLAYER_SIZE: (f32, f32) = (16.0, 32.0);
 /// Collision/draw size (width, height) in pixels of a slime.
 pub const SLIME_SIZE: (f32, f32) = (12.0, 12.0);
+/// Collision/draw size (width, height) in pixels of a chicken.
+pub const CHICKEN_SIZE: (f32, f32) = (12.0, 14.0);
 /// Collision/draw size (width, height) in pixels of a dropped block item.
 pub const ITEM_SIZE: (f32, f32) = (8.0, 8.0);
 
@@ -32,6 +34,8 @@ pub const ITEM_SIZE: (f32, f32) = (8.0, 8.0);
 pub const PLAYER_MAX_HEALTH: i32 = 20;
 /// Maximum health of a slime, in hit points.
 pub const SLIME_MAX_HEALTH: i32 = 8;
+/// Maximum health of a chicken, in hit points.
+pub const CHICKEN_MAX_HEALTH: i32 = 4;
 
 /// What an entity *is*. Adding a new creature/object means adding a variant
 /// here plus (for server-simulated kinds) a branch in the server tick loop.
@@ -42,6 +46,9 @@ pub enum EntityKind {
     Player { name: String },
     /// A small creature that wanders the surface. Server-simulated.
     Slime,
+    /// A harmless bird that pecks around the surface and bolts away from a
+    /// player that hits it. Server-simulated.
+    Chicken,
     /// A block lying on the ground after being mined, waiting to be walked into
     /// and picked up. Server-simulated (falls under gravity); carries the block
     /// id it will add to a player's inventory on pickup.
@@ -54,6 +61,7 @@ impl EntityKind {
         match self {
             EntityKind::Player { .. } => PLAYER_SIZE,
             EntityKind::Slime => SLIME_SIZE,
+            EntityKind::Chicken => CHICKEN_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -76,6 +84,7 @@ impl EntityKind {
         match self {
             EntityKind::Player { .. } => PLAYER_MAX_HEALTH,
             EntityKind::Slime => SLIME_MAX_HEALTH,
+            EntityKind::Chicken => CHICKEN_MAX_HEALTH,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }
@@ -101,6 +110,11 @@ pub struct Entity {
     /// over the wire (defaults to `0.0` on the client).
     #[serde(skip)]
     pub attack_cd: f32,
+    /// Server-only: seconds a skittish creature (e.g. a [`EntityKind::Chicken`])
+    /// keeps fleeing after being hit. Counts down each tick; while positive the
+    /// creature runs from the nearest player. Never sent over the wire.
+    #[serde(skip)]
+    pub flee: f32,
 }
 
 impl Entity {
@@ -117,6 +131,7 @@ impl Entity {
             health: max_health,
             max_health,
             attack_cd: 0.0,
+            flee: 0.0,
         }
     }
 

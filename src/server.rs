@@ -22,7 +22,9 @@ use tokio::sync::mpsc;
 
 use crate::block::BlockRegistry;
 use crate::daylight;
-use crate::entity::{Entities, Entity, EntityId, EntityKind, ITEM_SIZE, PLAYER_SIZE, SLIME_SIZE};
+use crate::entity::{
+    CHICKEN_SIZE, Entities, Entity, EntityId, EntityKind, ITEM_SIZE, PLAYER_SIZE, SLIME_SIZE,
+};
 use crate::inventory::Inventory;
 use crate::net::{fingerprint, read_msg, write_msg};
 use crate::protocol::{ALPN, BlockId, ClientMessage, ServerMessage};
@@ -36,10 +38,22 @@ const TICK_DT: f32 = 0.05;
 const SLIME_SPEED: f32 = 30.0;
 /// How many slimes to spawn near the world origin at startup.
 const SLIME_COUNT: i32 = 4;
+/// Leisurely wander speed of a chicken, in pixels/second.
+const CHICKEN_WANDER_SPEED: f32 = 22.0;
+/// Panicked run speed of a chicken fleeing a player, in pixels/second.
+const CHICKEN_FLEE_SPEED: f32 = 70.0;
+/// How many chickens to spawn near the world origin at startup.
+const CHICKEN_COUNT: i32 = 4;
+/// Seconds a chicken keeps bolting after being hit before settling down.
+const CHICKEN_FLEE_TIME: f32 = 4.0;
 /// Downward acceleration applied to simulated entities, in pixels/second².
 const GRAVITY: f32 = 1400.0;
 /// Terminal fall speed for simulated entities, in pixels/second.
 const MAX_FALL: f32 = 900.0;
+/// Upward velocity (px/s) a ground creature uses to hop a single-block step in
+/// its path. Tuned to clear one tile (16px) but not two, so creatures climb
+/// gentle terrain without scaling walls.
+const HOP_VELOCITY: f32 = -240.0;
 /// Collision skin: keeps an entity's trailing edge from snapping into the next
 /// cell when it is flush against a block boundary.
 const EPS: f32 = 0.01;
@@ -542,6 +556,7 @@ fn build_endpoint(
     // Only seed fresh creatures for a brand-new world; a loaded one keeps its own.
     if saved.is_none() {
         spawn_slimes(&shared);
+        spawn_chickens(&shared);
     }
 
     Ok((endpoint, fp, shared))
@@ -573,6 +588,22 @@ fn spawn_slimes(shared: &Shared) {
         let x = cell_x as f32 * TILE_SIZE;
         let y = surface as f32 * TILE_SIZE - h;
         entities.insert(Entity::new(id, EntityKind::Slime, x, y));
+    }
+}
+
+/// Populate the world with a handful of chickens near the origin, offset from
+/// the slimes so the two flocks don't all stack on the same columns.
+fn spawn_chickens(shared: &Shared) {
+    let (_, h) = CHICKEN_SIZE;
+    let world = shared.world.lock();
+    let mut entities = shared.entities.lock();
+    for i in 0..CHICKEN_COUNT {
+        let cell_x = (i - CHICKEN_COUNT / 2) * 6 + 3;
+        let surface = world.surface(cell_x);
+        let id = shared.alloc_id();
+        let x = cell_x as f32 * TILE_SIZE;
+        let y = surface as f32 * TILE_SIZE - h;
+        entities.insert(Entity::new(id, EntityKind::Chicken, x, y));
     }
 }
 
@@ -676,6 +707,11 @@ fn step_entities(shared: &Shared) -> Step {
         .filter(|e| matches!(e.kind, EntityKind::Slime))
         .map(|e| e.id)
         .collect();
+    let chicken_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Chicken))
+        .map(|e| e.id)
+        .collect();
     let item_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| e.kind.is_item())
@@ -705,43 +741,92 @@ fn step_entities(shared: &Shared) -> Step {
         };
         let chasing = target.is_some();
 
-        // Heading: toward the target when chasing, else continue patrolling
-        // (spawn — vx == 0 — starts rightward).
-        let mut vx = match target {
-            Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -SLIME_SPEED,
-            Some(_) => SLIME_SPEED,
-            None if e.vx < 0.0 => -SLIME_SPEED,
-            None => SLIME_SPEED,
+        // Heading: toward the target when chasing, else continue patrolling in
+        // its current direction (spawn — vx == 0 — starts rightward).
+        let dir = match target {
+            Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -1.0,
+            Some(_) => 1.0,
+            None if e.vx < 0.0 => -1.0,
+            None => 1.0,
         };
-        let mut vy = (e.vy + GRAVITY * TICK_DT).min(MAX_FALL);
 
-        // Horizontal first, then vertical — each axis resolved independently.
-        let (x, hit_wall) = move_x(&mut world, e.x, e.y, w, h, vx * TICK_DT);
-        let (y, on_ground) = move_y(&mut world, x, e.y, w, h, vy * TICK_DT);
-        if on_ground {
-            vy = 0.0;
-        }
-        // Turn at walls always; turn at ledges only when patrolling, so a
-        // chasing slime will pursue a player off a drop.
-        if hit_wall || (!chasing && on_ground && at_ledge(&mut world, x, y, w, h, vx)) {
-            vx = -vx;
-        }
-
-        e.x = x;
-        e.y = y;
-        e.vx = vx;
-        e.vy = vy;
-        broadcasts.push(ServerMessage::EntityMoved { id, x, y, vx, vy });
+        // A chasing slime commits to the chase (over ledges and cliffs); a
+        // patrolling one negotiates one-block steps and turns back at walls and
+        // deep drops.
+        let m = step_ground(
+            &mut world,
+            (e.x, e.y, w, h),
+            e.vy,
+            dir,
+            SLIME_SPEED,
+            chasing,
+        );
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: m.vx,
+            vy: m.vy,
+        });
 
         // Bite the target if it is in reach and the slime is off cooldown.
         if let Some((pid, px, py)) = target {
             if e.attack_cd <= 0.0
-                && aabb_gap(x, y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1) <= SLIME_ATTACK_RANGE
+                && aabb_gap(m.x, m.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1)
+                    <= SLIME_ATTACK_RANGE
             {
                 e.attack_cd = SLIME_ATTACK_INTERVAL;
                 bites.push(pid);
             }
         }
+    }
+
+    // Chickens: peck around peacefully, but bolt away from the nearest player
+    // for a few seconds after being hit (the flee timer is set in apply_damage).
+    for id in chicken_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.flee = (e.flee - TICK_DT).max(0.0);
+        let fleeing = e.flee > 0.0;
+        let scx = e.x + w * 0.5;
+
+        let dir = if fleeing {
+            // Run directly away from the nearest player (any distance).
+            match nearest_player(&players, scx, e.y + h * 0.5, f32::INFINITY) {
+                Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => 1.0,
+                Some(_) => -1.0,
+                None if e.vx < 0.0 => -1.0,
+                None => 1.0,
+            }
+        } else if e.vx < 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        let speed = if fleeing {
+            CHICKEN_FLEE_SPEED
+        } else {
+            CHICKEN_WANDER_SPEED
+        };
+
+        let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, speed, fleeing);
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: m.vx,
+            vy: m.vy,
+        });
     }
 
     // Dropped items: fall under gravity, then get collected by any player that
@@ -851,6 +936,11 @@ fn apply_damage(
     };
     e.health = (e.health - amount).max(0);
 
+    // Getting hit sends a chicken into a panicked sprint away from players.
+    if matches!(e.kind, EntityKind::Chicken) {
+        e.flee = CHICKEN_FLEE_TIME;
+    }
+
     if e.health > 0 {
         let msg = ServerMessage::EntityHealth {
             id,
@@ -927,13 +1017,99 @@ fn move_y(world: &mut ServerWorld, x: f32, y: f32, w: f32, h: f32, dy: f32) -> (
     (new_y, false)
 }
 
-/// Whether a grounded entity heading in direction `vx` is at a ledge — i.e.
-/// there is no solid ground under the cell just ahead of its leading foot.
-fn at_ledge(world: &mut ServerWorld, x: f32, y: f32, w: f32, h: f32, vx: f32) -> bool {
+/// Resolved motion of a ground-walking creature after one [`step_ground`] tick.
+struct GroundMotion {
+    x: f32,
+    y: f32,
+    vx: f32,
+    vy: f32,
+}
+
+/// Advance a ground-walking creature (slime, chicken) one tick.
+///
+/// It moves horizontally in direction `dir` (sign of intent) at `speed`, falls
+/// under gravity, and negotiates one-block height changes so it roams across
+/// uneven ground instead of being trapped on a single level: it hops a
+/// single-block step in its path and walks down a single-block drop. A
+/// `committed` creature (chasing or fleeing) bulls through — never reversing and
+/// following the player off cliffs — while an uncommitted (wandering) one turns
+/// around at walls it can't hop and at drops deeper than one block. The returned
+/// `vx` carries the post-turn heading so patrol direction persists across ticks.
+fn step_ground(
+    world: &mut ServerWorld,
+    aabb: (f32, f32, f32, f32),
+    vy_in: f32,
+    dir: f32,
+    speed: f32,
+    committed: bool,
+) -> GroundMotion {
+    let (x, y, w, h) = aabb;
+    let grounded_before = grounded(world, x, y, w, h);
+    let mut vx = dir * speed;
+    let mut vy = (vy_in + GRAVITY * TICK_DT).min(MAX_FALL);
+
+    // Horizontal first, then vertical — each axis resolved independently.
+    let (nx, hit_wall) = move_x(world, x, y, w, h, vx * TICK_DT);
+
+    // Hop a single-block step we ran into, if there's headroom to clear it.
+    if grounded_before && hit_wall && can_step_up(world, nx, y, w, h, vx) {
+        vy = HOP_VELOCITY;
+    }
+
+    let (ny, on_ground) = move_y(world, nx, y, w, h, vy * TICK_DT);
+    if on_ground {
+        vy = 0.0;
+    }
+
+    // Wandering creatures reverse at walls they couldn't hop (vy not launched
+    // upward) and at drops too deep to step down. Committed ones never turn.
+    if !committed
+        && on_ground
+        && ((hit_wall && vy >= 0.0) || drop_ahead(world, nx, ny, w, h, vx) >= 2)
+    {
+        vx = -vx;
+    }
+
+    GroundMotion {
+        x: nx,
+        y: ny,
+        vx,
+        vy,
+    }
+}
+
+/// Whether an entity's AABB is resting on solid ground (a solid cell directly
+/// beneath its feet).
+fn grounded(world: &mut ServerWorld, x: f32, y: f32, w: f32, h: f32) -> bool {
+    let ty = ((y + h + EPS) / TILE_SIZE).floor() as i32;
+    let x0 = (x / TILE_SIZE).floor() as i32;
+    let x1 = ((x + w - EPS) / TILE_SIZE).floor() as i32;
+    (x0..=x1).any(|tx| world.solid(tx, ty))
+}
+
+/// Whether a grounded creature heading `vx` can clear the block directly in its
+/// path with a single hop: the cell ahead at foot level is solid, but the two
+/// cells above it are clear, leaving room to rise and land one block up.
+fn can_step_up(world: &mut ServerWorld, x: f32, y: f32, w: f32, h: f32, vx: f32) -> bool {
     let ahead = if vx > 0.0 { x + w + EPS } else { x - EPS };
     let tx = (ahead / TILE_SIZE).floor() as i32;
-    let ty = ((y + h + EPS) / TILE_SIZE).floor() as i32;
-    !world.solid(tx, ty)
+    let foot = ((y + h - EPS) / TILE_SIZE).floor() as i32;
+    world.solid(tx, foot) && !world.solid(tx, foot - 1) && !world.solid(tx, foot - 2)
+}
+
+/// How far the ground drops just ahead of a grounded creature, in tiles: `0` is
+/// level ground (or a wall) ahead, `1` is a single-block step down, and `2`
+/// means a drop of two or more blocks (a cliff). Capped at `3` so a bottomless
+/// gap doesn't scan forever.
+fn drop_ahead(world: &mut ServerWorld, x: f32, y: f32, w: f32, h: f32, vx: f32) -> i32 {
+    let ahead = if vx > 0.0 { x + w + EPS } else { x - EPS };
+    let tx = (ahead / TILE_SIZE).floor() as i32;
+    let ground = ((y + h + EPS) / TILE_SIZE).floor() as i32;
+    let mut d = 0;
+    while d < 3 && !world.solid(tx, ground + d) {
+        d += 1;
+    }
+    d
 }
 
 async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Result<()> {

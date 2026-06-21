@@ -46,9 +46,19 @@ pub static SLIME_SPRITE: SpriteDef = SpriteDef {
     default: slime_tex,
 };
 
+/// Chicken: a small bird that bobs as it struts and flaps when startled.
+pub static CHICKEN_SPRITE: SpriteDef = SpriteDef {
+    name: "chicken",
+    frame_w: 12,
+    frame_h: 14,
+    frames: 4,
+    fps: 8.0,
+    default: chicken_tex,
+};
+
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 2] {
-    [&PLAYER_SPRITE, &SLIME_SPRITE]
+pub fn all() -> [&'static SpriteDef; 3] {
+    [&PLAYER_SPRITE, &SLIME_SPRITE, &CHICKEN_SPRITE]
 }
 
 /// The sprite to draw for a given entity kind.
@@ -56,6 +66,7 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
     match kind {
         EntityKind::Player { .. } => &PLAYER_SPRITE,
         EntityKind::Slime => &SLIME_SPRITE,
+        EntityKind::Chicken => &CHICKEN_SPRITE,
         // Dropped items are drawn from their block texture, not an animation
         // sheet (see the client's scene builder), so this is never queried for
         // them; fall back to the slime sheet to keep the match total.
@@ -130,6 +141,53 @@ fn slime_tex(frame: u32, x: u32, y: u32) -> [u8; 4] {
             return DARK; // rim shading
         }
         return BODY;
+    }
+    TRANS
+}
+
+fn chicken_tex(frame: u32, x: u32, y: u32) -> [u8; 4] {
+    const TRANS: [u8; 4] = [0, 0, 0, 0];
+    const BODY: [u8; 4] = [240, 240, 240, 255];
+    const WING: [u8; 4] = [205, 205, 210, 255];
+    const BEAK: [u8; 4] = [235, 170, 60, 255];
+    const COMB: [u8; 4] = [210, 60, 55, 255];
+    const LEG: [u8; 4] = [235, 170, 60, 255];
+    const EYE: [u8; 4] = [25, 25, 30, 255];
+    let (xi, yi) = (x as i32, y as i32);
+
+    // Legs stride per frame to read as a walk; flap the wing on alternate frames.
+    let stride = [0i32, 1, 0, -1][(frame % 4) as usize];
+    let flap = frame % 2 == 1;
+
+    // Comb on top of the head.
+    if yi == 2 && (xi == 8 || xi == 9) {
+        return COMB;
+    }
+    // Body ellipse (the plump middle of the bird).
+    let dx = (xi as f32 + 0.5 - 6.0) / 5.0;
+    let dy = (yi as f32 + 0.5 - 7.0) / 4.5;
+    if dx * dx + dy * dy <= 1.0 {
+        // Eye and beak sit toward the front (right) of the head.
+        if yi == 4 && xi == 8 {
+            return EYE;
+        }
+        if yi == 5 && xi >= 10 {
+            return BEAK;
+        }
+        // A wing patch along the bird's flank, raised a row when flapping.
+        let wing_top = if flap { 4 } else { 5 };
+        if (wing_top..wing_top + 3).contains(&yi) && (3..6).contains(&xi) {
+            return WING;
+        }
+        return BODY;
+    }
+    // Two legs below the body.
+    if (11..14).contains(&yi) {
+        let left = 5 + stride;
+        let right = 7 - stride;
+        if xi == left || xi == right {
+            return LEG;
+        }
     }
     TRANS
 }
