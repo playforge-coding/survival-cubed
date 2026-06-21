@@ -1714,6 +1714,7 @@ fn handle_block_actions(
         if let Some((block, _)) = game.inventory.get(slot)
             && current == AIR
             && !overlaps_player(game, tx, ty)
+            && cell_in_reach(game, tx, ty)
         {
             game.world.set_block(tx, ty, block);
             // Optimistically spend one; the server confirms (or corrects) with an
@@ -1744,7 +1745,8 @@ fn mine_block(
     } else {
         AIR
     };
-    if current == AIR {
+    // Can't mine air, or a cell beyond melee reach.
+    if current == AIR || !cell_in_reach(game, tx, ty) {
         game.break_target = None;
         game.break_progress = 0.0;
         return;
@@ -1787,6 +1789,21 @@ fn creature_at(game: &GameState, world: Vec2) -> Option<EntityId> {
         }
     }
     None
+}
+
+/// Whether cell `(tx, ty)` is close enough to place into — gated by the same
+/// melee reach used for attacks, so you can only build where you could swing.
+fn cell_in_reach(game: &GameState, tx: i32, ty: i32) -> bool {
+    aabb_gap_px(
+        game.pos.x,
+        game.pos.y,
+        PLAYER_W,
+        PLAYER_H,
+        tx as f32 * TILE_SIZE,
+        ty as f32 * TILE_SIZE,
+        TILE_SIZE,
+        TILE_SIZE,
+    ) <= PLAYER_ATTACK_REACH
 }
 
 /// Smallest gap (px) between two AABBs; `0.0` when they overlap.

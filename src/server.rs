@@ -1635,6 +1635,38 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     }
                 }
                 ClientMessage::SetBlock { x, y, block: _ } => {
+                    // Mining is gated by the player's melee reach — the same limit
+                    // that governs attacks and placement.
+                    let in_reach = {
+                        let entities = shared.entities.lock();
+                        entities.get(id).is_some_and(|p| {
+                            let (pw, ph) = p.size();
+                            aabb_gap(
+                                p.x,
+                                p.y,
+                                pw,
+                                ph,
+                                x as f32 * TILE_SIZE,
+                                y as f32 * TILE_SIZE,
+                                TILE_SIZE,
+                                TILE_SIZE,
+                            ) <= PLAYER_ATTACK_REACH
+                        })
+                    };
+                    if !in_reach {
+                        // Out of range: resync the cell so the client's optimistic
+                        // break is undone.
+                        let actual = shared.world.lock().get(x, y);
+                        shared.send_to(
+                            id,
+                            ServerMessage::BlockUpdate {
+                                x,
+                                y,
+                                block: actual,
+                            },
+                        );
+                        continue;
+                    }
                     // Breaking: clear the cell and drop its block on the ground
                     // for the player to walk over and collect.
                     let mined = {
@@ -1666,7 +1698,26 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                 .iter()
                                 .any(|(dx, dy)| world.get(x + dx, y + dy) != crate::block::AIR)
                     };
-                    if !supported {
+                    // Placement is also gated by the player's melee reach, so a
+                    // block can only go where the player could swing — the same
+                    // limit that governs attacks.
+                    let in_reach = {
+                        let entities = shared.entities.lock();
+                        entities.get(id).is_some_and(|p| {
+                            let (pw, ph) = p.size();
+                            aabb_gap(
+                                p.x,
+                                p.y,
+                                pw,
+                                ph,
+                                x as f32 * TILE_SIZE,
+                                y as f32 * TILE_SIZE,
+                                TILE_SIZE,
+                                TILE_SIZE,
+                            ) <= PLAYER_ATTACK_REACH
+                        })
+                    };
+                    if !supported || !in_reach {
                         // Reject: resync the cell's true contents and the inventory
                         // so the client's optimistic placement is undone.
                         let actual = shared.world.lock().get(x, y);
