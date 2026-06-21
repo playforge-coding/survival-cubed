@@ -42,7 +42,7 @@ const ACTION_COOLDOWN: f32 = 0.12;
 /// Extra chunks loaded beyond the screen edges.
 const CHUNK_MARGIN: i32 = 1;
 /// Falls shorter than this (in tiles) are harmless.
-const SAFE_FALL_TILES: f32 = 3.0;
+const SAFE_FALL_TILES: f32 = 10.0;
 /// Hit points lost per tile fallen beyond [`SAFE_FALL_TILES`].
 const FALL_DAMAGE_PER_TILE: f32 = 1.0;
 /// Max gap (px between AABBs) at which the player can melee a creature.
@@ -77,6 +77,23 @@ fn blocks_texture_dir() -> PathBuf {
 
 fn entities_texture_dir() -> PathBuf {
     textures_dir("entities")
+}
+
+/// Validate a user-entered world name, returning the trimmed name if it is safe
+/// to use as a directory. Restricting to letters, numbers, spaces, '-' and '_'
+/// keeps names readable and rules out path separators and traversal.
+fn sanitize_world_name(input: &str) -> Option<String> {
+    let s = input.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if s.chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_'))
+    {
+        Some(s.to_string())
+    } else {
+        None
+    }
 }
 
 /// Entry point: build the app and run the winit event loop.
@@ -186,6 +203,12 @@ struct App {
     status: String,
     address_input: String,
     port_input: String,
+    /// Name typed in the "New world" form.
+    world_name_input: String,
+    /// Seed typed in the "New world" form; empty means pick one at random.
+    seed_input: String,
+    /// Whether launching a world should also host it on the LAN.
+    host_enabled: bool,
 
     net: Option<NetHandle>,
     server: Option<RunningServer>,
@@ -216,6 +239,9 @@ impl App {
             status: String::new(),
             address_input: "127.0.0.1:5000".to_string(),
             port_input: "5000".to_string(),
+            world_name_input: "world".to_string(),
+            seed_input: String::new(),
+            host_enabled: false,
             net: None,
             server: None,
             pending_tofu: None,
@@ -242,32 +268,83 @@ impl App {
             .unwrap_or(1337)
     }
 
-    fn start_singleplayer(&mut self) {
-        let save_dir = crate::save::world_dir("singleplayer");
-        match server::start_server(server::local_bind(), Self::seed(), save_dir) {
+    /// Turn the user's seed text into a generator seed. Empty input picks a
+    /// time-based seed; a plain integer is used as-is; any other text is hashed
+    /// (FNV-1a) so memorable word-seeds work like other block games.
+    fn parse_seed(input: &str) -> i32 {
+        let s = input.trim();
+        if s.is_empty() {
+            return Self::seed();
+        }
+        if let Ok(n) = s.parse::<i32>() {
+            return n;
+        }
+        let mut hash: u32 = 0x811c_9dc5;
+        for b in s.bytes() {
+            hash ^= b as u32;
+            hash = hash.wrapping_mul(0x0100_0193);
+        }
+        hash as i32
+    }
+
+    /// Create and launch a brand-new world from the "New world" form, validating
+    /// the name and rejecting collisions with an existing save.
+    fn create_world(&mut self) {
+        let name = match sanitize_world_name(&self.world_name_input) {
+            Some(n) => n,
+            None => {
+                self.status =
+                    "World name must be letters, numbers, spaces, '-' or '_'.".to_string();
+                return;
+            }
+        };
+        if crate::save::world_exists(&name) {
+            self.status = format!("A world named '{name}' already exists.");
+            return;
+        }
+        let seed = Self::parse_seed(&self.seed_input);
+        self.launch_world(name, seed);
+    }
+
+    /// Launch a world locally, or host it on the LAN if the "Host on LAN" toggle
+    /// is set. For an existing world the saved seed wins; `seed` only applies to
+    /// a fresh one.
+    fn launch_world(&mut self, name: String, seed: i32) {
+        if self.host_enabled {
+            let port: u16 = self.port_input.trim().parse().unwrap_or(5000);
+            self.start_host_world(name, seed, port);
+        } else {
+            self.start_world(name, seed);
+        }
+    }
+
+    /// Start an embedded server for a singleplayer world and connect to it.
+    fn start_world(&mut self, name: String, seed: i32) {
+        let save_dir = crate::save::world_dir(&name);
+        match server::start_server(server::local_bind(), seed, save_dir) {
             Ok(srv) => {
-                let handle = connect(srv.addr, "singleplayer".to_string(), Some(srv.fingerprint));
+                let handle = connect(srv.addr, name.clone(), Some(srv.fingerprint));
                 self.server = Some(srv);
                 self.net = Some(handle);
                 self.screen = Screen::Connecting;
-                self.status = "Starting singleplayer world...".to_string();
+                self.status = format!("Starting world '{name}'...");
             }
             Err(e) => self.status = format!("Failed to start server: {e:#}"),
         }
     }
 
-    fn start_host(&mut self) {
-        let port: u16 = self.port_input.trim().parse().unwrap_or(5000);
-        let save_dir = crate::save::world_dir(&format!("host-{port}"));
-        match server::start_server(server::host_bind(port), Self::seed(), save_dir) {
+    /// Start a LAN-advertised server for `name` on `port` and connect to it.
+    fn start_host_world(&mut self, name: String, seed: i32, port: u16) {
+        let save_dir = crate::save::world_dir(&name);
+        match server::start_server(server::host_bind(port), seed, save_dir) {
             Ok(mut srv) => {
-                srv.advertise(&format!("Survival Cubed :{port}"));
+                srv.advertise(&format!("Survival Cubed: {name} :{port}"));
                 let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-                let handle = connect(addr, format!("127.0.0.1:{port}"), Some(srv.fingerprint));
+                let handle = connect(addr, name.clone(), Some(srv.fingerprint));
                 self.server = Some(srv);
                 self.net = Some(handle);
                 self.screen = Screen::Connecting;
-                self.status = format!("Hosting on port {port}...");
+                self.status = format!("Hosting '{name}' on port {port}...");
             }
             Err(e) => self.status = format!("Failed to host: {e:#}"),
         }
@@ -486,9 +563,10 @@ impl App {
     }
 
     fn menu_ui(&mut self, ui: &mut egui::Ui) {
-        // Snapshot the LAN list up front so the closures below can freely borrow
-        // `self` to launch a join.
+        // Snapshot the LAN list and saved worlds up front so the closures below
+        // can freely borrow `self` to launch a join or load.
         let lan_servers = self.lan.as_ref().map(|b| b.servers()).unwrap_or_default();
+        let worlds = crate::save::list_worlds();
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(80.0);
@@ -497,24 +575,61 @@ impl App {
                 ui.label("A multiplayer-first 2D block game.");
                 ui.add_space(24.0);
 
-                if ui.button("  Singleplayer  ").clicked() {
-                    self.start_singleplayer();
-                }
-                ui.add_space(16.0);
-
                 ui.group(|ui| {
-                    ui.label("Host a server");
+                    ui.label("New world");
                     ui.horizontal(|ui| {
-                        ui.label("Port:");
+                        ui.label("Name:");
                         ui.add(
-                            egui::TextEdit::singleline(&mut self.port_input).desired_width(80.0),
+                            egui::TextEdit::singleline(&mut self.world_name_input)
+                                .desired_width(160.0),
                         );
-                        if ui.button("Host").clicked() {
-                            self.start_host();
-                        }
                     });
+                    ui.horizontal(|ui| {
+                        ui.label("Seed:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.seed_input)
+                                .desired_width(160.0)
+                                .hint_text("random"),
+                        );
+                    });
+                    ui.checkbox(&mut self.host_enabled, "Host on LAN");
+                    if self.host_enabled {
+                        ui.horizontal(|ui| {
+                            ui.label("Port:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.port_input)
+                                    .desired_width(80.0),
+                            );
+                        });
+                    }
+                    let create_label = if self.host_enabled {
+                        "Create & host"
+                    } else {
+                        "Create world"
+                    };
+                    if ui.button(create_label).clicked() {
+                        self.create_world();
+                    }
                 });
                 ui.add_space(8.0);
+
+                ui.group(|ui| {
+                    ui.label("Your worlds");
+                    if worlds.is_empty() {
+                        ui.weak("No saved worlds yet.");
+                    } else {
+                        let play_label = if self.host_enabled { "Host" } else { "Play" };
+                        for world in &worlds {
+                            ui.horizontal(|ui| {
+                                if ui.button(play_label).clicked() {
+                                    self.launch_world(world.name.clone(), world.seed);
+                                }
+                                ui.label(format!("{}  (seed {})", world.name, world.seed));
+                            });
+                        }
+                    }
+                });
+                ui.add_space(16.0);
 
                 ui.group(|ui| {
                     ui.label("Join a server");
