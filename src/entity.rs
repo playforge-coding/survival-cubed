@@ -33,9 +33,9 @@ pub const ITEM_SIZE: (f32, f32) = (8.0, 8.0);
 /// Maximum health of a player, in hit points.
 pub const PLAYER_MAX_HEALTH: i32 = 20;
 /// Maximum health of a slime, in hit points.
-pub const SLIME_MAX_HEALTH: i32 = 8;
+pub const SLIME_MAX_HEALTH: i32 = 10;
 /// Maximum health of a chicken, in hit points.
-pub const CHICKEN_MAX_HEALTH: i32 = 4;
+pub const CHICKEN_MAX_HEALTH: i32 = 8;
 
 /// What an entity *is*. Adding a new creature/object means adding a variant
 /// here plus (for server-simulated kinds) a branch in the server tick loop.
