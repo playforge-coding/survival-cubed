@@ -79,6 +79,12 @@ pub enum ServerMessage {
         health: i32,
         max_health: i32,
     },
+    /// An entity just took a hit. Every client flashes that entity red; the
+    /// owning client of a player avatar also applies the knockback velocity
+    /// `(vx, vy)` (px/s) to its locally-simulated motion. Server-simulated
+    /// creatures are already knocked back on the server, so for them the
+    /// velocity is informational only.
+    EntityHit { id: EntityId, vx: f32, vy: f32 },
     /// Current normalized time of day in `[0, 1)` (see [`crate::daylight`]).
     /// Broadcast periodically; clients advance it locally in between.
     TimeOfDay { t: f32 },

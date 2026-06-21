@@ -48,6 +48,11 @@ const SAFE_FALL_TILES: f32 = 10.0;
 const FALL_DAMAGE_PER_TILE: f32 = 1.0;
 /// Max gap (px between AABBs) at which the player can melee a creature.
 const PLAYER_ATTACK_REACH: f32 = 12.0;
+/// Seconds an entity tints red after taking a hit.
+const HIT_FLASH_TIME: f32 = 0.25;
+/// Exponential decay rate (per second) of the player's horizontal knockback, so
+/// a shove fades over roughly a quarter second.
+const KNOCKBACK_DAMP: f32 = 9.0;
 
 /// Locate a textures subdirectory: `<assets>/textures/<sub>`.
 ///
@@ -172,6 +177,13 @@ struct GameState {
     /// Highest point (smallest `y`) reached since leaving the ground, used to
     /// measure fall distance for fall damage.
     air_min_y: f32,
+    /// Seconds left on the local player's red "just got hit" flash (counted down
+    /// each frame). Remote entities track this on their own [`Entity::hit_flash`].
+    hit_flash: f32,
+    /// Horizontal knockback velocity (px/s) added on top of input-driven motion
+    /// and decayed each frame. Kept separate because [`step_physics`] recomputes
+    /// `vel.x` from input every step, which would otherwise wipe out the shove.
+    knockback_x: f32,
 }
 
 impl GameState {
@@ -199,6 +211,8 @@ impl GameState {
             break_target: None,
             break_progress: 0.0,
             air_min_y: spawn.y,
+            hit_flash: 0.0,
+            knockback_x: 0.0,
         }
     }
 }
@@ -488,6 +502,24 @@ impl App {
                     }
                 }
             }
+            NetEvent::EntityHit { id, vx, vy } => {
+                if let Some(g) = &mut self.game {
+                    if id == g.entity_id {
+                        // Our own avatar: the server can't move us, so apply the
+                        // knockback to local motion and flash ourselves red. The
+                        // horizontal shove rides on a separate decaying channel
+                        // (vel.x is rewritten from input each step); the vertical
+                        // pop can go straight onto vel.y, which gravity carries.
+                        g.knockback_x += vx;
+                        g.vel.y += vy;
+                        g.hit_flash = HIT_FLASH_TIME;
+                    } else if let Some(e) = g.entities.get_mut(id) {
+                        // Remote entity: it's already being knocked back by the
+                        // server (its EntityMoved follows), so just flash it.
+                        e.hit_flash = HIT_FLASH_TIME;
+                    }
+                }
+            }
             NetEvent::TimeOfDay { t } => {
                 if let Some(g) = &mut self.game {
                     g.time_of_day = t;
@@ -497,6 +529,7 @@ impl App {
                 if let Some(g) = &mut self.game {
                     g.pos = Vec2::new(x, y);
                     g.vel = Vec2::ZERO;
+                    g.knockback_x = 0.0;
                     g.air_min_y = y;
                     g.last_sent = g.pos;
                 }
@@ -530,6 +563,12 @@ impl App {
         // Advance the day/night clock locally; the server corrects it via
         // TimeOfDay messages.
         game.time_of_day = (game.time_of_day + dt / daylight::DAY_LENGTH_SECS).rem_euclid(1.0);
+
+        // Count down red hit-flash timers (own avatar and every remote entity).
+        game.hit_flash = (game.hit_flash - dt).max(0.0);
+        for e in game.entities.values_mut() {
+            e.hit_flash = (e.hit_flash - dt).max(0.0);
+        }
 
         let fall_damage = step_physics(game, reg, input, dt);
         if let (Some(amount), Some(net)) = (fall_damage, &self.net) {
@@ -1027,7 +1066,7 @@ impl App {
                 w,
                 h,
                 facing,
-                tint,
+                flash_tint(tint, e.hit_flash),
             ));
             // A small health bar floats over any wounded creature.
             if e.health < e.max_health && e.max_health > 0 {
@@ -1052,7 +1091,7 @@ impl App {
             PLAYER_W,
             PLAYER_H,
             g.player_facing,
-            tint,
+            flash_tint(tint, g.hit_flash),
         ));
 
         (
@@ -1220,6 +1259,19 @@ fn entity_instance(
 
 /// Build a solid-color flat quad (using the atlas's white cell) for overlays
 /// like the mining indicator and entity health bars.
+/// Tint an entity red in proportion to its remaining hit-flash. `base` is the
+/// normal (daylight) tint; as `flash` approaches [`HIT_FLASH_TIME`] the green and
+/// blue channels are crushed so the sprite reads as a red flash, fading back to
+/// `base` as the timer runs out.
+fn flash_tint(base: [f32; 4], flash: f32) -> [f32; 4] {
+    if flash <= 0.0 {
+        return base;
+    }
+    let k = (flash / HIT_FLASH_TIME).clamp(0.0, 1.0);
+    let fade = 1.0 - 0.85 * k;
+    [base[0], base[1] * fade, base[2] * fade, base[3]]
+}
+
 fn flat_quad(white: UvRect, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) -> TileInstance {
     TileInstance {
         pos: [x, y],
@@ -1235,9 +1287,13 @@ fn flat_quad(white: UvRect, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) -> 
 fn step_physics(game: &mut GameState, reg: &BlockRegistry, input: &Input, dt: f32) -> Option<i32> {
     let was_grounded = game.on_ground;
 
-    // Horizontal intent.
+    // Horizontal intent, plus any lingering knockback shove (which decays).
     let dir = (input.right as i32 - input.left as i32) as f32;
-    game.vel.x = dir * MOVE_SPEED;
+    game.vel.x = dir * MOVE_SPEED + game.knockback_x;
+    game.knockback_x *= (1.0 - KNOCKBACK_DAMP * dt).max(0.0);
+    if game.knockback_x.abs() < 1.0 {
+        game.knockback_x = 0.0;
+    }
     if dir > 0.0 {
         game.player_facing = true;
     } else if dir < 0.0 {
@@ -1481,11 +1537,12 @@ fn mine_block(
     }
 }
 
-/// Id of a non-player creature whose AABB contains `world` and is within melee
-/// reach of the player, if any.
+/// Id of an attackable entity (another player or a creature, but not a dropped
+/// item) whose AABB contains `world` and is within melee reach of the player, if
+/// any. Our own avatar isn't in `entities`, so it can't be hit.
 fn creature_at(game: &GameState, world: Vec2) -> Option<EntityId> {
     for e in game.entities.values() {
-        if e.kind.is_player() || e.kind.is_item() {
+        if e.kind.is_item() {
             continue;
         }
         let (w, h) = e.size();

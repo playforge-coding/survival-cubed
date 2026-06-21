@@ -130,6 +130,12 @@ pub struct Entity {
     /// survives a reload without needing to be persisted.
     #[serde(skip)]
     pub home_x: Option<f32>,
+    /// Client-only: seconds left on the red "just got hit" flash. Set when an
+    /// [`crate::protocol::ServerMessage::EntityHit`] arrives and counted down each
+    /// frame while the entity tints red. Never sent over the wire (defaults to
+    /// `0.0` on both sides).
+    #[serde(skip)]
+    pub hit_flash: f32,
 }
 
 impl Entity {
@@ -148,6 +154,7 @@ impl Entity {
             attack_cd: 0.0,
             flee: 0.0,
             home_x: None,
+            hit_flash: 0.0,
         }
     }
 
@@ -190,6 +197,10 @@ impl Entities {
 
     pub fn values(&self) -> impl Iterator<Item = &Entity> {
         self.map.values()
+    }
+
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Entity> {
+        self.map.values_mut()
     }
 
     /// Number of player entities currently present.

@@ -63,6 +63,11 @@ pub enum NetEvent {
         health: i32,
         max_health: i32,
     },
+    EntityHit {
+        id: EntityId,
+        vx: f32,
+        vy: f32,
+    },
     TimeOfDay {
         t: f32,
     },
@@ -238,6 +243,7 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
             health,
             max_health,
         },
+        ServerMessage::EntityHit { id, vx, vy } => NetEvent::EntityHit { id, vx, vy },
         ServerMessage::TimeOfDay { t } => NetEvent::TimeOfDay { t },
         ServerMessage::Respawn { x, y } => NetEvent::Respawn { x, y },
         ServerMessage::Inventory { slots } => NetEvent::Inventory { slots },

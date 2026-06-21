@@ -73,6 +73,11 @@ const SLIME_ATTACK_INTERVAL: f32 = 1.0;
 const PLAYER_ATTACK_DAMAGE: i32 = 4;
 /// Player melee reach (max gap, px, between attacker and target AABBs).
 const PLAYER_ATTACK_REACH: f32 = 12.0;
+/// Horizontal knockback speed (px/s) shoved onto whatever a hit lands on, away
+/// from the attacker.
+const KNOCKBACK_X: f32 = 180.0;
+/// Upward knockback speed (px/s) — a small pop so a hit lifts the target a touch.
+const KNOCKBACK_Y: f32 = 240.0;
 /// How often the server broadcasts the current time of day, in seconds.
 const TIME_BROADCAST_SECS: f32 = 2.0;
 /// Upward velocity (px/s) given to a freshly mined block so it visibly pops out
@@ -735,7 +740,9 @@ fn step_entities(shared: &Shared) -> Step {
     let mut pickups: Vec<EntityId> = Vec::new();
     // Players a slime bit this tick; applied after the movement loop so we
     // never hold two mutable entity borrows at once.
-    let mut bites: Vec<EntityId> = Vec::new();
+    // Each entry is the bitten player and the knockback `(vx, vy)` to shove it
+    // away from the biting slime.
+    let mut bites: Vec<(EntityId, (f32, f32))> = Vec::new();
 
     for id in slime_ids {
         let Some(e) = entities.get_mut(id) else {
@@ -793,7 +800,12 @@ fn step_entities(shared: &Shared) -> Step {
                     <= SLIME_ATTACK_RANGE
             {
                 e.attack_cd = SLIME_ATTACK_INTERVAL;
-                bites.push(pid);
+                let dir = if px + PLAYER_SIZE.0 * 0.5 >= m.x + w * 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                bites.push((pid, (dir * KNOCKBACK_X, -KNOCKBACK_Y)));
             }
         }
     }
@@ -921,8 +933,8 @@ fn step_entities(shared: &Shared) -> Step {
     }
 
     let mut respawns = Vec::new();
-    for pid in bites {
-        let (msgs, respawn) = apply_damage(&mut entities, pid, SLIME_DAMAGE, shared.spawn);
+    for (pid, kb) in bites {
+        let (msgs, respawn) = apply_damage(&mut entities, pid, SLIME_DAMAGE, kb, shared.spawn);
         broadcasts.extend(msgs);
         if let Some(r) = respawn {
             respawns.push(r);
@@ -971,6 +983,7 @@ fn apply_damage(
     entities: &mut Entities,
     id: EntityId,
     amount: i32,
+    knockback: (f32, f32),
     spawn: (f32, f32),
 ) -> (Vec<ServerMessage>, Option<(EntityId, f32, f32)>) {
     let Some(e) = entities.get_mut(id) else {
@@ -978,18 +991,34 @@ fn apply_damage(
     };
     e.health = (e.health - amount).max(0);
 
+    // Knockback: shove server-simulated creatures directly (their motion is
+    // authoritative here, so the next tick carries them off). Player avatars are
+    // client-authoritative, so we can't move them from here — the owning client
+    // applies the same velocity when it sees the EntityHit below.
+    if !e.kind.is_player() {
+        e.vx += knockback.0;
+        e.vy += knockback.1;
+    }
+
     // Getting hit sends a chicken into a panicked sprint away from players.
     if matches!(e.kind, EntityKind::Chicken) {
         e.flee = CHICKEN_FLEE_TIME;
     }
 
+    // Every hit flashes the target red on all clients and carries the knockback.
+    let mut msgs = vec![ServerMessage::EntityHit {
+        id,
+        vx: knockback.0,
+        vy: knockback.1,
+    }];
+
     if e.health > 0 {
-        let msg = ServerMessage::EntityHealth {
+        msgs.push(ServerMessage::EntityHealth {
             id,
             health: e.health,
             max_health: e.max_health,
-        };
-        return (vec![msg], None);
+        });
+        return (msgs, None);
     }
 
     if e.kind.is_player() {
@@ -999,17 +1028,16 @@ fn apply_damage(
         e.y = spawn.1;
         let health = e.health;
         let max_health = e.max_health;
-        (
-            vec![ServerMessage::EntityHealth {
-                id,
-                health,
-                max_health,
-            }],
-            Some((id, spawn.0, spawn.1)),
-        )
+        msgs.push(ServerMessage::EntityHealth {
+            id,
+            health,
+            max_health,
+        });
+        (msgs, Some((id, spawn.0, spawn.1)))
     } else {
         entities.remove(id);
-        (vec![ServerMessage::EntityDespawn { id }], None)
+        msgs.push(ServerMessage::EntityDespawn { id });
+        (msgs, None)
     }
 }
 
@@ -1388,22 +1416,40 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     );
                 }
                 ClientMessage::Attack { target } => {
-                    // Validate the attacker is actually within melee reach.
-                    let in_reach = {
+                    // Validate reach and, if good, compute the knockback shoving
+                    // the target away from the attacker.
+                    let knockback = {
                         let entities = shared.entities.lock();
                         match (entities.get(id), entities.get(target)) {
                             (Some(a), Some(b)) => {
                                 let (aw, ah) = a.size();
                                 let (bw, bh) = b.size();
-                                aabb_gap(a.x, a.y, aw, ah, b.x, b.y, bw, bh) <= PLAYER_ATTACK_REACH
+                                if aabb_gap(a.x, a.y, aw, ah, b.x, b.y, bw, bh)
+                                    <= PLAYER_ATTACK_REACH
+                                {
+                                    let dir = if b.x + bw * 0.5 >= a.x + aw * 0.5 {
+                                        1.0
+                                    } else {
+                                        -1.0
+                                    };
+                                    Some((dir * KNOCKBACK_X, -KNOCKBACK_Y))
+                                } else {
+                                    None
+                                }
                             }
-                            _ => false,
+                            _ => None,
                         }
                     };
-                    if in_reach {
+                    if let Some(kb) = knockback {
                         let (msgs, respawn) = {
                             let mut entities = shared.entities.lock();
-                            apply_damage(&mut entities, target, PLAYER_ATTACK_DAMAGE, shared.spawn)
+                            apply_damage(
+                                &mut entities,
+                                target,
+                                PLAYER_ATTACK_DAMAGE,
+                                kb,
+                                shared.spawn,
+                            )
                         };
                         for m in msgs {
                             shared.broadcast_all(m);
@@ -1417,7 +1463,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     if amount > 0 {
                         let (msgs, respawn) = {
                             let mut entities = shared.entities.lock();
-                            apply_damage(&mut entities, id, amount, shared.spawn)
+                            apply_damage(&mut entities, id, amount, (0.0, 0.0), shared.spawn)
                         };
                         for m in msgs {
                             shared.broadcast_all(m);
