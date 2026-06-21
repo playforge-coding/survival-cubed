@@ -392,6 +392,49 @@ impl Shared {
         }
     }
 
+    /// Craft `RECIPES[recipe_idx]` once for player `id`: if they hold every
+    /// input, consume the inputs and grant the outputs. Outputs that don't fit
+    /// the inventory spill onto the ground at the player's feet. No-op for an
+    /// unknown recipe or insufficient materials.
+    fn craft(&self, id: EntityId, recipe_idx: usize) {
+        let Some(recipe) = crate::recipe::RECIPES.get(recipe_idx) else {
+            return;
+        };
+        let overflow = {
+            let mut invs = self.inventories.lock();
+            let inv = invs.entry(id).or_default();
+            if !recipe.craftable(inv) {
+                return;
+            }
+            for (item, n) in recipe.inputs {
+                inv.remove(*item, *n);
+            }
+            let mut overflow = Vec::new();
+            for (item, n) in recipe.outputs {
+                let left = inv.add(*item, *n);
+                if left > 0 {
+                    overflow.push((*item, left));
+                }
+            }
+            overflow
+        };
+        // Spill anything that didn't fit at the crafter's location.
+        if !overflow.is_empty() {
+            let cell = self
+                .entities
+                .lock()
+                .get(id)
+                .map(|e| ((e.x / TILE_SIZE) as i32, (e.y / TILE_SIZE) as i32));
+            if let Some((cx, cy)) = cell {
+                for (item, n) in overflow {
+                    for _ in 0..n {
+                        spawn_drop(self, cx, cy, item);
+                    }
+                }
+            }
+        }
+    }
+
     /// Push the authoritative inventory snapshot to its owner.
     fn send_inventory(&self, id: EntityId) {
         let slots = self
@@ -1684,7 +1727,14 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             y,
                             block: crate::block::AIR,
                         });
-                        spawn_drop(&shared, x, y, prev);
+                        // Leaves shed a stick rather than a leaf block; every
+                        // other block drops itself.
+                        let drop = if prev == crate::block::LEAVES {
+                            crate::block::STICK
+                        } else {
+                            prev
+                        };
+                        spawn_drop(&shared, x, y, drop);
                     }
                 }
                 ClientMessage::PlaceBlock { x, y, slot } => {
@@ -1735,6 +1785,12 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     // Read the block to place from the player's own slot, so they
                     // can only place what they actually hold.
                     match shared.take_from_slot(id, slot as usize) {
+                        // Plain items (bark, sticks, tools) can't be placed —
+                        // refund and resync the slot.
+                        Some(block) if !shared.world.lock().registry.is_placeable(block) => {
+                            shared.add_item(id, block);
+                            shared.send_inventory(id);
+                        }
                         Some(block) => {
                             let changed = shared.world.lock().set(x, y, block);
                             if changed {
@@ -1763,6 +1819,10 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 }
                 ClientMessage::MoveItem { from, to } => {
                     shared.move_item(id, from as usize, to as usize);
+                    shared.send_inventory(id);
+                }
+                ClientMessage::Craft { recipe } => {
+                    shared.craft(id, recipe as usize);
                     shared.send_inventory(id);
                 }
                 ClientMessage::PlayerMove { x, y } => {

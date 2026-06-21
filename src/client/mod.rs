@@ -931,7 +931,9 @@ impl App {
             (g.inventory.to_slots(), g.move_from, g.selected_slot)
         };
         let registry = self.registry.clone();
+        let inventory = self.game.as_ref().unwrap().inventory.clone();
         let mut clicked: Option<usize> = None;
+        let mut craft: Option<u16> = None;
         let mut close = false;
 
         egui::Window::new("Inventory")
@@ -977,6 +979,23 @@ impl App {
                 });
                 ui.add_space(6.0);
                 ui.weak("Click a slot, then another, to move/stack · click it again to cancel");
+
+                ui.separator();
+                ui.label("Crafting");
+                for (idx, recipe) in crate::recipe::RECIPES.iter().enumerate() {
+                    let can = recipe.craftable(&inventory);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(can, egui::Button::new(recipe.name))
+                            .on_hover_text(recipe_tooltip(&registry, recipe))
+                            .clicked()
+                        {
+                            craft = Some(idx as u16);
+                        }
+                        ui.weak(recipe_summary(&registry, recipe));
+                    });
+                }
+
                 ui.add_space(4.0);
                 if ui.button("Close").clicked() {
                     close = true;
@@ -1005,6 +1024,11 @@ impl App {
             if let (Some((from, to)), Some(net)) = (move_cmd, &self.net) {
                 let _ = net.commands.send(NetCommand::MoveItem { from, to });
             }
+        }
+        // Crafting is server-authoritative: send the request and let the
+        // resulting Inventory snapshot update the display.
+        if let (Some(recipe), Some(net)) = (craft, &self.net) {
+            let _ = net.commands.send(NetCommand::Craft { recipe });
         }
         if close && let Some(g) = self.game.as_mut() {
             g.inventory_open = false;
@@ -1325,8 +1349,30 @@ fn block_color(registry: &BlockRegistry, block: BlockId) -> egui::Color32 {
         "grass" => egui::Color32::from_rgb(83, 150, 60),
         "log" => egui::Color32::from_rgb(102, 70, 44),
         "leaves" => egui::Color32::from_rgb(54, 118, 48),
+        "wood" => egui::Color32::from_rgb(176, 138, 88),
+        "bark" => egui::Color32::from_rgb(84, 56, 34),
+        "stick" => egui::Color32::from_rgb(138, 96, 54),
+        "pickaxe" => egui::Color32::from_rgb(200, 200, 210),
+        "stone_pickaxe" => egui::Color32::from_rgb(120, 120, 128),
         _ => egui::Color32::from_gray(150),
     }
+}
+
+/// A compact "in → out" line for a recipe, e.g. `1 log → 1 wood, 4 bark`.
+fn recipe_summary(registry: &BlockRegistry, recipe: &crate::recipe::Recipe) -> String {
+    let names = |items: &[(BlockId, u32)]| {
+        items
+            .iter()
+            .map(|(item, n)| format!("{} {}", n, registry.get(*item).name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!("{} → {}", names(recipe.inputs), names(recipe.outputs))
+}
+
+/// Hover text spelling out a recipe's inputs and outputs.
+fn recipe_tooltip(registry: &BlockRegistry, recipe: &crate::recipe::Recipe) -> String {
+    format!("{}\n{}", recipe.name, recipe_summary(registry, recipe))
 }
 
 /// Draw one inventory/hotbar slot: a framed cell with the block swatch, its
@@ -1712,6 +1758,7 @@ fn handle_block_actions(
         let slot = game.selected_slot;
         let current = game.world.get_block(tx, ty);
         if let Some((block, _)) = game.inventory.get(slot)
+            && reg.is_placeable(block)
             && current == AIR
             && !overlaps_player(game, tx, ty)
             && cell_in_reach(game, tx, ty)

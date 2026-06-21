@@ -36,6 +36,9 @@ pub enum ClientMessage {
     PlaceBlock { x: i32, y: i32, slot: u8 },
     /// Move/merge/swap the stack in inventory slot `from` onto slot `to`.
     MoveItem { from: u8, to: u8 },
+    /// Craft [`RECIPES`](crate::recipe::RECIPES)`[recipe]` once: the server
+    /// checks the player holds all inputs, consumes them, and grants the outputs.
+    Craft { recipe: u16 },
     /// Report the owning player entity's position (pixels, world space).
     PlayerMove { x: f32, y: f32 },
     /// Melee-attack another entity (e.g. a slime). The server validates range

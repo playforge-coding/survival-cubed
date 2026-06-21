@@ -13,6 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::block::max_stack;
 use crate::protocol::BlockId;
 
 /// Number of hotbar slots (selectable with keys 1–9, used for placing).
@@ -74,15 +75,16 @@ impl Inventory {
     /// order) and then filling empty slots. Returns the amount that did *not*
     /// fit (0 when everything was stored).
     pub fn add(&mut self, block: BlockId, mut count: u32) -> u32 {
+        let cap = max_stack(block);
         for slot in self.slots.iter_mut() {
             if count == 0 {
                 break;
             }
             if let Some((b, n)) = slot
                 && *b == block
-                && *n < STACK_MAX
+                && *n < cap
             {
-                let room = STACK_MAX - *n;
+                let room = cap - *n;
                 let moved = room.min(count);
                 *n += moved;
                 count -= moved;
@@ -93,12 +95,46 @@ impl Inventory {
                 break;
             }
             if slot.is_none() {
-                let moved = count.min(STACK_MAX);
+                let moved = count.min(cap);
                 *slot = Some((block, moved));
                 count -= moved;
             }
         }
         count
+    }
+
+    /// Total number of `item` held across every slot.
+    pub fn count(&self, item: BlockId) -> u32 {
+        self.slots
+            .iter()
+            .filter_map(|s| *s)
+            .filter(|(b, _)| *b == item)
+            .map(|(_, n)| n)
+            .sum()
+    }
+
+    /// Remove `count` of `item`, drawing from matching stacks in slot order.
+    /// Removes nothing and returns `false` if fewer than `count` are held.
+    pub fn remove(&mut self, item: BlockId, mut count: u32) -> bool {
+        if self.count(item) < count {
+            return false;
+        }
+        for slot in self.slots.iter_mut() {
+            if count == 0 {
+                break;
+            }
+            if let Some((b, n)) = slot
+                && *b == item
+            {
+                let taken = (*n).min(count);
+                *n -= taken;
+                count -= taken;
+                if *n == 0 {
+                    *slot = None;
+                }
+            }
+        }
+        true
     }
 
     /// Remove one item from `slot`, returning its block id (or `None` if the slot
@@ -131,7 +167,7 @@ impl Inventory {
                 self.slots[from] = None;
             }
             Some((tb, tcount)) if tb == fb => {
-                let room = STACK_MAX.saturating_sub(tcount);
+                let room = max_stack(tb).saturating_sub(tcount);
                 let moved = room.min(fcount);
                 self.slots[to] = Some((tb, tcount + moved));
                 let left = fcount - moved;
@@ -148,6 +184,30 @@ mod tests {
 
     const STONE: BlockId = 1;
     const DIRT: BlockId = 2;
+    const PICKAXE: BlockId = crate::block::PICKAXE;
+
+    #[test]
+    fn tools_stack_to_one_per_slot() {
+        let mut inv = Inventory::new();
+        // Three pickaxes can't merge; each takes its own slot.
+        assert_eq!(inv.add(PICKAXE, 3), 0);
+        assert_eq!(inv.get(0), Some((PICKAXE, 1)));
+        assert_eq!(inv.get(1), Some((PICKAXE, 1)));
+        assert_eq!(inv.get(2), Some((PICKAXE, 1)));
+        assert_eq!(inv.count(PICKAXE), 3);
+    }
+
+    #[test]
+    fn remove_draws_across_stacks_or_fails() {
+        let mut inv = Inventory::new();
+        inv.add(STONE, 70); // 64 + 6 across two slots
+        assert!(!inv.remove(STONE, 80)); // not enough: no-op
+        assert_eq!(inv.count(STONE), 70);
+        assert!(inv.remove(STONE, 66)); // drains slot 0, dips into slot 1
+        assert_eq!(inv.count(STONE), 4);
+        assert_eq!(inv.get(0), None);
+        assert_eq!(inv.get(1), Some((STONE, 4)));
+    }
 
     #[test]
     fn add_stacks_then_fills_empty_slots() {

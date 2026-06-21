@@ -17,14 +17,26 @@ use crate::protocol::BlockId;
 /// Pixel size of one block sprite, in texels.
 pub const TILE_TEX: u32 = 16;
 
-/// Built-in block ids. These are guaranteed because [`BlockRegistry::new`]
-/// registers them first, in this order.
+/// Built-in item ids. Every id names an *item*; the ones whose [`BlockDef`] is
+/// [`placeable`](BlockDef::placeable) are also *blocks* (a block is an item that
+/// can additionally be placed in the world). These are guaranteed because
+/// [`BlockRegistry::new`] registers them first, in this order.
 pub const AIR: BlockId = 0;
 pub const STONE: BlockId = 1;
 pub const DIRT: BlockId = 2;
 pub const GRASS: BlockId = 3;
 pub const LOG: BlockId = 4;
 pub const LEAVES: BlockId = 5;
+/// Planks split from a log. A placeable block.
+pub const WOOD: BlockId = 6;
+/// Bark stripped from a log. An item (not placeable).
+pub const BARK: BlockId = 7;
+/// A stick, dropped by leaves and used to craft tools. An item.
+pub const STICK: BlockId = 8;
+/// A wooden pickaxe. A tool item; stacks to one (see [`max_stack`]).
+pub const PICKAXE: BlockId = 9;
+/// A stone pickaxe. A tool item; stacks to one.
+pub const STONE_PICKAXE: BlockId = 10;
 
 /// Generates an RGBA texel at `(x, y)` (both in `0..TILE_TEX`). Used only to
 /// seed a starter PNG when the real texture file is missing.
@@ -36,8 +48,12 @@ pub struct BlockDef {
     pub name: &'static str,
     /// Whether the player collides with this block.
     pub solid: bool,
-    /// Whether the block is drawn (air is not).
+    /// Whether the item has a tile in the texture atlas — drawn either as a world
+    /// block or as a dropped-item sprite (air is not).
     pub visible: bool,
+    /// Whether this item can be placed in the world as a block. Plain items
+    /// (bark, sticks, tools) are not placeable; only blocks are.
+    pub placeable: bool,
     /// Seconds of sustained mining needed to break this block (the breaking
     /// delay). Tougher blocks take longer; air is `0.0`.
     pub break_secs: f32,
@@ -55,22 +71,39 @@ impl BlockRegistry {
     /// Create a registry pre-populated with the built-in blocks.
     pub fn new() -> Self {
         let mut r = BlockRegistry { defs: Vec::new() };
-        // Order matters: defines the AIR/STONE/DIRT/GRASS/LOG/LEAVES ids above.
-        r.register("air", false, false, 0.0, None);
-        r.register("stone", true, true, 1.2, Some(tex_stone));
-        r.register("dirt", true, true, 0.5, Some(tex_dirt));
-        r.register("grass", true, true, 0.5, Some(tex_grass));
-        r.register("log", true, true, 1.0, Some(tex_log));
-        r.register("leaves", true, true, 0.3, Some(tex_leaves));
+        // Order matters: defines the ids declared above.
+        //               name             solid  visible placeable break  tex
+        r.register("air", false, false, false, 0.0, None);
+        r.register("stone", true, true, true, 1.2, Some(tex_stone));
+        r.register("dirt", true, true, true, 0.5, Some(tex_dirt));
+        r.register("grass", true, true, true, 0.5, Some(tex_grass));
+        r.register("log", true, true, true, 1.0, Some(tex_log));
+        r.register("leaves", true, true, true, 0.3, Some(tex_leaves));
+        // Crafted items. `wood` is a placeable block; the rest are plain items
+        // (visible only so their dropped-on-the-ground sprite has an atlas tile).
+        r.register("wood", true, true, true, 0.8, Some(tex_wood));
+        r.register("bark", false, true, false, 0.0, Some(tex_bark));
+        r.register("stick", false, true, false, 0.0, Some(tex_stick));
+        r.register("pickaxe", false, true, false, 0.0, Some(tex_pickaxe));
+        r.register(
+            "stone_pickaxe",
+            false,
+            true,
+            false,
+            0.0,
+            Some(tex_stone_pickaxe),
+        );
         r
     }
 
-    /// Register a new block and return its assigned id.
+    /// Register a new item and return its assigned id. A `placeable` item is a
+    /// block (it can be set into a world cell); the rest are inventory-only.
     pub fn register(
         &mut self,
         name: &'static str,
         solid: bool,
         visible: bool,
+        placeable: bool,
         break_secs: f32,
         default_tex: Option<TexFn>,
     ) -> BlockId {
@@ -80,6 +113,7 @@ impl BlockRegistry {
             name,
             solid,
             visible,
+            placeable,
             break_secs,
             default_tex,
         });
@@ -95,6 +129,11 @@ impl BlockRegistry {
         self.get(id).solid
     }
 
+    /// Whether `id` is a block that can be placed into the world.
+    pub fn is_placeable(&self, id: BlockId) -> bool {
+        self.get(id).placeable
+    }
+
     pub fn len(&self) -> usize {
         self.defs.len()
     }
@@ -107,6 +146,15 @@ impl BlockRegistry {
 impl Default for BlockRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Maximum number of `id` that fit in one inventory slot. Tools stack to one;
+/// everything else uses the default [`STACK_MAX`](crate::inventory::STACK_MAX).
+pub fn max_stack(id: BlockId) -> u32 {
+    match id {
+        PICKAXE | STONE_PICKAXE => 1,
+        _ => crate::inventory::STACK_MAX,
     }
 }
 
@@ -172,4 +220,55 @@ fn tex_leaves(x: u32, y: u32) -> [u8; 4] {
     let dark = if hash(x, y, 10) % 5 == 0 { -22 } else { 0 };
     let n = (hash(x, y, 9) % 6) as i32 * 7 - 17;
     shade([54, 118, 48], n + dark)
+}
+
+fn tex_wood(x: u32, y: u32) -> [u8; 4] {
+    // Planks: light sawn timber with horizontal seams every few rows.
+    let seam = if y % 5 == 0 { -30 } else { 0 };
+    let n = (hash(x, y, 11) % 4) as i32 * 5 - 7;
+    shade([176, 138, 88], seam + n)
+}
+
+fn tex_bark(x: u32, y: u32) -> [u8; 4] {
+    // A curled strip of bark: dark, with rough vertical ridges.
+    let ridge = if x % 3 == 0 { -16 } else { 0 };
+    let n = (hash(x, y, 12) % 4) as i32 * 6 - 9;
+    shade([84, 56, 34], ridge + n)
+}
+
+fn tex_stick(x: u32, y: u32) -> [u8; 4] {
+    // A single diagonal twig over transparency.
+    if x.abs_diff(y) <= 1 {
+        let n = (hash(x, y, 13) % 3) as i32 * 6 - 6;
+        shade([138, 96, 54], n)
+    } else {
+        [0, 0, 0, 0]
+    }
+}
+
+fn tex_pickaxe(x: u32, y: u32) -> [u8; 4] {
+    pickaxe_tex(x, y, [150, 110, 70], [200, 200, 210])
+}
+
+fn tex_stone_pickaxe(x: u32, y: u32) -> [u8; 4] {
+    pickaxe_tex(x, y, [138, 96, 54], [120, 120, 128])
+}
+
+/// Shared pickaxe silhouette: a diagonal handle of `handle` colour with a curved
+/// `head` across the top. Transparent elsewhere.
+fn pickaxe_tex(x: u32, y: u32, handle: [u8; 3], head: [u8; 3]) -> [u8; 4] {
+    // Handle runs from lower-left to upper-right.
+    let on_handle = (x + y).abs_diff(16) <= 1 && y >= 3;
+    // Head: a bowed bar near the top spanning most of the width.
+    let on_head =
+        y >= 2 && y <= 4 && (3..=12).contains(&x) && (x as i32 - 7).pow(2) / 6 <= (4 - y) as i32;
+    if on_head {
+        let n = (hash(x, y, 14) % 3) as i32 * 6 - 6;
+        shade(head, n)
+    } else if on_handle {
+        let n = (hash(x, y, 15) % 3) as i32 * 5 - 5;
+        shade(handle, n)
+    } else {
+        [0, 0, 0, 0]
+    }
 }

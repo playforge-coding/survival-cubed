@@ -104,6 +104,10 @@ pub enum NetCommand {
         from: u8,
         to: u8,
     },
+    /// Craft the recipe at index `recipe` once (server validates materials).
+    Craft {
+        recipe: u16,
+    },
     PlayerMove {
         x: f32,
         y: f32,
@@ -259,6 +263,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::SetBlock { x, y, block } => ClientMessage::SetBlock { x, y, block },
         NetCommand::PlaceBlock { x, y, slot } => ClientMessage::PlaceBlock { x, y, slot },
         NetCommand::MoveItem { from, to } => ClientMessage::MoveItem { from, to },
+        NetCommand::Craft { recipe } => ClientMessage::Craft { recipe },
         NetCommand::PlayerMove { x, y } => ClientMessage::PlayerMove { x, y },
         NetCommand::RequestChunk { cx, cy } => ClientMessage::RequestChunk { cx, cy },
         NetCommand::Attack { target } => ClientMessage::Attack { target },

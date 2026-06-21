@@ -12,6 +12,7 @@ mod entity;
 mod inventory;
 mod net;
 mod protocol;
+mod recipe;
 mod save;
 mod server;
 mod world;
