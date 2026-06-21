@@ -169,15 +169,60 @@ fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// The directory holding every world's save folder.
+fn saves_dir() -> PathBuf {
+    let mut p = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
+    p.push("survival-cubed");
+    p.push("saves");
+    p
+}
+
 /// Directory for a named world under the platform data dir, e.g.
 /// `~/.local/share/survival-cubed/saves/<name>`. Falls back to `./saves/<name>`
 /// if no data dir is known.
 pub fn world_dir(name: &str) -> PathBuf {
-    let mut p = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
-    p.push("survival-cubed");
-    p.push("saves");
+    let mut p = saves_dir();
     p.push(name);
     p
+}
+
+/// Whether a world with this name has already been saved.
+pub fn world_exists(name: &str) -> bool {
+    world_dir(name).join(WORLD_FILE).exists()
+}
+
+/// A saved world found on disk, summarised for the menu's world picker.
+pub struct WorldInfo {
+    /// Directory name, which doubles as the world's identifier.
+    pub name: String,
+    /// Generator seed read from the world's metadata.
+    pub seed: i32,
+}
+
+/// List every saved world, newest-looking ordering aside, sorted by name. Only
+/// directories with a readable `world.dat` are returned; anything unreadable is
+/// silently skipped so a single corrupt save can't hide the rest.
+pub fn list_worlds() -> Vec<WorldInfo> {
+    let mut worlds = Vec::new();
+    let entries = match fs::read_dir(saves_dir()) {
+        Ok(e) => e,
+        Err(_) => return worlds,
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let store = WorldStore::new(entry.path());
+        if let Ok(Some(meta)) = store.load_meta() {
+            worlds.push(WorldInfo {
+                name,
+                seed: meta.seed,
+            });
+        }
+    }
+    worlds.sort_by(|a, b| a.name.cmp(&b.name));
+    worlds
 }
 
 #[cfg(test)]
