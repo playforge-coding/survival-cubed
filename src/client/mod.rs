@@ -1136,6 +1136,8 @@ fn block_color(registry: &BlockRegistry, block: BlockId) -> egui::Color32 {
         "stone" => egui::Color32::from_rgb(120, 120, 128),
         "dirt" => egui::Color32::from_rgb(121, 85, 58),
         "grass" => egui::Color32::from_rgb(83, 150, 60),
+        "log" => egui::Color32::from_rgb(102, 70, 44),
+        "leaves" => egui::Color32::from_rgb(54, 118, 48),
         _ => egui::Color32::from_gray(150),
     }
 }

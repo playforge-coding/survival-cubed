@@ -1,13 +1,14 @@
 //! Procedural terrain generation using `fastnoise-lite`.
 //!
 //! The world is split into [`Biome`]s by a low-frequency noise field: broad
-//! flat **plains** (the common case) and rugged **mountains**. Each biome picks
-//! its own surface roughness and block palette, so a single column's height and
+//! flat **plains** (the common case), lush **forest** (flat like plains but
+//! thick with trees) and rugged **mountains**. Each biome picks its own surface
+//! roughness, block palette and tree density, so a single column's height and
 //! blocks are decided entirely by the biome it falls in.
 
 use fastnoise_lite::{FastNoiseLite, NoiseType};
 
-use crate::block::{DIRT, GRASS, STONE};
+use crate::block::{AIR, DIRT, GRASS, LEAVES, LOG, STONE};
 use crate::world::{CHUNK_SIZE, Chunk, WORLD_HEIGHT, to_chunk};
 
 /// Average surface row (cells from the top of the world).
@@ -23,9 +24,22 @@ const MOUNTAIN_AMP: f32 = 40.0;
 /// so a biome edge reads as terrain rising into a range.
 const MOUNTAIN_LIFT: i32 = 14;
 
-/// Biome noise above this threshold is mountains; below is plains. Biased
-/// positive so plains are the more common biome.
+/// Biome noise above this threshold is mountains; below `FOREST_THRESHOLD` is
+/// forest; the band between is plains. Biased so plains stay the common biome.
 const MOUNTAIN_THRESHOLD: f32 = 0.30;
+/// Biome noise below this threshold is forest (flat, tree-dense grassland).
+const FOREST_THRESHOLD: f32 = -0.30;
+
+/// Per-mille chance that any individual plains column roots a tree — sparse,
+/// the odd lonely tree dotting the grassland.
+const PLAINS_TREE_CHANCE: u32 = 30;
+/// Per-mille chance for forest columns — abundant, a near-continuous canopy.
+const FOREST_TREE_CHANCE: u32 = 340;
+/// Trunk height range (cells of log above the ground) for a generated tree.
+const TRUNK_MIN: i32 = 4;
+const TRUNK_MAX: i32 = 6;
+/// Canopy reaches this many cells out from the trunk top in each direction.
+const CANOPY_RADIUS: i32 = 2;
 /// Half-width (in biome-noise units) of the band around `MOUNTAIN_THRESHOLD`
 /// over which terrain height is blended from plains to mountains. Wider means
 /// longer, gentler foothills; `0.0` would restore hard cliffs at the boundary.
@@ -35,8 +49,10 @@ const BIOME_BLEND: f32 = 0.22;
 /// creatures. Selected per column by a low-frequency noise field.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Biome {
-    /// Common, flat grassland: grass over dirt over stone.
+    /// Common, flat grassland: grass over dirt over stone, sparsely treed.
     Plains,
+    /// Flat grassland like the plains but blanketed in trees.
+    Forest,
     /// Rugged high ground built entirely of stone.
     Mountains,
 }
@@ -90,6 +106,8 @@ impl WorldGen {
         let n = self.biome_noise.get_noise_2d(world_x as f32, 0.0); // -1..1
         if n > MOUNTAIN_THRESHOLD {
             Biome::Mountains
+        } else if n < FOREST_THRESHOLD {
+            Biome::Forest
         } else {
             Biome::Plains
         }
@@ -113,8 +131,9 @@ impl WorldGen {
         match biome {
             // Mountains are bare stone from the surface down.
             Biome::Mountains => STONE,
-            // Plains keep the classic grass / dirt band / stone layering.
-            Biome::Plains => {
+            // Plains and forest share the classic grass / dirt band / stone
+            // layering; they differ only in how many trees grow on top.
+            Biome::Plains | Biome::Forest => {
                 if world_y == surface {
                     GRASS
                 } else if world_y <= surface + DIRT_DEPTH {
@@ -143,7 +162,91 @@ impl WorldGen {
                 chunk.set(lx, ly, Self::block_at(biome, surface, world_y));
             }
         }
+        // Trees grow upward from the surface and can lean their canopies across
+        // chunk borders, so scan a margin of columns either side and let
+        // [`place_tree`] clip whatever falls outside this chunk.
+        for world_x in (base_x - CANOPY_RADIUS)..(base_x + CHUNK_SIZE + CANOPY_RADIUS) {
+            if self.tree_root_at(world_x) {
+                self.place_tree(&mut chunk, base_x, base_y, world_x);
+            }
+        }
         chunk
+    }
+
+    /// Deterministic pseudo-random value for a world column, mixed with `salt`
+    /// to draw several independent decisions (tree presence, trunk height) from
+    /// the same column. Seeded so a column always decides the same way.
+    fn col_hash(&self, world_x: i32, salt: u32) -> u32 {
+        let mut h = (self.seed as u32)
+            .wrapping_mul(374_761_393)
+            .wrapping_add((world_x as u32).wrapping_mul(668_265_263));
+        h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
+        h = h.wrapping_add(salt.wrapping_mul(0x9E37_79B9));
+        h ^ (h >> 16)
+    }
+
+    /// Whether a column rolls a tree, by its biome's density. Independent of
+    /// neighbours; spacing is enforced by [`tree_root_at`].
+    fn column_rolls_tree(&self, world_x: i32) -> bool {
+        let chance = match self.biome_at(world_x) {
+            Biome::Forest => FOREST_TREE_CHANCE,
+            Biome::Plains => PLAINS_TREE_CHANCE,
+            Biome::Mountains => 0,
+        };
+        self.col_hash(world_x, 0) % 1000 < chance
+    }
+
+    /// Whether a tree's trunk is rooted at this column. A rolled column is
+    /// suppressed if its left neighbour also rolled, so trunks never stand
+    /// directly adjacent even in dense forest (their canopies still merge).
+    fn tree_root_at(&self, world_x: i32) -> bool {
+        self.column_rolls_tree(world_x) && !self.column_rolls_tree(world_x - 1)
+    }
+
+    /// Write a tree rooted at `root_x` into `chunk`, clipping to the chunk's
+    /// cell bounds. Only ever fills air, so trees never gouge into terrain or
+    /// overwrite a neighbouring trunk.
+    fn place_tree(&self, chunk: &mut Chunk, base_x: i32, base_y: i32, root_x: i32) {
+        let surface = self.surface_height(root_x);
+        let span = (TRUNK_MAX - TRUNK_MIN + 1) as u32;
+        let trunk_h = TRUNK_MIN + (self.col_hash(root_x, 1) % span) as i32;
+        let top = surface - trunk_h; // topmost trunk cell (smaller y is higher)
+
+        // Trunk first: a column of logs from just above the ground to `top`.
+        for world_y in top..surface {
+            put_block(chunk, base_x, base_y, root_x, world_y, LOG);
+        }
+        // Then a rounded canopy of leaves centred on the trunk top, filling only
+        // the air around the logs.
+        for oy in -CANOPY_RADIUS..=CANOPY_RADIUS {
+            for ox in -CANOPY_RADIUS..=CANOPY_RADIUS {
+                if ox * ox + oy * oy > CANOPY_RADIUS * CANOPY_RADIUS + 1 {
+                    continue; // trim the corners for a rounded crown
+                }
+                put_block(chunk, base_x, base_y, root_x + ox, top + oy, LEAVES);
+            }
+        }
+    }
+}
+
+/// Set a world cell within a chunk, ignoring writes that fall outside the chunk
+/// or onto a cell that is not air. Used to clip trees to chunk bounds without
+/// disturbing terrain or other trees.
+fn put_block(
+    chunk: &mut Chunk,
+    base_x: i32,
+    base_y: i32,
+    world_x: i32,
+    world_y: i32,
+    b: crate::protocol::BlockId,
+) {
+    let lx = world_x - base_x;
+    let ly = world_y - base_y;
+    if !(0..CHUNK_SIZE).contains(&lx) || !(0..CHUNK_SIZE).contains(&ly) {
+        return;
+    }
+    if chunk.get(lx, ly) == AIR {
+        chunk.set(lx, ly, b);
     }
 }
 

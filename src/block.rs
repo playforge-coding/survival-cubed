@@ -23,6 +23,8 @@ pub const AIR: BlockId = 0;
 pub const STONE: BlockId = 1;
 pub const DIRT: BlockId = 2;
 pub const GRASS: BlockId = 3;
+pub const LOG: BlockId = 4;
+pub const LEAVES: BlockId = 5;
 
 /// Generates an RGBA texel at `(x, y)` (both in `0..TILE_TEX`). Used only to
 /// seed a starter PNG when the real texture file is missing.
@@ -53,11 +55,13 @@ impl BlockRegistry {
     /// Create a registry pre-populated with the built-in blocks.
     pub fn new() -> Self {
         let mut r = BlockRegistry { defs: Vec::new() };
-        // Order matters: defines the AIR/STONE/DIRT/GRASS ids above.
+        // Order matters: defines the AIR/STONE/DIRT/GRASS/LOG/LEAVES ids above.
         r.register("air", false, false, 0.0, None);
         r.register("stone", true, true, 1.2, Some(tex_stone));
         r.register("dirt", true, true, 0.5, Some(tex_dirt));
         r.register("grass", true, true, 0.5, Some(tex_grass));
+        r.register("log", true, true, 1.0, Some(tex_log));
+        r.register("leaves", true, true, 0.3, Some(tex_leaves));
         r
     }
 
@@ -152,4 +156,20 @@ fn tex_grass(x: u32, y: u32) -> [u8; 4] {
     } else {
         tex_dirt(x, y)
     }
+}
+
+fn tex_log(x: u32, y: u32) -> [u8; 4] {
+    // Bark with faint vertical streaks; the two centre columns read as a
+    // lighter heartwood core so trunks have a sense of grain.
+    let core = if x == 7 || x == 8 { 22 } else { 0 };
+    let streak = (hash(x, 0, 7) % 4) as i32 * 6 - 9;
+    let n = (hash(x, y, 8) % 3) as i32 * 4 - 4;
+    shade([102, 70, 44], core + streak + n)
+}
+
+fn tex_leaves(x: u32, y: u32) -> [u8; 4] {
+    // Mottled green foliage; occasional darker clumps break up the canopy.
+    let dark = if hash(x, y, 10) % 5 == 0 { -22 } else { 0 };
+    let n = (hash(x, y, 9) % 6) as i32 * 7 - 17;
+    shade([54, 118, 48], n + dark)
 }

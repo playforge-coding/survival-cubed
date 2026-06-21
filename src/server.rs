@@ -624,8 +624,8 @@ fn spawn_creatures(shared: &Shared) {
 /// them; plains always yield a chicken.
 fn creature_for_biome(biome: Biome, hostile_slot: bool) -> EntityKind {
     match biome {
-        // Plains: peaceful chickens.
-        Biome::Plains => EntityKind::Chicken,
+        // Plains and forest: peaceful chickens beneath the trees.
+        Biome::Plains | Biome::Forest => EntityKind::Chicken,
         // Mountains: hostile slimes interspersed with placid goats.
         Biome::Mountains => {
             if hostile_slot {
