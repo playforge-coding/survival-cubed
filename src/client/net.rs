@@ -17,6 +17,7 @@ use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 
 use crate::entity::{Entity, EntityId};
+use crate::inventory::Slot;
 use crate::net::{KnownHosts, fingerprint, fingerprint_hex, read_msg, write_msg};
 use crate::protocol::{ALPN, BlockId, ClientMessage, ServerMessage};
 
@@ -69,6 +70,10 @@ pub enum NetEvent {
         x: f32,
         y: f32,
     },
+    /// Authoritative snapshot of this client's inventory slots.
+    Inventory {
+        slots: Vec<Slot>,
+    },
     /// Connection closed (or never established). `reason` is human-readable.
     Disconnected {
         reason: String,
@@ -78,6 +83,8 @@ pub enum NetEvent {
 /// Commands flowing from the UI to the network thread.
 pub enum NetCommand {
     SetBlock { x: i32, y: i32, block: BlockId },
+    PlaceBlock { x: i32, y: i32, slot: u8 },
+    MoveItem { from: u8, to: u8 },
     PlayerMove { x: f32, y: f32 },
     RequestChunk { cx: i32, cy: i32 },
     Attack { target: EntityId },
@@ -194,6 +201,8 @@ async fn client_main(
 fn to_client_message(cmd: NetCommand) -> ClientMessage {
     match cmd {
         NetCommand::SetBlock { x, y, block } => ClientMessage::SetBlock { x, y, block },
+        NetCommand::PlaceBlock { x, y, slot } => ClientMessage::PlaceBlock { x, y, slot },
+        NetCommand::MoveItem { from, to } => ClientMessage::MoveItem { from, to },
         NetCommand::PlayerMove { x, y } => ClientMessage::PlayerMove { x, y },
         NetCommand::RequestChunk { cx, cy } => ClientMessage::RequestChunk { cx, cy },
         NetCommand::Attack { target } => ClientMessage::Attack { target },
@@ -231,6 +240,7 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
         },
         ServerMessage::TimeOfDay { t } => NetEvent::TimeOfDay { t },
         ServerMessage::Respawn { x, y } => NetEvent::Respawn { x, y },
+        ServerMessage::Inventory { slots } => NetEvent::Inventory { slots },
     };
     if ev_tx.send(ev).is_err() {
         std::ops::ControlFlow::Break(())

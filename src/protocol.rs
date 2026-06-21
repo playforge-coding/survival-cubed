@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::entity::{Entity, EntityId};
+use crate::inventory::Slot;
 
 /// Identifier of a block type. `0` is always air. See [`crate::block`].
 pub type BlockId = u16;
@@ -21,8 +22,14 @@ pub enum ClientMessage {
     Hello { name: String },
     /// Ask the server for the contents of a chunk.
     RequestChunk { cx: i32, cy: i32 },
-    /// Place (`block != 0`) or break (`block == 0`) a block at a world cell.
+    /// Break the block at a world cell (it drops on the ground to be collected).
     SetBlock { x: i32, y: i32, block: BlockId },
+    /// Place the block from hotbar `slot` at a world cell. The server reads the
+    /// block from that slot and consumes one, so the client can't place blocks
+    /// it doesn't hold.
+    PlaceBlock { x: i32, y: i32, slot: u8 },
+    /// Move/merge/swap the stack in inventory slot `from` onto slot `to`.
+    MoveItem { from: u8, to: u8 },
     /// Report the owning player entity's position (pixels, world space).
     PlayerMove { x: f32, y: f32 },
     /// Melee-attack another entity (e.g. a slime). The server validates range
@@ -78,4 +85,8 @@ pub enum ServerMessage {
     /// Instruct the owning client to move its player avatar back to a spawn
     /// point (after death). Health is restored via a separate `EntityHealth`.
     Respawn { x: f32, y: f32 },
+    /// Authoritative snapshot of the owning player's inventory slots (hotbar
+    /// first, then storage). Sent on join and after any change (pickup,
+    /// placement, slot move). Only ever sent to the inventory's owner.
+    Inventory { slots: Vec<Slot> },
 }

@@ -15,6 +15,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::protocol::BlockId;
+
 /// Unique identifier of a live entity. Allocated by the server; `0` is never
 /// used so it can double as "no entity".
 pub type EntityId = u32;
@@ -23,6 +25,8 @@ pub type EntityId = u32;
 pub const PLAYER_SIZE: (f32, f32) = (16.0, 32.0);
 /// Collision/draw size (width, height) in pixels of a slime.
 pub const SLIME_SIZE: (f32, f32) = (12.0, 12.0);
+/// Collision/draw size (width, height) in pixels of a dropped block item.
+pub const ITEM_SIZE: (f32, f32) = (8.0, 8.0);
 
 /// Maximum health of a player, in hit points.
 pub const PLAYER_MAX_HEALTH: i32 = 20;
@@ -38,6 +42,10 @@ pub enum EntityKind {
     Player { name: String },
     /// A small creature that wanders the surface. Server-simulated.
     Slime,
+    /// A block lying on the ground after being mined, waiting to be walked into
+    /// and picked up. Server-simulated (falls under gravity); carries the block
+    /// id it will add to a player's inventory on pickup.
+    DroppedItem { block: BlockId },
 }
 
 impl EntityKind {
@@ -46,6 +54,7 @@ impl EntityKind {
         match self {
             EntityKind::Player { .. } => PLAYER_SIZE,
             EntityKind::Slime => SLIME_SIZE,
+            EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
 
@@ -55,6 +64,11 @@ impl EntityKind {
         matches!(self, EntityKind::Player { .. })
     }
 
+    /// Whether this is a dropped block item lying on the ground.
+    pub fn is_item(&self) -> bool {
+        matches!(self, EntityKind::DroppedItem { .. })
+    }
+
     /// Full health for this kind of entity. Players cap at
     /// [`PLAYER_MAX_HEALTH`]; other creatures have their own (see the
     /// constants above).
@@ -62,6 +76,8 @@ impl EntityKind {
         match self {
             EntityKind::Player { .. } => PLAYER_MAX_HEALTH,
             EntityKind::Slime => SLIME_MAX_HEALTH,
+            // Items are inert; 1 keeps health == max_health so no health bar shows.
+            EntityKind::DroppedItem { .. } => 1,
         }
     }
 }

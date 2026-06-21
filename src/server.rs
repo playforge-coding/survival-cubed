@@ -22,7 +22,8 @@ use tokio::sync::mpsc;
 
 use crate::block::BlockRegistry;
 use crate::daylight;
-use crate::entity::{Entities, Entity, EntityId, EntityKind, PLAYER_SIZE, SLIME_SIZE};
+use crate::entity::{Entities, Entity, EntityId, EntityKind, ITEM_SIZE, PLAYER_SIZE, SLIME_SIZE};
+use crate::inventory::Inventory;
 use crate::net::{fingerprint, read_msg, write_msg};
 use crate::protocol::{ALPN, BlockId, ClientMessage, ServerMessage};
 use crate::save::{SavedPlayer, WorldMeta, WorldStore};
@@ -56,6 +57,17 @@ const PLAYER_ATTACK_DAMAGE: i32 = 4;
 const PLAYER_ATTACK_REACH: f32 = 12.0;
 /// How often the server broadcasts the current time of day, in seconds.
 const TIME_BROADCAST_SECS: f32 = 2.0;
+/// Upward velocity (px/s) given to a freshly mined block so it visibly pops out
+/// of the ground instead of being collected instantly.
+const ITEM_POP_VELOCITY: f32 = -120.0;
+/// Seconds a dropped item must lie on the ground before it can be picked up.
+/// Gives it time to pop clear of the player who mined it.
+const ITEM_PICKUP_DELAY: f32 = 0.4;
+/// Maximum gap (px between AABBs) at which a player collects a dropped item —
+/// i.e. they must essentially be touching it.
+const ITEM_PICKUP_REACH: f32 = 2.0;
+/// Per-tick horizontal speed retained by a sliding item on the ground (drag).
+const ITEM_GROUND_DRAG: f32 = 0.8;
 /// How often the world is flushed to disk while running, in seconds.
 const AUTOSAVE_SECS: f32 = 30.0;
 
@@ -158,6 +170,13 @@ impl ServerWorld {
             .unwrap_or_else(|| vec![0; CHUNK_AREA])
     }
 
+    /// Read the block at world cell `(x, y)`, generating its chunk on demand so
+    /// the value is consistent wherever it is queried.
+    fn get(&mut self, x: i32, y: i32) -> BlockId {
+        self.ensure(x.div_euclid(CHUNK_SIZE), y.div_euclid(CHUNK_SIZE));
+        self.world.get_block(x, y)
+    }
+
     fn set(&mut self, x: i32, y: i32, b: BlockId) -> bool {
         let (cx, cy) = (x.div_euclid(CHUNK_SIZE), y.div_euclid(CHUNK_SIZE));
         self.ensure(cx, cy);
@@ -199,6 +218,10 @@ struct Shared {
     /// moved out of here (into a live entity) while connected and folded back in
     /// on disconnect, so it survives both reconnects and restarts.
     saved_players: Mutex<HashMap<String, SavedPlayer>>,
+    /// Slot inventory of every currently-connected player, keyed by entity id.
+    /// Authoritative: placements consume from it and pickups add to it. Folded
+    /// into [`SavedPlayer`] on disconnect so it persists.
+    inventories: Mutex<HashMap<EntityId, Inventory>>,
     /// Set when the owning [`RunningServer`] is dropped, to stop the autosave
     /// loop.
     shutdown: AtomicBool,
@@ -226,6 +249,7 @@ impl Shared {
         // Creatures save directly; players are gathered from both the saved set
         // and any currently-connected avatars (whose live state is freshest).
         let mut players = self.saved_players.lock().clone();
+        let invs = self.inventories.lock().clone();
         let mut creatures = Vec::new();
         for e in self.entities.lock().values() {
             match &e.kind {
@@ -237,6 +261,7 @@ impl Shared {
                             x: e.x,
                             y: e.y,
                             health: e.health,
+                            inventory: invs.get(&e.id).cloned().unwrap_or_default(),
                         },
                     );
                 }
@@ -279,6 +304,36 @@ impl Shared {
         if let Some(h) = self.clients.lock().get(&id) {
             let _ = h.tx.send(msg);
         }
+    }
+
+    /// Add one `block` to player `id`'s inventory, stacking into existing stacks
+    /// first. Returns whether it fit (false only if the inventory is full).
+    fn add_item(&self, id: EntityId, block: BlockId) -> bool {
+        self.inventories.lock().entry(id).or_default().add(block, 1) == 0
+    }
+
+    /// Remove one item from hotbar/inventory `slot` of player `id`, returning the
+    /// block taken (or `None` if the slot was empty). Used to pay for placement.
+    fn take_from_slot(&self, id: EntityId, slot: usize) -> Option<BlockId> {
+        self.inventories.lock().get_mut(&id)?.take_one(slot)
+    }
+
+    /// Rearrange player `id`'s inventory by moving slot `from` onto slot `to`.
+    fn move_item(&self, id: EntityId, from: usize, to: usize) {
+        if let Some(inv) = self.inventories.lock().get_mut(&id) {
+            inv.move_stack(from, to);
+        }
+    }
+
+    /// Push the authoritative inventory snapshot to its owner.
+    fn send_inventory(&self, id: EntityId) {
+        let slots = self
+            .inventories
+            .lock()
+            .get(&id)
+            .map(Inventory::to_slots)
+            .unwrap_or_default();
+        self.send_to(id, ServerMessage::Inventory { slots });
     }
 }
 
@@ -480,6 +535,7 @@ fn build_endpoint(
         spawn,
         start,
         saved_players: Mutex::new(saved_players),
+        inventories: Mutex::new(HashMap::new()),
         shutdown: AtomicBool::new(false),
     });
 
@@ -520,6 +576,20 @@ fn spawn_slimes(shared: &Shared) {
     }
 }
 
+/// Spawn a dropped-block item at the center of cell `(cell_x, cell_y)`, popping
+/// it upward so it clears the player who mined it, and announce it to everyone.
+fn spawn_drop(shared: &Shared, cell_x: i32, cell_y: i32, block: BlockId) {
+    let (iw, ih) = ITEM_SIZE;
+    let id = shared.alloc_id();
+    let x = cell_x as f32 * TILE_SIZE + (TILE_SIZE - iw) * 0.5;
+    let y = cell_y as f32 * TILE_SIZE + (TILE_SIZE - ih) * 0.5;
+    let mut item = Entity::new(id, EntityKind::DroppedItem { block }, x, y);
+    item.vy = ITEM_POP_VELOCITY;
+    item.attack_cd = ITEM_PICKUP_DELAY; // reused as the pickup-delay timer
+    shared.entities.lock().insert(item.clone());
+    shared.broadcast_all(ServerMessage::EntitySpawn { entity: item });
+}
+
 /// Periodically simulates non-player entities, applies survival rules, and
 /// broadcasts the results (motion, health, time of day, respawns).
 async fn entity_tick_loop(shared: Arc<Shared>) {
@@ -538,12 +608,20 @@ async fn entity_tick_loop(shared: Arc<Shared>) {
         let Step {
             broadcasts,
             respawns,
+            mut pickups,
         } = step_entities(&shared);
         for msg in broadcasts {
             shared.broadcast_all(msg);
         }
         for (id, x, y) in respawns {
             shared.send_to(id, ServerMessage::Respawn { x, y });
+        }
+        // Items were credited during the step; push each collector a fresh
+        // inventory snapshot (deduplicating repeat collectors).
+        pickups.sort_unstable();
+        pickups.dedup();
+        for pid in pickups {
+            shared.send_inventory(pid);
         }
 
         // Keep every client's day/night clock in sync.
@@ -569,6 +647,9 @@ async fn entity_tick_loop(shared: Arc<Shared>) {
 struct Step {
     broadcasts: Vec<ServerMessage>,
     respawns: Vec<(EntityId, f32, f32)>,
+    /// Players who collected an item this tick and so need a fresh inventory
+    /// snapshot (sent after the entity locks are released). May contain repeats.
+    pickups: Vec<EntityId>,
 }
 
 /// Advance every server-simulated entity by one tick. Players are skipped for
@@ -592,11 +673,17 @@ fn step_entities(shared: &Shared) -> Step {
 
     let slime_ids: Vec<EntityId> = entities
         .values()
-        .filter(|e| !e.kind.is_player())
+        .filter(|e| matches!(e.kind, EntityKind::Slime))
+        .map(|e| e.id)
+        .collect();
+    let item_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| e.kind.is_item())
         .map(|e| e.id)
         .collect();
 
     let mut broadcasts = Vec::new();
+    let mut pickups: Vec<EntityId> = Vec::new();
     // Players a slime bit this tick; applied after the movement loop so we
     // never hold two mutable entity borrows at once.
     let mut bites: Vec<EntityId> = Vec::new();
@@ -657,6 +744,55 @@ fn step_entities(shared: &Shared) -> Step {
         }
     }
 
+    // Dropped items: fall under gravity, then get collected by any player that
+    // is touching them once their pickup delay has elapsed.
+    for id in item_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        let EntityKind::DroppedItem { block } = e.kind else {
+            continue;
+        };
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0); // reused as pickup delay
+
+        let mut vx = e.vx;
+        let mut vy = (e.vy + GRAVITY * TICK_DT).min(MAX_FALL);
+        let (x, hit_wall) = move_x(&mut world, e.x, e.y, w, h, vx * TICK_DT);
+        if hit_wall {
+            vx = 0.0;
+        }
+        let (y, on_ground) = move_y(&mut world, x, e.y, w, h, vy * TICK_DT);
+        if on_ground {
+            vy = 0.0;
+            vx *= ITEM_GROUND_DRAG;
+            if vx.abs() < 1.0 {
+                vx = 0.0;
+            }
+        }
+        e.x = x;
+        e.y = y;
+        e.vx = vx;
+        e.vy = vy;
+
+        // Collect into the first touching player with room (delay permitting).
+        let collector = if e.attack_cd <= 0.0 {
+            players.iter().find(|&&(pid, px, py)| {
+                aabb_gap(x, y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1) <= ITEM_PICKUP_REACH
+                    && shared.add_item(pid, block)
+            })
+        } else {
+            None
+        };
+        if let Some(&(pid, _, _)) = collector {
+            entities.remove(id);
+            broadcasts.push(ServerMessage::EntityDespawn { id });
+            pickups.push(pid);
+        } else {
+            broadcasts.push(ServerMessage::EntityMoved { id, x, y, vx, vy });
+        }
+    }
+
     let mut respawns = Vec::new();
     for pid in bites {
         let (msgs, respawn) = apply_damage(&mut entities, pid, SLIME_DAMAGE, shared.spawn);
@@ -669,6 +805,7 @@ fn step_entities(shared: &Shared) -> Step {
     Step {
         broadcasts,
         respawns,
+        pickups,
     }
 }
 
@@ -859,6 +996,10 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
         .lock()
         .insert(id, ClientHandle { tx: tx.clone() });
     shared.broadcast_except(id, ServerMessage::EntitySpawn { entity: player });
+    // Start with an empty inventory; a returning player gets theirs restored on
+    // Hello. Either way the owner is told its contents.
+    shared.inventories.lock().insert(id, Inventory::new());
+    shared.send_inventory(id);
     log::info!("player {id} connected");
 
     // Reader loop.
@@ -879,6 +1020,9 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         }
                     }
                     if let Some(sp) = restored {
+                        // Restore their saved inventory and push it to them.
+                        shared.inventories.lock().insert(id, sp.inventory.clone());
+                        shared.send_inventory(id);
                         // Teleport the owner's avatar and resync its health.
                         let _ = tx.send(ServerMessage::Respawn { x: sp.x, y: sp.y });
                         shared.broadcast_all(ServerMessage::EntityHealth {
@@ -902,11 +1046,60 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     let blocks = shared.world.lock().chunk_blocks(cx, cy);
                     let _ = tx.send(ServerMessage::Chunk { cx, cy, blocks });
                 }
-                ClientMessage::SetBlock { x, y, block } => {
-                    let changed = shared.world.lock().set(x, y, block);
-                    if changed {
-                        shared.broadcast_all(ServerMessage::BlockUpdate { x, y, block });
+                ClientMessage::SetBlock { x, y, block: _ } => {
+                    // Breaking: clear the cell and drop its block on the ground
+                    // for the player to walk over and collect.
+                    let mined = {
+                        let mut w = shared.world.lock();
+                        let prev = w.get(x, y);
+                        if prev != crate::block::AIR && w.set(x, y, crate::block::AIR) {
+                            Some(prev)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(prev) = mined {
+                        shared.broadcast_all(ServerMessage::BlockUpdate {
+                            x,
+                            y,
+                            block: crate::block::AIR,
+                        });
+                        spawn_drop(&shared, x, y, prev);
                     }
+                }
+                ClientMessage::PlaceBlock { x, y, slot } => {
+                    // Read the block to place from the player's own slot, so they
+                    // can only place what they actually hold.
+                    match shared.take_from_slot(id, slot as usize) {
+                        Some(block) => {
+                            let changed = shared.world.lock().set(x, y, block);
+                            if changed {
+                                shared.broadcast_all(ServerMessage::BlockUpdate { x, y, block });
+                            } else {
+                                // Cell was occupied: refund the spent block.
+                                shared.add_item(id, block);
+                            }
+                            shared.send_inventory(id);
+                        }
+                        None => {
+                            // Empty slot: correct the client's optimistic guess by
+                            // resending the cell's true contents and inventory.
+                            let actual = shared.world.lock().get(x, y);
+                            shared.send_to(
+                                id,
+                                ServerMessage::BlockUpdate {
+                                    x,
+                                    y,
+                                    block: actual,
+                                },
+                            );
+                            shared.send_inventory(id);
+                        }
+                    }
+                }
+                ClientMessage::MoveItem { from, to } => {
+                    shared.move_item(id, from as usize, to as usize);
+                    shared.send_inventory(id);
                 }
                 ClientMessage::PlayerMove { x, y } => {
                     if let Some(e) = shared.entities.lock().get_mut(id) {
@@ -972,6 +1165,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
     // Cleanup. Preserve the player's state so they resume where they left off.
     shared.clients.lock().remove(&id);
     let removed = shared.entities.lock().remove(id);
+    let inventory = shared.inventories.lock().remove(&id).unwrap_or_default();
     if let Some(Entity {
         kind: EntityKind::Player { name },
         x,
@@ -979,13 +1173,18 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
         health,
         ..
     }) = removed
+        && !name.is_empty()
     {
-        if !name.is_empty() {
-            shared
-                .saved_players
-                .lock()
-                .insert(name.clone(), SavedPlayer { name, x, y, health });
-        }
+        shared.saved_players.lock().insert(
+            name.clone(),
+            SavedPlayer {
+                name,
+                x,
+                y,
+                health,
+                inventory,
+            },
+        );
     }
     shared.broadcast_all(ServerMessage::EntityDespawn { id });
     writer.abort();

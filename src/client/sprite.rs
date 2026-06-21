@@ -56,6 +56,10 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
     match kind {
         EntityKind::Player { .. } => &PLAYER_SPRITE,
         EntityKind::Slime => &SLIME_SPRITE,
+        // Dropped items are drawn from their block texture, not an animation
+        // sheet (see the client's scene builder), so this is never queried for
+        // them; fall back to the slime sheet to keep the match total.
+        EntityKind::DroppedItem { .. } => &SLIME_SPRITE,
     }
 }
 

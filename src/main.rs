@@ -9,6 +9,7 @@ mod client;
 mod daylight;
 mod discovery;
 mod entity;
+mod inventory;
 mod net;
 mod protocol;
 mod save;

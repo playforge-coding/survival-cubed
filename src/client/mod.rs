@@ -17,10 +17,11 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-use crate::block::{AIR, BlockRegistry, DIRT, GRASS, STONE};
+use crate::block::{AIR, BlockRegistry};
 use crate::daylight;
 use crate::discovery::{DiscoveredServer, LanBrowser};
-use crate::entity::{Entities, EntityId, PLAYER_MAX_HEALTH};
+use crate::entity::{Entities, EntityId, EntityKind, PLAYER_MAX_HEALTH};
+use crate::inventory::{HOTBAR_SLOTS, Inventory, STORAGE_SLOTS, Slot};
 use crate::protocol::BlockId;
 use crate::server::{self, RunningServer};
 use crate::world::{CHUNK_SIZE, TILE_SIZE, WORLD_HEIGHT, World, to_chunk};
@@ -144,7 +145,16 @@ struct GameState {
     /// Facing of this client's own player avatar.
     player_facing: bool,
     requested: HashSet<(i32, i32)>,
-    selected: BlockId,
+    /// Index of the selected hotbar slot (`0..HOTBAR_SLOTS`); its block is the
+    /// one placed on right-click.
+    selected_slot: usize,
+    /// Slot inventory, authoritative on the server and mirrored here. Placing a
+    /// block requires (and spends) one from the selected hotbar slot.
+    inventory: Inventory,
+    /// Whether the full inventory management screen is open.
+    inventory_open: bool,
+    /// Slot picked as the source of a pending move on the inventory screen.
+    move_from: Option<usize>,
     action_timer: f32,
     move_send_timer: f32,
     last_sent: Vec2,
@@ -176,7 +186,10 @@ impl GameState {
             facing: HashMap::new(),
             player_facing: true,
             requested: HashSet::new(),
-            selected: STONE,
+            selected_slot: 0,
+            inventory: Inventory::new(),
+            inventory_open: false,
+            move_from: None,
             action_timer: 0.0,
             move_send_timer: 0.0,
             last_sent: spawn,
@@ -488,6 +501,11 @@ impl App {
                     g.last_sent = g.pos;
                 }
             }
+            NetEvent::Inventory { slots } => {
+                if let Some(g) = &mut self.game {
+                    g.inventory = Inventory::from_slots(slots);
+                }
+            }
             NetEvent::Disconnected { reason } => {
                 self.status = format!("Disconnected: {reason}");
                 self.net = None;
@@ -558,7 +576,12 @@ impl App {
                     });
                 });
             }
-            Screen::InGame => self.hud_ui(ui),
+            Screen::InGame => {
+                self.hud_ui(ui);
+                if self.game.as_ref().is_some_and(|g| g.inventory_open) {
+                    self.inventory_window(ui);
+                }
+            }
         }
     }
 
@@ -715,18 +738,24 @@ impl App {
     }
 
     fn hud_ui(&mut self, ui: &mut egui::Ui) {
-        let (sel_name, other_players, pos, health, max_health, time_of_day) = {
+        let (selected_slot, other_players, pos, health, max_health, time_of_day, hotbar) = {
             let g = self.game.as_ref().unwrap();
+            let hotbar: Vec<Slot> = g.inventory.slots()[..HOTBAR_SLOTS].to_vec();
             (
-                self.registry.get(g.selected).name.to_string(),
+                g.selected_slot,
                 g.entities.player_count(),
                 g.pos,
                 g.health,
                 g.max_health,
                 g.time_of_day,
+                hotbar,
             )
         };
         let night = daylight::is_night(time_of_day);
+        let registry = self.registry.clone();
+        let mut leave = false;
+        let mut open_inventory = false;
+        let mut select: Option<usize> = None;
 
         egui::Panel::top("hud").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
@@ -736,21 +765,140 @@ impl App {
                 ui.separator();
                 ui.label(if night { "🌙 Night" } else { "☀ Day" });
                 ui.separator();
-                ui.label(format!("Selected: {sel_name}"));
+                ui.label("Move: A/D · Jump: Space · Mine: LMB · Place: RMB");
                 ui.separator();
-                ui.label("[1] Stone  [2] Dirt  [3] Grass");
-                ui.separator();
-                ui.label("Move: A/D · Jump: Space · Mine/Attack: LMB · Place: RMB");
+                ui.label("[1–9] Select · [E] Inventory");
                 ui.separator();
                 ui.label(format!("Players online: {}", other_players + 1));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Leave").clicked() {
-                        self.leave();
+                        leave = true;
+                    }
+                    if ui.button("Inventory").clicked() {
+                        open_inventory = true;
                     }
                     ui.label(format!("({:.0}, {:.0})", pos.x, pos.y));
                 });
             });
         });
+
+        // Hotbar lives along the bottom of the screen, like a real game.
+        egui::Panel::bottom("hotbar").show_inside(ui, |ui| {
+            ui.add_space(4.0);
+            ui.vertical_centered(|ui| {
+                ui.horizontal(|ui| {
+                    for (i, slot) in hotbar.iter().enumerate() {
+                        let resp =
+                            slot_widget(ui, &registry, *slot, Some(i), false, i == selected_slot);
+                        if resp.clicked() {
+                            select = Some(i);
+                        }
+                    }
+                });
+            });
+            ui.add_space(4.0);
+        });
+
+        if leave {
+            self.leave();
+        }
+        if let Some(g) = self.game.as_mut() {
+            if let Some(i) = select {
+                g.selected_slot = i;
+            }
+            if open_inventory {
+                g.inventory_open = true;
+            }
+        }
+    }
+
+    /// The full inventory management screen: storage grid plus the hotbar row,
+    /// with click-to-move slot management. Shown over the HUD when toggled.
+    fn inventory_window(&mut self, ui: &mut egui::Ui) {
+        let (slots, move_from, selected_slot) = {
+            let g = self.game.as_ref().unwrap();
+            (g.inventory.to_slots(), g.move_from, g.selected_slot)
+        };
+        let registry = self.registry.clone();
+        let mut clicked: Option<usize> = None;
+        let mut close = false;
+
+        egui::Window::new("Inventory")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                ui.label("Storage");
+                for row in 0..(STORAGE_SLOTS / 9) {
+                    ui.horizontal(|ui| {
+                        for col in 0..9 {
+                            let idx = HOTBAR_SLOTS + row * 9 + col;
+                            let resp = slot_widget(
+                                ui,
+                                &registry,
+                                slots.get(idx).copied().flatten(),
+                                None,
+                                move_from == Some(idx),
+                                false,
+                            );
+                            if resp.clicked() {
+                                clicked = Some(idx);
+                            }
+                        }
+                    });
+                }
+                ui.add_space(8.0);
+                ui.label("Hotbar");
+                ui.horizontal(|ui| {
+                    for idx in 0..HOTBAR_SLOTS {
+                        let resp = slot_widget(
+                            ui,
+                            &registry,
+                            slots.get(idx).copied().flatten(),
+                            Some(idx),
+                            move_from == Some(idx),
+                            idx == selected_slot,
+                        );
+                        if resp.clicked() {
+                            clicked = Some(idx);
+                        }
+                    }
+                });
+                ui.add_space(6.0);
+                ui.weak("Click a slot, then another, to move/stack · click it again to cancel");
+                ui.add_space(4.0);
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+
+        // Resolve a slot click into a pending-move selection or a completed move.
+        if let Some(idx) = clicked {
+            let mut move_cmd: Option<(u8, u8)> = None;
+            if let Some(g) = self.game.as_mut() {
+                match g.move_from {
+                    None => {
+                        if g.inventory.get(idx).is_some() {
+                            g.move_from = Some(idx);
+                        }
+                    }
+                    Some(from) if from == idx => g.move_from = None,
+                    Some(from) => {
+                        // Optimistic local move; the server confirms with a snapshot.
+                        g.inventory.move_stack(from, idx);
+                        g.move_from = None;
+                        move_cmd = Some((from as u8, idx as u8));
+                    }
+                }
+            }
+            if let (Some((from, to)), Some(net)) = (move_cmd, &self.net) {
+                let _ = net.commands.send(NetCommand::MoveItem { from, to });
+            }
+        }
+        if close && let Some(g) = self.game.as_mut() {
+            g.inventory_open = false;
+            g.move_from = None;
+        }
     }
 
     // --- Rendering ---
@@ -856,6 +1004,19 @@ impl App {
         // Other entities — remote players and server creatures (drawn over tiles).
         for e in g.entities.values() {
             let (w, h) = e.size();
+            // Dropped items render as a small version of their block sprite, not
+            // an animation sheet.
+            if let EntityKind::DroppedItem { block } = e.kind {
+                let uv = self.atlas.block(block);
+                tiles.push(TileInstance {
+                    pos: [e.x, e.y],
+                    size: [w, h],
+                    uv_min: uv.min,
+                    uv_max: uv.max,
+                    color: tint,
+                });
+                continue;
+            }
             let def = sprite::sprite_for(&e.kind);
             let frame = sprite::frame_index(e.vx.abs() > 1.0, self.anim_time, def);
             let facing = g.facing.get(&e.id).copied().unwrap_or(true);
@@ -927,6 +1088,82 @@ fn push_health_bar(
         BAR_H,
         [0.85, 0.1, 0.1, 0.95],
     ));
+}
+
+/// A representative flat color for a block, used to draw it as an inventory
+/// icon (the wgpu atlas isn't an egui texture, so slots use solid swatches).
+fn block_color(registry: &BlockRegistry, block: BlockId) -> egui::Color32 {
+    match registry.get(block).name {
+        "stone" => egui::Color32::from_rgb(120, 120, 128),
+        "dirt" => egui::Color32::from_rgb(121, 85, 58),
+        "grass" => egui::Color32::from_rgb(83, 150, 60),
+        _ => egui::Color32::from_gray(150),
+    }
+}
+
+/// Draw one inventory/hotbar slot: a framed cell with the block swatch, its
+/// stack count, and an optional key number. `highlight` marks a pending move
+/// source; `selected` marks the active hotbar slot. Returns the click response.
+fn slot_widget(
+    ui: &mut egui::Ui,
+    registry: &BlockRegistry,
+    slot: Slot,
+    key: Option<usize>,
+    highlight: bool,
+    selected: bool,
+) -> egui::Response {
+    const SIZE: f32 = 40.0;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(SIZE, SIZE), egui::Sense::click());
+    let painter = ui.painter_at(rect);
+    let radius = egui::CornerRadius::same(3);
+
+    let bg = if selected {
+        egui::Color32::from_rgb(70, 64, 36)
+    } else {
+        egui::Color32::from_rgb(36, 36, 42)
+    };
+    painter.rect_filled(rect, radius, bg);
+
+    if let Some((block, count)) = slot {
+        painter.rect_filled(
+            rect.shrink(7.0),
+            egui::CornerRadius::same(2),
+            block_color(registry, block),
+        );
+        if count > 1 {
+            painter.text(
+                rect.right_bottom() - egui::vec2(3.0, 2.0),
+                egui::Align2::RIGHT_BOTTOM,
+                count.to_string(),
+                egui::FontId::proportional(12.0),
+                egui::Color32::WHITE,
+            );
+        }
+    }
+    if let Some(k) = key {
+        painter.text(
+            rect.left_top() + egui::vec2(3.0, 1.0),
+            egui::Align2::LEFT_TOP,
+            (k + 1).to_string(),
+            egui::FontId::proportional(10.0),
+            egui::Color32::from_gray(190),
+        );
+    }
+
+    let (width, color) = if highlight {
+        (2.0, egui::Color32::from_rgb(240, 220, 120))
+    } else if selected {
+        (2.0, egui::Color32::from_rgb(200, 180, 90))
+    } else {
+        (1.0, egui::Color32::from_gray(90))
+    };
+    painter.rect_stroke(
+        rect,
+        radius,
+        egui::Stroke::new(width, color),
+        egui::StrokeKind::Inside,
+    );
+    resp
 }
 
 // --- Free functions (kept out of `&mut self` to ease borrow checking) ----
@@ -1143,6 +1380,14 @@ fn handle_block_actions(
 ) {
     game.action_timer -= dt;
 
+    // The inventory screen captures the mouse for slot management; don't mine or
+    // place in the world while it's open.
+    if game.inventory_open {
+        game.break_target = None;
+        game.break_progress = 0.0;
+        return;
+    }
+
     let (Some(gfx), Some(net)) = (gfx, net) else {
         return;
     };
@@ -1173,16 +1418,23 @@ fn handle_block_actions(
         game.break_progress = 0.0;
     }
 
-    // Right button: place a block on a fixed cooldown.
+    // Right button: place the selected hotbar slot's block on a fixed cooldown,
+    // but only if that slot holds something to spend.
     if input.placing && game.action_timer <= 0.0 && (0..WORLD_HEIGHT).contains(&ty) {
+        let slot = game.selected_slot;
         let current = game.world.get_block(tx, ty);
-        if current == AIR && !overlaps_player(game, tx, ty) {
-            let block = game.selected;
+        if let Some((block, _)) = game.inventory.get(slot)
+            && current == AIR
+            && !overlaps_player(game, tx, ty)
+        {
             game.world.set_block(tx, ty, block);
-            let _ = net.commands.send(NetCommand::SetBlock {
+            // Optimistically spend one; the server confirms (or corrects) with an
+            // authoritative Inventory snapshot.
+            game.inventory.take_one(slot);
+            let _ = net.commands.send(NetCommand::PlaceBlock {
                 x: tx,
                 y: ty,
-                block,
+                slot: slot as u8,
             });
             game.action_timer = ACTION_COOLDOWN;
         }
@@ -1233,7 +1485,7 @@ fn mine_block(
 /// reach of the player, if any.
 fn creature_at(game: &GameState, world: Vec2) -> Option<EntityId> {
     for e in game.entities.values() {
-        if e.kind.is_player() {
+        if e.kind.is_player() || e.kind.is_item() {
             continue;
         }
         let (w, h) = e.size();
@@ -1389,17 +1641,45 @@ impl App {
             KeyCode::KeyA | KeyCode::ArrowLeft => self.input.left = pressed,
             KeyCode::KeyD | KeyCode::ArrowRight => self.input.right = pressed,
             KeyCode::Space | KeyCode::KeyW | KeyCode::ArrowUp => self.input.jump = pressed,
-            KeyCode::Digit1 if pressed => self.select(STONE),
-            KeyCode::Digit2 if pressed => self.select(DIRT),
-            KeyCode::Digit3 if pressed => self.select(GRASS),
-            KeyCode::Escape if pressed => self.leave(),
+            KeyCode::Digit1 if pressed => self.select_slot(0),
+            KeyCode::Digit2 if pressed => self.select_slot(1),
+            KeyCode::Digit3 if pressed => self.select_slot(2),
+            KeyCode::Digit4 if pressed => self.select_slot(3),
+            KeyCode::Digit5 if pressed => self.select_slot(4),
+            KeyCode::Digit6 if pressed => self.select_slot(5),
+            KeyCode::Digit7 if pressed => self.select_slot(6),
+            KeyCode::Digit8 if pressed => self.select_slot(7),
+            KeyCode::Digit9 if pressed => self.select_slot(8),
+            KeyCode::KeyE if pressed => self.toggle_inventory(),
+            // Escape closes the inventory if open, otherwise leaves the world.
+            KeyCode::Escape if pressed => {
+                if self.game.as_ref().is_some_and(|g| g.inventory_open) {
+                    if let Some(g) = &mut self.game {
+                        g.inventory_open = false;
+                        g.move_from = None;
+                    }
+                } else {
+                    self.leave();
+                }
+            }
             _ => {}
         }
     }
 
-    fn select(&mut self, block: BlockId) {
+    /// Select hotbar slot `slot` (`0..HOTBAR_SLOTS`) as the block to place.
+    fn select_slot(&mut self, slot: usize) {
         if let Some(g) = &mut self.game {
-            g.selected = block;
+            g.selected_slot = slot;
+        }
+    }
+
+    /// Open or close the inventory management screen.
+    fn toggle_inventory(&mut self) {
+        if let Some(g) = &mut self.game {
+            g.inventory_open = !g.inventory_open;
+            if !g.inventory_open {
+                g.move_from = None;
+            }
         }
     }
 }
