@@ -29,8 +29,15 @@ pub const SLIME_SIZE: (f32, f32) = (12.0, 12.0);
 pub const CHICKEN_SIZE: (f32, f32) = (12.0, 14.0);
 /// Collision/draw size (width, height) in pixels of a goat.
 pub const GOAT_SIZE: (f32, f32) = (16.0, 16.0);
+/// Collision/draw size (width, height) in pixels of a zombie.
+pub const ZOMBIE_SIZE: (f32, f32) = (14.0, 19.0);
 /// Collision/draw size (width, height) in pixels of a dropped block item.
 pub const ITEM_SIZE: (f32, f32) = (8.0, 8.0);
+
+/// Seconds a zombie spends playing its death animation (when caught by daylight)
+/// before it despawns. Shared by both sides so the server's despawn timing and
+/// the client's animation playback agree.
+pub const ZOMBIE_DEATH_TIME: f32 = 0.8;
 
 /// Maximum health of a player, in hit points.
 pub const PLAYER_MAX_HEALTH: i32 = 20;
@@ -40,6 +47,9 @@ pub const SLIME_MAX_HEALTH: i32 = 10;
 pub const CHICKEN_MAX_HEALTH: i32 = 8;
 /// Maximum health of a goat, in hit points. Sturdier than the surface critters.
 pub const GOAT_MAX_HEALTH: i32 = 16;
+/// Maximum health of a zombie, in hit points. Far tougher than anything else
+/// that walks the surface — it soaks up many hits before going down.
+pub const ZOMBIE_MAX_HEALTH: i32 = 40;
 
 /// What an entity *is*. Adding a new creature/object means adding a variant
 /// here plus (for server-simulated kinds) a branch in the server tick loop.
@@ -56,6 +66,10 @@ pub enum EntityKind {
     /// A sturdy mountain grazer that calmly roams the stone slopes. Native to
     /// the mountains biome. Server-simulated.
     Goat,
+    /// A slow, tough, hard-hitting undead that only roams at night and burns up
+    /// in daylight (playing a death animation before despawning). Spawns in any
+    /// biome after dark. Server-simulated.
+    Zombie,
     /// A block lying on the ground after being mined, waiting to be walked into
     /// and picked up. Server-simulated (falls under gravity); carries the block
     /// id it will add to a player's inventory on pickup.
@@ -70,6 +84,7 @@ impl EntityKind {
             EntityKind::Slime => SLIME_SIZE,
             EntityKind::Chicken => CHICKEN_SIZE,
             EntityKind::Goat => GOAT_SIZE,
+            EntityKind::Zombie => ZOMBIE_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -94,6 +109,7 @@ impl EntityKind {
             EntityKind::Slime => SLIME_MAX_HEALTH,
             EntityKind::Chicken => CHICKEN_MAX_HEALTH,
             EntityKind::Goat => GOAT_MAX_HEALTH,
+            EntityKind::Zombie => ZOMBIE_MAX_HEALTH,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }
@@ -136,6 +152,13 @@ pub struct Entity {
     /// `0.0` on both sides).
     #[serde(skip)]
     pub hit_flash: f32,
+    /// Seconds left in a zombie's death animation while it crumbles in daylight.
+    /// Set to [`ZOMBIE_DEATH_TIME`] when dying begins and counted down on both
+    /// sides: the server suppresses the zombie's AI and despawns it at zero,
+    /// while the client picks the death-animation frame from the remaining time.
+    /// Never sent over the wire (defaults to `0.0`).
+    #[serde(skip)]
+    pub dying: f32,
 }
 
 impl Entity {
@@ -155,6 +178,7 @@ impl Entity {
             flee: 0.0,
             home_x: None,
             hit_flash: 0.0,
+            dying: 0.0,
         }
     }
 

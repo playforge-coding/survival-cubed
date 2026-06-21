@@ -58,6 +58,9 @@ pub enum NetEvent {
     EntityDespawn {
         id: EntityId,
     },
+    EntityDying {
+        id: EntityId,
+    },
     EntityHealth {
         id: EntityId,
         health: i32,
@@ -234,6 +237,7 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
             NetEvent::EntityMoved { id, x, y, vx, vy }
         }
         ServerMessage::EntityDespawn { id } => NetEvent::EntityDespawn { id },
+        ServerMessage::EntityDying { id } => NetEvent::EntityDying { id },
         ServerMessage::EntityHealth {
             id,
             health,

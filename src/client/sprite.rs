@@ -66,9 +66,38 @@ pub static GOAT_SPRITE: SpriteDef = SpriteDef {
     default: goat_tex,
 };
 
+/// Zombie: a shambling undead that lurches along, arms out.
+pub static ZOMBIE_SPRITE: SpriteDef = SpriteDef {
+    name: "zombie",
+    frame_w: 14,
+    frame_h: 19,
+    frames: 4,
+    fps: 4.0,
+    default: zombie_tex,
+};
+
+/// Zombie death: a one-shot crumble played as the undead burns up in daylight.
+/// Lives in the `zombie/death` subdirectory (its `name` doubles as that path),
+/// and its frames are stepped by the death timer rather than the walk clock.
+pub static ZOMBIE_DEATH_SPRITE: SpriteDef = SpriteDef {
+    name: "zombie/death",
+    frame_w: 12,
+    frame_h: 19,
+    frames: 4,
+    fps: 6.0,
+    default: zombie_death_tex,
+};
+
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 4] {
-    [&PLAYER_SPRITE, &SLIME_SPRITE, &CHICKEN_SPRITE, &GOAT_SPRITE]
+pub fn all() -> [&'static SpriteDef; 6] {
+    [
+        &PLAYER_SPRITE,
+        &SLIME_SPRITE,
+        &CHICKEN_SPRITE,
+        &GOAT_SPRITE,
+        &ZOMBIE_SPRITE,
+        &ZOMBIE_DEATH_SPRITE,
+    ]
 }
 
 /// The sprite to draw for a given entity kind.
@@ -78,6 +107,7 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         EntityKind::Slime => &SLIME_SPRITE,
         EntityKind::Chicken => &CHICKEN_SPRITE,
         EntityKind::Goat => &GOAT_SPRITE,
+        EntityKind::Zombie => &ZOMBIE_SPRITE,
         // Dropped items are drawn from their block texture, not an animation
         // sheet (see the client's scene builder), so this is never queried for
         // them; fall back to the slime sheet to keep the match total.
@@ -243,6 +273,64 @@ fn goat_tex(frame: u32, x: u32, y: u32) -> [u8; 4] {
         if xi == fl || xi == fr || xi == bl || xi == br {
             return if yi >= 14 { HOOF } else { DARK };
         }
+    }
+    TRANS
+}
+
+fn zombie_tex(frame: u32, x: u32, y: u32) -> [u8; 4] {
+    const TRANS: [u8; 4] = [0, 0, 0, 0];
+    const SKIN: [u8; 4] = [105, 140, 85, 255];
+    const DARK: [u8; 4] = [70, 100, 60, 255];
+    const SHIRT: [u8; 4] = [80, 70, 95, 255];
+    const EYE: [u8; 4] = [200, 40, 40, 255];
+    let (xi, yi) = (x as i32, y as i32);
+
+    // Lurching legs and a swaying body shift a little per frame.
+    let stride = [0i32, 1, 0, -1][(frame % 4) as usize];
+
+    // Head with two baleful red eyes.
+    if (2..9).contains(&yi) && (3..11).contains(&xi) {
+        if yi == 5 && (xi == 5 || xi == 8) {
+            return EYE;
+        }
+        return SKIN;
+    }
+    // Torso in a tattered shirt.
+    if (9..15).contains(&yi) && (3..11).contains(&xi) {
+        return SHIRT;
+    }
+    // Arms held out ahead (the classic shamble), bobbing with the stride.
+    if (10..13).contains(&yi) && (11..14).contains(&xi) {
+        return DARK;
+    }
+    // Two legs that drag along below the body.
+    if (15..19).contains(&yi) {
+        let left = 5 + stride;
+        let right = 8 - stride;
+        if (xi - left).abs() <= 1 || (xi - right).abs() <= 1 {
+            return DARK;
+        }
+    }
+    TRANS
+}
+
+fn zombie_death_tex(frame: u32, x: u32, y: u32) -> [u8; 4] {
+    const TRANS: [u8; 4] = [0, 0, 0, 0];
+    const SKIN: [u8; 4] = [105, 140, 85, 255];
+    const DARK: [u8; 4] = [70, 100, 60, 255];
+    let (xi, yi) = (x as i32, y as i32);
+
+    // Collapse: the body sinks toward the ground and shrinks frame by frame
+    // until almost nothing is left, reading as a crumble in the daylight.
+    let fall = (frame % 4) as i32 * 4; // 0, 4, 8, 12 px lower each frame
+    let top = 2 + fall;
+    let bottom = 19;
+    if yi >= top && yi < bottom && (3..11).contains(&xi) {
+        // A thinning slab that frays at its edges as it goes.
+        if (xi == 3 || xi == 10) && frame >= 2 {
+            return TRANS;
+        }
+        return if yi >= bottom - 3 { DARK } else { SKIN };
     }
     TRANS
 }

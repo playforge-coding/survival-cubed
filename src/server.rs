@@ -42,6 +42,27 @@ const CHICKEN_FLEE_SPEED: f32 = 70.0;
 const CHICKEN_FLEE_TIME: f32 = 4.0;
 /// Unhurried wander speed of a goat, in pixels/second.
 const GOAT_SPEED: f32 = 18.0;
+/// Shambling speed of a zombie, in pixels/second — noticeably slower than a
+/// slime, so a player can outrun one but is in trouble if cornered.
+const ZOMBIE_SPEED: f32 = 16.0;
+/// How far (px) a zombie notices and chases a player. Reaches a little further
+/// than a slime since zombies are the night's dedicated hunters.
+const ZOMBIE_AGGRO: f32 = 200.0;
+/// Maximum gap (px between AABBs) at which a zombie can land a hit.
+const ZOMBIE_ATTACK_RANGE: f32 = 4.0;
+/// Damage a zombie deals per hit — a heavy blow compared with a slime's nip.
+const ZOMBIE_DAMAGE: i32 = 7;
+/// Seconds a zombie waits between hits.
+const ZOMBIE_ATTACK_INTERVAL: f32 = 1.2;
+/// How often the server tries to spawn night zombies near players, in seconds.
+const ZOMBIE_SPAWN_INTERVAL: f32 = 6.0;
+/// Most live zombies allowed per connected player; spawning pauses at the cap.
+const ZOMBIE_MAX_PER_PLAYER: usize = 5;
+/// Nearest a freshly spawned zombie appears to its target player, in pixels —
+/// far enough to be just off-screen so they don't pop in at point-blank range.
+const ZOMBIE_SPAWN_MIN_DIST: f32 = 220.0;
+/// Farthest a freshly spawned zombie appears from its target player, in pixels.
+const ZOMBIE_SPAWN_MAX_DIST: f32 = 360.0;
 /// How many spawn slots to scatter around the origin at world start. Each slot
 /// spawns whatever creature its biome supports.
 const SPAWN_SLOTS: i32 = 12;
@@ -702,6 +723,74 @@ fn maybe_spawn_in_chunk(shared: &Shared, cx: i32, cy: i32) {
     }
 }
 
+/// Advance a small xorshift RNG state and return the new value. Used to scatter
+/// night-zombie spawns; determinism isn't important here, only cheap variety.
+fn next_rng(state: &mut u32) {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+}
+
+/// At night, try to spawn a zombie just off-screen from a random player, up to a
+/// per-player cap. Zombies appear in any biome — they belong to the dark, not to
+/// the terrain — so unlike the biome critters this ignores the column's biome.
+/// Does nothing during the day or when no players are connected.
+fn maybe_spawn_zombies(shared: &Shared, rng: &mut u32) {
+    if !daylight::is_night(shared.time_of_day()) {
+        return;
+    }
+
+    // world then entities, matching the lock order used elsewhere.
+    let world = shared.world.lock();
+    let mut entities = shared.entities.lock();
+
+    let players: Vec<(f32, f32)> = entities
+        .values()
+        .filter(|e| e.kind.is_player())
+        .map(|e| (e.x, e.y))
+        .collect();
+    if players.is_empty() {
+        return;
+    }
+    let zombies = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Zombie))
+        .count();
+    if zombies >= players.len() * ZOMBIE_MAX_PER_PLAYER {
+        return;
+    }
+
+    // Pick a player, a side, and a distance to drop the zombie at.
+    next_rng(rng);
+    let (px, py) = players[(*rng as usize) % players.len()];
+    next_rng(rng);
+    let side = if *rng & 1 == 0 { -1.0 } else { 1.0 };
+    next_rng(rng);
+    let span = (ZOMBIE_SPAWN_MAX_DIST - ZOMBIE_SPAWN_MIN_DIST) as u32;
+    let dist = ZOMBIE_SPAWN_MIN_DIST + (*rng % span.max(1)) as f32;
+
+    let kind = EntityKind::Zombie;
+    let (_, h) = kind.size();
+    let cell_x = ((px + side * dist) / TILE_SIZE).floor() as i32;
+    let surface = world.surface(cell_x);
+    let x = cell_x as f32 * TILE_SIZE;
+    let y = surface as f32 * TILE_SIZE - h;
+    // Skip spawns that land jarringly far above the player (e.g. across a deep
+    // ravine), so a zombie never materializes hanging in open sky beside them.
+    if (y - py).abs() > 400.0 {
+        return;
+    }
+
+    let id = shared.alloc_id();
+    let zombie = Entity::new(id, kind, x, y);
+    entities.insert(zombie.clone());
+    drop(entities);
+    drop(world);
+    shared.broadcast_all(ServerMessage::EntitySpawn { entity: zombie });
+}
+
 /// Spawn a dropped-block item at the center of cell `(cell_x, cell_y)`, popping
 /// it upward so it clears the player who mined it, and announce it to everyone.
 fn spawn_drop(shared: &Shared, cell_x: i32, cell_y: i32, block: BlockId) {
@@ -722,6 +811,9 @@ async fn entity_tick_loop(shared: Arc<Shared>) {
     let mut interval = tokio::time::interval(Duration::from_secs_f32(TICK_DT));
     let mut since_time_bcast = 0.0f32;
     let mut since_save = 0.0f32;
+    let mut since_zombie_spawn = 0.0f32;
+    // Evolving RNG state for scattering night-zombie spawns.
+    let mut zombie_rng = 0x9E37_79B9u32;
     loop {
         interval.tick().await;
 
@@ -748,6 +840,13 @@ async fn entity_tick_loop(shared: Arc<Shared>) {
         pickups.dedup();
         for pid in pickups {
             shared.send_inventory(pid);
+        }
+
+        // After dark, periodically conjure zombies near the players.
+        since_zombie_spawn += TICK_DT;
+        if since_zombie_spawn >= ZOMBIE_SPAWN_INTERVAL {
+            since_zombie_spawn = 0.0;
+            maybe_spawn_zombies(&shared, &mut zombie_rng);
         }
 
         // Keep every client's day/night clock in sync.
@@ -812,6 +911,11 @@ fn step_entities(shared: &Shared) -> Step {
         .filter(|e| matches!(e.kind, EntityKind::Goat))
         .map(|e| e.id)
         .collect();
+    let zombie_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Zombie))
+        .map(|e| e.id)
+        .collect();
     let item_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| e.kind.is_item())
@@ -820,11 +924,11 @@ fn step_entities(shared: &Shared) -> Step {
 
     let mut broadcasts = Vec::new();
     let mut pickups: Vec<EntityId> = Vec::new();
-    // Players a slime bit this tick; applied after the movement loop so we
-    // never hold two mutable entity borrows at once.
-    // Each entry is the bitten player and the knockback `(vx, vy)` to shove it
-    // away from the biting slime.
-    let mut bites: Vec<(EntityId, (f32, f32))> = Vec::new();
+    // Players a creature hit this tick; applied after the movement loop so we
+    // never hold two mutable entity borrows at once. Each entry is the bitten
+    // player, the knockback `(vx, vy)` to shove it away from the attacker, and
+    // the damage dealt (slimes nip, zombies hit hard).
+    let mut bites: Vec<(EntityId, (f32, f32), i32)> = Vec::new();
 
     for id in slime_ids {
         let Some(e) = entities.get_mut(id) else {
@@ -887,7 +991,7 @@ fn step_entities(shared: &Shared) -> Step {
                 } else {
                     -1.0
                 };
-                bites.push((pid, (dir * KNOCKBACK_X, -KNOCKBACK_Y)));
+                bites.push((pid, (dir * KNOCKBACK_X, -KNOCKBACK_Y), SLIME_DAMAGE));
             }
         }
     }
@@ -965,6 +1069,100 @@ fn step_entities(shared: &Shared) -> Step {
         });
     }
 
+    // Zombies: slow, relentless night hunters that hit hard. When day breaks
+    // they crumble where they stand, playing a death animation before despawning.
+    // Ids whose death animation finished this tick and must be removed below.
+    let mut zombie_despawns: Vec<EntityId> = Vec::new();
+    for id in zombie_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+
+        // Already crumbling: hold still (gravity still settles it onto ground),
+        // run out the death timer, then mark it for removal.
+        if e.dying > 0.0 {
+            e.dying -= TICK_DT;
+            let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, 0.0, 0.0, false);
+            e.x = m.x;
+            e.y = m.y;
+            e.vx = 0.0;
+            e.vy = m.vy;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: m.x,
+                y: m.y,
+                vx: 0.0,
+                vy: m.vy,
+            });
+            if e.dying <= 0.0 {
+                zombie_despawns.push(id);
+            }
+            continue;
+        }
+
+        // Daybreak: begin dying. Tell every client to play the crumble.
+        if !night {
+            e.dying = crate::entity::ZOMBIE_DEATH_TIME;
+            e.vx = 0.0;
+            broadcasts.push(ServerMessage::EntityDying { id });
+            continue;
+        }
+
+        // Night: shamble after the nearest player within aggro range, otherwise
+        // wander its home patch like the other ground creatures.
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let home = *e.home_x.get_or_insert(e.x);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+        let target = nearest_player(&players, scx, scy, ZOMBIE_AGGRO);
+        let chasing = target.is_some();
+        let dir = match target {
+            Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -1.0,
+            Some(_) => 1.0,
+            None => wander_dir(scx, e.vx, home),
+        };
+
+        let m = step_ground(
+            &mut world,
+            (e.x, e.y, w, h),
+            e.vy,
+            dir,
+            ZOMBIE_SPEED,
+            chasing,
+        );
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: m.vx,
+            vy: m.vy,
+        });
+
+        if let Some((pid, px, py)) = target {
+            if e.attack_cd <= 0.0
+                && aabb_gap(m.x, m.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1)
+                    <= ZOMBIE_ATTACK_RANGE
+            {
+                e.attack_cd = ZOMBIE_ATTACK_INTERVAL;
+                let dir = if px + PLAYER_SIZE.0 * 0.5 >= m.x + w * 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                bites.push((pid, (dir * KNOCKBACK_X, -KNOCKBACK_Y), ZOMBIE_DAMAGE));
+            }
+        }
+    }
+    for id in zombie_despawns {
+        entities.remove(id);
+        broadcasts.push(ServerMessage::EntityDespawn { id });
+    }
+
     // Dropped items: fall under gravity, then get collected by any player that
     // is touching them once their pickup delay has elapsed.
     for id in item_ids {
@@ -1015,8 +1213,8 @@ fn step_entities(shared: &Shared) -> Step {
     }
 
     let mut respawns = Vec::new();
-    for (pid, kb) in bites {
-        let (msgs, respawn) = apply_damage(&mut entities, pid, SLIME_DAMAGE, kb, shared.spawn);
+    for (pid, kb, damage) in bites {
+        let (msgs, respawn) = apply_damage(&mut entities, pid, damage, kb, shared.spawn);
         broadcasts.extend(msgs);
         if let Some(r) = respawn {
             respawns.push(r);

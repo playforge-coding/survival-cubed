@@ -487,6 +487,16 @@ impl App {
                     g.facing.remove(&id);
                 }
             }
+            NetEvent::EntityDying { id } => {
+                if let Some(g) = &mut self.game {
+                    if let Some(e) = g.entities.get_mut(id) {
+                        // Kick off the crumble animation; it plays out locally
+                        // until the server's despawn for this id arrives.
+                        e.dying = crate::entity::ZOMBIE_DEATH_TIME;
+                        e.vx = 0.0;
+                    }
+                }
+            }
             NetEvent::EntityHealth {
                 id,
                 health,
@@ -568,6 +578,10 @@ impl App {
         game.hit_flash = (game.hit_flash - dt).max(0.0);
         for e in game.entities.values_mut() {
             e.hit_flash = (e.hit_flash - dt).max(0.0);
+            // Advance any in-progress death animation (zombies crumbling at dawn).
+            if e.dying > 0.0 {
+                e.dying = (e.dying - dt).max(0.0);
+            }
         }
 
         let fall_damage = step_physics(game, reg, input, dt);
@@ -1056,8 +1070,21 @@ impl App {
                 });
                 continue;
             }
-            let def = sprite::sprite_for(&e.kind);
-            let frame = sprite::frame_index(e.vx.abs() > 1.0, self.anim_time, def);
+            // A dying zombie plays its one-shot crumble (frame stepped by the
+            // death timer); everything else uses its walk sheet (frame stepped by
+            // the shared animation clock when moving).
+            let (def, frame) = if e.dying > 0.0 && matches!(e.kind, EntityKind::Zombie) {
+                let d = &sprite::ZOMBIE_DEATH_SPRITE;
+                let progress = 1.0 - (e.dying / crate::entity::ZOMBIE_DEATH_TIME).clamp(0.0, 1.0);
+                let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
+                (d, frame)
+            } else {
+                let def = sprite::sprite_for(&e.kind);
+                (
+                    def,
+                    sprite::frame_index(e.vx.abs() > 1.0, self.anim_time, def),
+                )
+            };
             let facing = g.facing.get(&e.id).copied().unwrap_or(true);
             tiles.push(entity_instance(
                 self.atlas.sprite_frame(def.name, frame),
@@ -1068,8 +1095,9 @@ impl App {
                 facing,
                 flash_tint(tint, e.hit_flash),
             ));
-            // A small health bar floats over any wounded creature.
-            if e.health < e.max_health && e.max_health > 0 {
+            // A small health bar floats over any wounded creature (but not while
+            // it is crumbling away).
+            if e.dying <= 0.0 && e.health < e.max_health && e.max_health > 0 {
                 push_health_bar(
                     &mut tiles,
                     self.atlas.white(),

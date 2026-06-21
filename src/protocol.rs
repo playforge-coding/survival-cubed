@@ -71,6 +71,11 @@ pub enum ServerMessage {
     },
     /// An entity was removed from the world.
     EntityDespawn { id: EntityId },
+    /// A zombie has been caught by daylight and begun its death animation. The
+    /// client plays the crumble animation for [`crate::entity::ZOMBIE_DEATH_TIME`]
+    /// seconds; an [`ServerMessage::EntityDespawn`] for the same id follows once
+    /// it finishes.
+    EntityDying { id: EntityId },
     /// An entity's health changed (damage, healing, or an initial value). Sent
     /// to every client, including the owner of a player entity (whose avatar is
     /// otherwise never mirrored).
