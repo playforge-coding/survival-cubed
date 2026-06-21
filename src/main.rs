@@ -10,6 +10,7 @@ mod daylight;
 mod entity;
 mod net;
 mod protocol;
+mod save;
 mod server;
 mod world;
 mod worldgen;
@@ -42,17 +43,62 @@ fn run_dedicated(port: u16) -> anyhow::Result<()> {
         .map(|d| d.as_secs() as i32)
         .unwrap_or(1337);
 
-    let srv = server::start_server(server::host_bind(port), seed)?;
+    let save_dir = save::world_dir(&format!("server-{port}"));
+    let srv = server::start_server(server::host_bind(port), seed, save_dir.clone())?;
     println!("Survival Cubed dedicated server");
     println!("  listening on : {}", srv.addr);
+    println!("  world save   : {}", save_dir.display());
     println!(
         "  fingerprint  : {}",
         net::fingerprint_hex(&srv.fingerprint)
     );
     println!("Press Ctrl+C to stop.");
 
-    // Keep the process (and thus the server) alive.
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(3600));
-    }
+    // Block until the OS asks us to stop, then drop the server: its `Drop`
+    // flushes the world to disk, so a clean shutdown loses nothing.
+    wait_for_shutdown();
+    println!("Shutting down; saving world...");
+    drop(srv);
+    println!("Saved. Bye.");
+    Ok(())
+}
+
+/// Park the main thread until the process receives Ctrl+C (SIGINT) or, on Unix,
+/// SIGTERM (e.g. `systemctl stop`, `docker stop`).
+fn wait_for_shutdown() {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            // Without a runtime we can't await signals; park forever so the
+            // server keeps running and at least its periodic autosave persists.
+            log::error!("could not build signal runtime ({e:#}); Ctrl+C save disabled");
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(3600));
+            }
+        }
+    };
+    rt.block_on(async {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            match signal(SignalKind::terminate()) {
+                Ok(mut term) => {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {}
+                        _ = term.recv() => {}
+                    }
+                }
+                Err(_) => {
+                    let _ = tokio::signal::ctrl_c().await;
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    });
 }

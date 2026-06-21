@@ -5,10 +5,11 @@
 //! [`crate::client::net`]) can pin it. For singleplayer the client embeds a
 //! server in-process and auto-trusts that fingerprint.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -21,7 +22,8 @@ use crate::daylight;
 use crate::entity::{Entities, Entity, EntityId, EntityKind, PLAYER_SIZE, SLIME_SIZE};
 use crate::net::{fingerprint, read_msg, write_msg};
 use crate::protocol::{ALPN, BlockId, ClientMessage, ServerMessage};
-use crate::world::{CHUNK_AREA, CHUNK_SIZE, TILE_SIZE, World};
+use crate::save::{SavedPlayer, WorldMeta, WorldStore};
+use crate::world::{CHUNK_AREA, CHUNK_SIZE, ChunkCoord, TILE_SIZE, World};
 use crate::worldgen::{WorldGen, spawn_point};
 
 /// How often the server simulates non-player entities, in seconds.
@@ -51,6 +53,8 @@ const PLAYER_ATTACK_DAMAGE: i32 = 4;
 const PLAYER_ATTACK_REACH: f32 = 12.0;
 /// How often the server broadcasts the current time of day, in seconds.
 const TIME_BROADCAST_SECS: f32 = 2.0;
+/// How often the world is flushed to disk while running, in seconds.
+const AUTOSAVE_SECS: f32 = 30.0;
 
 /// Handle to a server running on its own thread + tokio runtime.
 pub struct RunningServer {
@@ -59,7 +63,23 @@ pub struct RunningServer {
     // Keeping the endpoint alive keeps the server listening; dropping it (when
     // this handle is dropped) closes the server.
     _endpoint: Endpoint,
+    /// Shared state, kept so the world can be flushed to disk when this handle
+    /// is dropped (e.g. the player leaves a singleplayer session).
+    shared: Arc<Shared>,
 }
+
+impl Drop for RunningServer {
+    fn drop(&mut self) {
+        // Stop the autosave loop, then write a final, up-to-date save.
+        self.shared.shutdown.store(true, Ordering::SeqCst);
+        self.shared.save();
+    }
+}
+
+/// What the server thread reports back once the endpoint is listening (or the
+/// error that stopped it): its address, certificate fingerprint, a handle to the
+/// endpoint, and the shared state (so the caller can flush it on shutdown).
+type Ready = Result<(SocketAddr, [u8; 32], Endpoint, Arc<Shared>)>;
 
 /// One connected client, as seen by the server. The client's player avatar
 /// lives in [`Shared::entities`] under the same id; this just holds the channel
@@ -68,19 +88,44 @@ struct ClientHandle {
     tx: mpsc::UnboundedSender<ServerMessage>,
 }
 
-/// Server world: stored chunks, the generator that fills them on demand, and a
-/// block registry for solidity queries during entity collision.
+/// Server world: stored chunks, the generator that fills them on demand, a
+/// block registry for solidity queries during entity collision, and the disk
+/// store chunks are loaded from and saved to.
 struct ServerWorld {
     world: World,
     generator: WorldGen,
     registry: BlockRegistry,
+    store: WorldStore,
+    /// Chunks modified since the last flush; only these are written to disk.
+    dirty: HashSet<ChunkCoord>,
 }
 
 impl ServerWorld {
+    /// Make sure chunk `(cx, cy)` is resident in memory: load it from disk if it
+    /// was saved before, otherwise generate it fresh from the seed.
     fn ensure(&mut self, cx: i32, cy: i32) {
-        if !self.world.has_chunk((cx, cy)) {
-            let chunk = self.generator.generate_chunk(cx, cy);
-            self.world.insert_chunk((cx, cy), chunk);
+        if self.world.has_chunk((cx, cy)) {
+            return;
+        }
+        let chunk = match self.store.load_chunk((cx, cy)) {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => self.generator.generate_chunk(cx, cy),
+            Err(e) => {
+                log::error!("failed to load chunk ({cx}, {cy}); regenerating: {e:#}");
+                self.generator.generate_chunk(cx, cy)
+            }
+        };
+        self.world.insert_chunk((cx, cy), chunk);
+    }
+
+    /// Write every dirty chunk to disk, clearing the dirty set on success.
+    fn flush_chunks(&mut self) {
+        for coord in self.dirty.drain() {
+            if let Some(chunk) = self.world.get_chunk(coord)
+                && let Err(e) = self.store.save_chunk(coord, chunk)
+            {
+                log::error!("failed to save chunk {coord:?}: {e:#}");
+            }
         }
     }
 
@@ -95,7 +140,11 @@ impl ServerWorld {
     fn set(&mut self, x: i32, y: i32, b: BlockId) -> bool {
         let (cx, cy) = (x.div_euclid(CHUNK_SIZE), y.div_euclid(CHUNK_SIZE));
         self.ensure(cx, cy);
-        self.world.set_block(x, y, b)
+        let changed = self.world.set_block(x, y, b);
+        if changed {
+            self.dirty.insert((cx, cy));
+        }
+        changed
     }
 
     /// Surface (grass) row for a world column, used to place ground-walking
@@ -122,8 +171,16 @@ struct Shared {
     entities: Mutex<Entities>,
     next_id: AtomicU32,
     spawn: (f32, f32),
-    /// When the world was created; drives the shared day/night clock.
+    /// Reference instant the day/night clock counts from. Offset back in time on
+    /// load so a resumed world keeps the time of day it was saved at.
     start: Instant,
+    /// Saved state of every player who has joined, keyed by name. A player is
+    /// moved out of here (into a live entity) while connected and folded back in
+    /// on disconnect, so it survives both reconnects and restarts.
+    saved_players: Mutex<HashMap<String, SavedPlayer>>,
+    /// Set when the owning [`RunningServer`] is dropped, to stop the autosave
+    /// loop.
+    shutdown: AtomicBool,
 }
 
 impl Shared {
@@ -134,6 +191,50 @@ impl Shared {
     /// Current normalized time of day in `[0, 1)`.
     fn time_of_day(&self) -> f32 {
         daylight::time_of_day(self.start.elapsed().as_secs_f32())
+    }
+
+    /// Flush the whole world to disk: dirty chunks plus a fresh `world.dat`
+    /// snapshot of the clock, entities, and players. Safe to call from any
+    /// thread; logs (rather than propagates) IO errors so a failed save can
+    /// never crash the server.
+    fn save(&self) {
+        let mut world = self.world.lock();
+        world.flush_chunks();
+        let seed = world.generator.seed();
+
+        // Creatures save directly; players are gathered from both the saved set
+        // and any currently-connected avatars (whose live state is freshest).
+        let mut players = self.saved_players.lock().clone();
+        let mut creatures = Vec::new();
+        for e in self.entities.lock().values() {
+            match &e.kind {
+                EntityKind::Player { name } if !name.is_empty() => {
+                    players.insert(
+                        name.clone(),
+                        SavedPlayer {
+                            name: name.clone(),
+                            x: e.x,
+                            y: e.y,
+                            health: e.health,
+                        },
+                    );
+                }
+                EntityKind::Player { .. } => {} // unnamed: not yet identified
+                _ => creatures.push(e.clone()),
+            }
+        }
+
+        let meta = WorldMeta {
+            seed,
+            elapsed_secs: self.start.elapsed().as_secs_f32(),
+            next_id: self.next_id.load(Ordering::SeqCst),
+            spawn: self.spawn,
+            entities: creatures,
+            players: players.into_values().collect(),
+        };
+        if let Err(e) = world.store.save_meta(&meta) {
+            log::error!("failed to save world: {e:#}");
+        }
     }
 }
 
@@ -163,9 +264,8 @@ impl Shared {
 /// Start a server on a background thread. `bind` of port 0 picks an ephemeral
 /// port (used for the embedded singleplayer server). Returns once the endpoint
 /// is listening, with its actual address and certificate fingerprint.
-pub fn start_server(bind: SocketAddr, seed: i32) -> Result<RunningServer> {
-    let (ready_tx, ready_rx) =
-        std::sync::mpsc::channel::<Result<(SocketAddr, [u8; 32], Endpoint)>>();
+pub fn start_server(bind: SocketAddr, seed: i32, save_dir: PathBuf) -> Result<RunningServer> {
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Ready>();
 
     std::thread::Builder::new()
         .name("game-server".into())
@@ -181,7 +281,7 @@ pub fn start_server(bind: SocketAddr, seed: i32) -> Result<RunningServer> {
                 }
             };
             rt.block_on(async move {
-                let shared = match setup(bind, seed, &ready_tx).await {
+                let shared = match setup(bind, seed, save_dir, &ready_tx).await {
                     Some(s) => s,
                     None => return,
                 };
@@ -193,10 +293,11 @@ pub fn start_server(bind: SocketAddr, seed: i32) -> Result<RunningServer> {
         .context("spawning server thread")?;
 
     match ready_rx.recv().context("server failed to start")? {
-        Ok((addr, fp, endpoint)) => Ok(RunningServer {
+        Ok((addr, fp, endpoint, shared)) => Ok(RunningServer {
             addr,
             fingerprint: fp,
             _endpoint: endpoint,
+            shared,
         }),
         Err(e) => Err(e),
     }
@@ -211,9 +312,10 @@ struct AcceptCtx {
 async fn setup(
     bind: SocketAddr,
     seed: i32,
-    ready_tx: &std::sync::mpsc::Sender<Result<(SocketAddr, [u8; 32], Endpoint)>>,
+    save_dir: PathBuf,
+    ready_tx: &std::sync::mpsc::Sender<Ready>,
 ) -> Option<AcceptCtx> {
-    match build_endpoint(bind, seed) {
+    match build_endpoint(bind, seed, save_dir) {
         Ok((endpoint, fp, shared)) => {
             let addr = match endpoint.local_addr() {
                 Ok(a) => a,
@@ -224,7 +326,7 @@ async fn setup(
             };
             // Hand a clone of the endpoint to the caller (keeps it alive there),
             // keep our own for the accept loop.
-            let _ = ready_tx.send(Ok((addr, fp, endpoint.clone())));
+            let _ = ready_tx.send(Ok((addr, fp, endpoint.clone(), shared.clone())));
             Some(AcceptCtx { endpoint, shared })
         }
         Err(e) => {
@@ -234,7 +336,11 @@ async fn setup(
     }
 }
 
-fn build_endpoint(bind: SocketAddr, seed: i32) -> Result<(Endpoint, [u8; 32], Arc<Shared>)> {
+fn build_endpoint(
+    bind: SocketAddr,
+    seed: i32,
+    save_dir: PathBuf,
+) -> Result<(Endpoint, [u8; 32], Arc<Shared>)> {
     // Self-signed certificate for "localhost".
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
         .context("generating self-signed certificate")?;
@@ -254,22 +360,64 @@ fn build_endpoint(bind: SocketAddr, seed: i32) -> Result<(Endpoint, [u8; 32], Ar
 
     let endpoint = Endpoint::server(server_config, bind).context("binding server endpoint")?;
 
-    let generator = WorldGen::new(seed);
-    let spawn = spawn_point(&generator, 0);
+    let store = WorldStore::new(save_dir);
+    // Resume a previous save if one exists, otherwise create a fresh world.
+    let saved = match store.load_meta() {
+        Ok(meta) => meta,
+        Err(e) => {
+            log::error!("failed to load world save; starting fresh: {e:#}");
+            None
+        }
+    };
+
+    let generator = WorldGen::new(saved.as_ref().map(|m| m.seed).unwrap_or(seed));
+    let spawn = saved
+        .as_ref()
+        .map(|m| m.spawn)
+        .unwrap_or_else(|| spawn_point(&generator, 0));
+
+    // Offset the clock so a loaded world resumes at the time of day it was saved.
+    let start = match saved.as_ref() {
+        Some(m) => Instant::now()
+            .checked_sub(Duration::from_secs_f32(m.elapsed_secs))
+            .unwrap_or_else(Instant::now),
+        None => Instant::now(),
+    };
+    let next_id = saved.as_ref().map(|m| m.next_id.max(1)).unwrap_or(1);
+
+    // Restore saved creatures into the live world; players go to the saved set.
+    let mut entities = Entities::new();
+    let mut saved_players = HashMap::new();
+    if let Some(m) = &saved {
+        for e in &m.entities {
+            entities.insert(e.clone());
+        }
+        for p in &m.players {
+            saved_players.insert(p.name.clone(), p.clone());
+        }
+    }
+
     let shared = Arc::new(Shared {
         world: Mutex::new(ServerWorld {
             world: World::new(),
             generator,
             registry: BlockRegistry::new(),
+            store,
+            dirty: HashSet::new(),
         }),
         clients: Mutex::new(HashMap::new()),
-        entities: Mutex::new(Entities::new()),
-        next_id: AtomicU32::new(1),
+        entities: Mutex::new(entities),
+        next_id: AtomicU32::new(next_id),
         spawn,
-        start: Instant::now(),
+        start,
+        saved_players: Mutex::new(saved_players),
+        shutdown: AtomicBool::new(false),
     });
 
-    spawn_slimes(&shared);
+    // Only seed fresh creatures for a brand-new world; a loaded one keeps its own.
+    if saved.is_none() {
+        spawn_slimes(&shared);
+    }
 
     Ok((endpoint, fp, shared))
 }
@@ -308,8 +456,15 @@ fn spawn_slimes(shared: &Shared) {
 async fn entity_tick_loop(shared: Arc<Shared>) {
     let mut interval = tokio::time::interval(Duration::from_secs_f32(TICK_DT));
     let mut since_time_bcast = 0.0f32;
+    let mut since_save = 0.0f32;
     loop {
         interval.tick().await;
+
+        // Stop once the session is shutting down; the final save is written by
+        // RunningServer::drop.
+        if shared.shutdown.load(Ordering::SeqCst) {
+            return;
+        }
 
         let Step {
             broadcasts,
@@ -329,6 +484,13 @@ async fn entity_tick_loop(shared: Arc<Shared>) {
             shared.broadcast_all(ServerMessage::TimeOfDay {
                 t: shared.time_of_day(),
             });
+        }
+
+        // Periodically persist the world so progress survives a crash.
+        since_save += TICK_DT;
+        if since_save >= AUTOSAVE_SECS {
+            since_save = 0.0;
+            shared.save();
         }
     }
 }
@@ -637,8 +799,34 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
             match msg {
                 ClientMessage::Hello { name } => {
                     log::info!("player {id} is '{name}'");
+                    // If this name has saved state, move them back into it.
+                    let restored = shared.saved_players.lock().remove(&name);
                     if let Some(e) = shared.entities.lock().get_mut(id) {
                         e.kind = EntityKind::Player { name };
+                        if let Some(sp) = &restored {
+                            e.x = sp.x;
+                            e.y = sp.y;
+                            e.health = sp.health;
+                        }
+                    }
+                    if let Some(sp) = restored {
+                        // Teleport the owner's avatar and resync its health.
+                        let _ = tx.send(ServerMessage::Respawn { x: sp.x, y: sp.y });
+                        shared.broadcast_all(ServerMessage::EntityHealth {
+                            id,
+                            health: sp.health,
+                            max_health: crate::entity::PLAYER_MAX_HEALTH,
+                        });
+                        shared.broadcast_except(
+                            id,
+                            ServerMessage::EntityMoved {
+                                id,
+                                x: sp.x,
+                                y: sp.y,
+                                vx: 0.0,
+                                vy: 0.0,
+                            },
+                        );
                     }
                 }
                 ClientMessage::RequestChunk { cx, cy } => {
@@ -712,9 +900,24 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
     }
     .await;
 
-    // Cleanup.
+    // Cleanup. Preserve the player's state so they resume where they left off.
     shared.clients.lock().remove(&id);
-    shared.entities.lock().remove(id);
+    let removed = shared.entities.lock().remove(id);
+    if let Some(Entity {
+        kind: EntityKind::Player { name },
+        x,
+        y,
+        health,
+        ..
+    }) = removed
+    {
+        if !name.is_empty() {
+            shared
+                .saved_players
+                .lock()
+                .insert(name.clone(), SavedPlayer { name, x, y, health });
+        }
+    }
     shared.broadcast_all(ServerMessage::EntityDespawn { id });
     writer.abort();
     log::info!("player {id} disconnected");

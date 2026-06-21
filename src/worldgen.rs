@@ -16,6 +16,7 @@ const SURFACE_AMP: f32 = 28.0;
 const DIRT_DEPTH: i32 = 4;
 
 pub struct WorldGen {
+    seed: i32,
     height_noise: FastNoiseLite,
 }
 
@@ -24,7 +25,13 @@ impl WorldGen {
         let mut height_noise = FastNoiseLite::with_seed(seed);
         height_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
         height_noise.set_frequency(Some(0.012));
-        WorldGen { height_noise }
+        WorldGen { seed, height_noise }
+    }
+
+    /// The seed this generator was built from. Persisted so a reloaded world
+    /// reproduces the same terrain for chunks that were never modified.
+    pub fn seed(&self) -> i32 {
+        self.seed
     }
 
     /// Surface row (the grass cell) for a given world column.

@@ -232,7 +232,8 @@ impl App {
     }
 
     fn start_singleplayer(&mut self) {
-        match server::start_server(server::local_bind(), Self::seed()) {
+        let save_dir = crate::save::world_dir("singleplayer");
+        match server::start_server(server::local_bind(), Self::seed(), save_dir) {
             Ok(srv) => {
                 let handle = connect(srv.addr, "singleplayer".to_string(), Some(srv.fingerprint));
                 self.server = Some(srv);
@@ -246,7 +247,8 @@ impl App {
 
     fn start_host(&mut self) {
         let port: u16 = self.port_input.trim().parse().unwrap_or(5000);
-        match server::start_server(server::host_bind(port), Self::seed()) {
+        let save_dir = crate::save::world_dir(&format!("host-{port}"));
+        match server::start_server(server::host_bind(port), Self::seed(), save_dir) {
             Ok(srv) => {
                 let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
                 let handle = connect(addr, format!("127.0.0.1:{port}"), Some(srv.fingerprint));
