@@ -1093,15 +1093,21 @@ impl App {
     /// The full inventory management screen: storage grid plus the hotbar row,
     /// with click-to-move slot management. Shown over the HUD when toggled.
     fn inventory_window(&mut self, ui: &mut egui::Ui) {
-        let (slots, move_from, selected_slot) = {
+        let (slots, move_from, selected_slot, facing) = {
             let g = self.game.as_ref().unwrap();
-            (g.inventory.to_slots(), g.move_from, g.selected_slot)
+            (
+                g.inventory.to_slots(),
+                g.move_from,
+                g.selected_slot,
+                g.player_facing,
+            )
         };
         let registry = self.registry.clone();
         let atlas = &self.atlas;
         let tex = self.block_tex.as_ref().unwrap().id();
         let inventory = self.game.as_ref().unwrap().inventory.clone();
         let mut clicked: Option<usize> = None;
+        let mut dropped: Option<usize> = None;
         let mut craft: Option<u16> = None;
         let mut close = false;
 
@@ -1128,6 +1134,9 @@ impl App {
                             if resp.clicked() {
                                 clicked = Some(idx);
                             }
+                            if resp.secondary_clicked() {
+                                dropped = Some(idx);
+                            }
                         }
                     });
                 }
@@ -1148,10 +1157,14 @@ impl App {
                         if resp.clicked() {
                             clicked = Some(idx);
                         }
+                        if resp.secondary_clicked() {
+                            dropped = Some(idx);
+                        }
                     }
                 });
                 ui.add_space(6.0);
                 ui.weak("Click a slot, then another, to move/stack · click it again to cancel");
+                ui.weak("Right-click a slot to drop the whole stack on the ground");
 
                 ui.separator();
                 ui.label("Crafting");
@@ -1196,6 +1209,20 @@ impl App {
             }
             if let (Some((from, to)), Some(net)) = (move_cmd, &self.net) {
                 let _ = net.commands.send(NetCommand::MoveItem { from, to });
+            }
+        }
+        // Right-click drops a slot's whole stack at the player's feet. The server
+        // confirms with an inventory snapshot, so no optimistic update here.
+        if let Some(idx) = dropped {
+            if let Some(g) = self.game.as_mut() {
+                g.move_from = None;
+            }
+            if let Some(net) = &self.net {
+                let _ = net.commands.send(NetCommand::DropItem {
+                    slot: idx as u8,
+                    all: true,
+                    dir: if facing { 1.0 } else { -1.0 },
+                });
             }
         }
         // Crafting is server-authoritative: send the request and let the
@@ -1549,7 +1576,7 @@ impl App {
             let (w, h) = e.size();
             // Dropped items render as a small version of their block sprite, not
             // an animation sheet.
-            if let EntityKind::DroppedItem { block } = e.kind {
+            if let EntityKind::DroppedItem { block, .. } = e.kind {
                 let uv = self.atlas.block(block);
                 tiles.push(TileInstance {
                     pos: [e.x, e.y],
@@ -2573,6 +2600,10 @@ impl App {
             KeyCode::Digit8 if pressed => self.select_slot(7),
             KeyCode::Digit9 if pressed => self.select_slot(8),
             KeyCode::KeyE if pressed => self.toggle_inventory(),
+            // Q drops one item from the selected hotbar slot (to discard or gift
+            // it). Shift+Q would be a whole stack, but the inventory screen's
+            // right-click handles bulk drops, so Q stays a single item.
+            KeyCode::KeyQ if pressed => self.drop_selected(),
             // Enter or T opens the chat box (typing is then captured by egui).
             KeyCode::Enter | KeyCode::KeyT if pressed => self.open_chat(),
             // Escape closes an open menu (inventory or forge) if any, otherwise
@@ -2620,6 +2651,32 @@ impl App {
     fn select_slot(&mut self, slot: usize) {
         if let Some(g) = &mut self.game {
             g.selected_slot = slot;
+        }
+    }
+
+    /// Drop one item from the selected hotbar slot at the player's feet, tossed
+    /// in the direction they face. No-op while a menu is open (the inventory
+    /// screen has its own drop affordance) or the slot is empty.
+    fn drop_selected(&mut self) {
+        let cmd = {
+            let Some(g) = self.game.as_ref() else {
+                return;
+            };
+            if g.inventory_open || g.forge_open {
+                return;
+            }
+            if g.inventory.get(g.selected_slot).is_none() {
+                return;
+            }
+            let dir = if g.player_facing { 1.0 } else { -1.0 };
+            NetCommand::DropItem {
+                slot: g.selected_slot as u8,
+                all: false,
+                dir,
+            }
+        };
+        if let Some(net) = &self.net {
+            let _ = net.commands.send(cmd);
         }
     }
 

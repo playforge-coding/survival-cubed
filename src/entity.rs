@@ -81,10 +81,16 @@ pub enum EntityKind {
     /// walls to reach them. Lurks only in the forest's shade and in the caverns
     /// deep underground. Server-simulated.
     Spider,
-    /// A block lying on the ground after being mined, waiting to be walked into
-    /// and picked up. Server-simulated (falls under gravity); carries the block
-    /// id it will add to a player's inventory on pickup.
-    DroppedItem { block: BlockId },
+    /// A stack of items lying on the ground (mined, spilled by crafting, or
+    /// discarded/gifted by a player), waiting to be walked into and picked up.
+    /// Server-simulated (falls under gravity); carries the block id, how many are
+    /// in the stack, and a tool's remaining `durability` (`0` for items that have
+    /// none) so worn tools keep their wear when dropped and picked back up.
+    DroppedItem {
+        block: BlockId,
+        count: u32,
+        durability: u16,
+    },
 }
 
 impl EntityKind {

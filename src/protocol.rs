@@ -23,7 +23,7 @@ pub type BlockId = u16;
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -62,6 +62,12 @@ pub enum ClientMessage {
     PlaceBlock { x: i32, y: i32, slot: u8 },
     /// Move/merge/swap the stack in inventory slot `from` onto slot `to`.
     MoveItem { from: u8, to: u8 },
+    /// Drop the contents of inventory `slot` onto the ground at the player's feet
+    /// so it can be discarded or picked up by another player. `all` drops the
+    /// whole stack; otherwise a single item is dropped. `dir` is the player's
+    /// facing (`-1.0` left, `+1.0` right) used to toss the drop clear of them.
+    /// The dropped item keeps a tool's durability.
+    DropItem { slot: u8, all: bool, dir: f32 },
     /// Craft [`RECIPES`](crate::recipe::RECIPES)`[recipe]` once: the server
     /// checks the player holds all inputs, consumes them, and grants the outputs.
     Craft { recipe: u16 },

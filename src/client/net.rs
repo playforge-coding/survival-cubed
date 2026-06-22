@@ -110,6 +110,14 @@ pub enum NetCommand {
         from: u8,
         to: u8,
     },
+    /// Drop inventory slot `slot` onto the ground at the player's feet. `all`
+    /// drops the whole stack, otherwise a single item. `dir` is the player's
+    /// facing (`-1.0` left, `+1.0` right) for the toss direction.
+    DropItem {
+        slot: u8,
+        all: bool,
+        dir: f32,
+    },
     /// Craft the recipe at index `recipe` once (server validates materials).
     Craft {
         recipe: u16,
@@ -315,6 +323,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::SetBlock { x, y, block, held } => ClientMessage::SetBlock { x, y, block, held },
         NetCommand::PlaceBlock { x, y, slot } => ClientMessage::PlaceBlock { x, y, slot },
         NetCommand::MoveItem { from, to } => ClientMessage::MoveItem { from, to },
+        NetCommand::DropItem { slot, all, dir } => ClientMessage::DropItem { slot, all, dir },
         NetCommand::Craft { recipe } => ClientMessage::Craft { recipe },
         NetCommand::Smelt { recipe, count } => ClientMessage::Smelt { recipe, count },
         NetCommand::PlayerMove { x, y } => ClientMessage::PlayerMove { x, y },

@@ -138,6 +138,14 @@ const ITEM_PICKUP_DELAY: f32 = 0.4;
 const ITEM_PICKUP_REACH: f32 = 2.0;
 /// Per-tick horizontal speed retained by a sliding item on the ground (drag).
 const ITEM_GROUND_DRAG: f32 = 0.8;
+/// Horizontal speed (px/s) given to an item a player deliberately drops, tossed
+/// in their facing direction so it lands a little away from them (and so a
+/// discarded item doesn't immediately slide back underfoot).
+const ITEM_DROP_VELOCITY_X: f32 = 90.0;
+/// Seconds a player-dropped item must lie around before anyone (including the
+/// dropper) can collect it. Longer than [`ITEM_PICKUP_DELAY`] so the dropper has
+/// a moment to step away when discarding or gifting.
+const ITEM_DROP_PICKUP_DELAY: f32 = 1.0;
 /// How often the world is flushed to disk while running, in seconds.
 const AUTOSAVE_SECS: f32 = 30.0;
 /// Longest chat line the server will relay, in characters; longer lines are
@@ -406,6 +414,65 @@ impl Shared {
     /// first. Returns whether it fit (false only if the inventory is full).
     fn add_item(&self, id: EntityId, block: BlockId) -> bool {
         self.inventories.lock().entry(id).or_default().add(block, 1) == 0
+    }
+
+    /// Add a dropped stack (`count` of `block` carrying `durability`) to player
+    /// `id`'s inventory, preserving a tool's wear. Returns the amount that did
+    /// not fit (0 when all of it was stored).
+    fn add_stack(&self, id: EntityId, block: BlockId, count: u32, durability: u16) -> u32 {
+        self.inventories
+            .lock()
+            .entry(id)
+            .or_default()
+            .add_stack(block, count, durability)
+    }
+
+    /// Drop the contents of player `id`'s inventory `slot` onto the ground at
+    /// their feet so it can be discarded or gifted. `all` drops the whole stack;
+    /// otherwise a single item is dropped. `dir` is the player's facing
+    /// (`-1.0` left, `+1.0` right) so the drop is tossed clear of them. The drop
+    /// keeps a tool's durability. No-op if the slot is empty or the player has no
+    /// position yet.
+    fn drop_item(&self, id: EntityId, slot: usize, all: bool, dir: f32) {
+        let taken = {
+            let mut invs = self.inventories.lock();
+            let Some(inv) = invs.get_mut(&id) else {
+                return;
+            };
+            if all {
+                inv.take_slot(slot)
+            } else {
+                inv.take_one_full(slot)
+            }
+        };
+        let Some((block, count, durability)) = taken else {
+            return;
+        };
+        // Spawn at the player's center so the toss reads as coming from them.
+        let origin = self.entities.lock().get(id).map(|e| {
+            let (pw, ph) = e.size();
+            let (iw, ih) = ITEM_SIZE;
+            (e.x + (pw - iw) * 0.5, e.y + (ph - ih) * 0.5)
+        });
+        let Some((x, y)) = origin else {
+            return;
+        };
+        let vx = if dir < 0.0 {
+            -ITEM_DROP_VELOCITY_X
+        } else {
+            ITEM_DROP_VELOCITY_X
+        };
+        spawn_item(
+            self,
+            block,
+            count,
+            durability,
+            x,
+            y,
+            vx,
+            ITEM_POP_VELOCITY,
+            ITEM_DROP_PICKUP_DELAY,
+        );
     }
 
     /// Remove one item from hotbar/inventory `slot` of player `id`, returning the
@@ -1030,14 +1097,56 @@ fn maybe_spawn_zombies(shared: &Shared, rng: &mut u32) {
 
 /// Spawn a dropped-block item at the center of cell `(cell_x, cell_y)`, popping
 /// it upward so it clears the player who mined it, and announce it to everyone.
+/// Mined/crafted drops are a single item at full durability.
 fn spawn_drop(shared: &Shared, cell_x: i32, cell_y: i32, block: BlockId) {
     let (iw, ih) = ITEM_SIZE;
-    let id = shared.alloc_id();
     let x = cell_x as f32 * TILE_SIZE + (TILE_SIZE - iw) * 0.5;
     let y = cell_y as f32 * TILE_SIZE + (TILE_SIZE - ih) * 0.5;
-    let mut item = Entity::new(id, EntityKind::DroppedItem { block }, x, y);
-    item.vy = ITEM_POP_VELOCITY;
-    item.attack_cd = ITEM_PICKUP_DELAY; // reused as the pickup-delay timer
+    spawn_item(
+        shared,
+        block,
+        1,
+        crate::block::max_durability(block),
+        x,
+        y,
+        0.0,
+        ITEM_POP_VELOCITY,
+        ITEM_PICKUP_DELAY,
+    );
+}
+
+/// Spawn a dropped-item entity carrying its full stack and durability, with an
+/// initial velocity and a pickup delay, and announce it to everyone. The
+/// low-level primitive behind both mined drops and player-initiated drops.
+#[allow(clippy::too_many_arguments)]
+fn spawn_item(
+    shared: &Shared,
+    block: BlockId,
+    count: u32,
+    durability: u16,
+    x: f32,
+    y: f32,
+    vx: f32,
+    vy: f32,
+    pickup_delay: f32,
+) {
+    if count == 0 {
+        return;
+    }
+    let id = shared.alloc_id();
+    let mut item = Entity::new(
+        id,
+        EntityKind::DroppedItem {
+            block,
+            count,
+            durability,
+        },
+        x,
+        y,
+    );
+    item.vx = vx;
+    item.vy = vy;
+    item.attack_cd = pickup_delay; // reused as the pickup-delay timer
     shared.entities.lock().insert(item.clone());
     shared.broadcast_all(ServerMessage::EntitySpawn { entity: item });
 }
@@ -1494,12 +1603,17 @@ fn step_entities(shared: &Shared) -> Step {
 
     // Dropped items: fall under gravity, then get collected by any player that
     // is touching them once their pickup delay has elapsed.
-    for id in item_ids {
+    'items: for id in item_ids {
         let Some(e) = entities.get_mut(id) else {
             continue;
         };
         let (w, h) = e.size();
-        let EntityKind::DroppedItem { block } = e.kind else {
+        let EntityKind::DroppedItem {
+            block,
+            count,
+            durability,
+        } = e.kind
+        else {
             continue;
         };
         e.attack_cd = (e.attack_cd - TICK_DT).max(0.0); // reused as pickup delay
@@ -1524,21 +1638,32 @@ fn step_entities(shared: &Shared) -> Step {
         e.vy = vy;
 
         // Collect into the first touching player with room (delay permitting).
-        let collector = if e.attack_cd <= 0.0 {
-            players.iter().find(|&&(pid, px, py)| {
-                aabb_gap(x, y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1) <= ITEM_PICKUP_REACH
-                    && shared.add_item(pid, block)
-            })
-        } else {
-            None
-        };
-        if let Some(&(pid, _, _)) = collector {
-            entities.remove(id);
-            broadcasts.push(ServerMessage::EntityDespawn { id });
-            pickups.push(pid);
-        } else {
-            broadcasts.push(ServerMessage::EntityMoved { id, x, y, vx, vy });
+        // A stack picks up as far as it fits; any remainder stays on the ground.
+        if e.attack_cd <= 0.0 {
+            for &(pid, px, py) in &players {
+                if aabb_gap(x, y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1) > ITEM_PICKUP_REACH {
+                    continue;
+                }
+                let left = shared.add_stack(pid, block, count, durability);
+                if left == count {
+                    continue; // no room for this player; try the next
+                }
+                pickups.push(pid);
+                if left == 0 {
+                    entities.remove(id);
+                    broadcasts.push(ServerMessage::EntityDespawn { id });
+                } else {
+                    if let Some(e) = entities.get_mut(id)
+                        && let EntityKind::DroppedItem { count: c, .. } = &mut e.kind
+                    {
+                        *c = left;
+                    }
+                    broadcasts.push(ServerMessage::EntityMoved { id, x, y, vx, vy });
+                }
+                continue 'items;
+            }
         }
+        broadcasts.push(ServerMessage::EntityMoved { id, x, y, vx, vy });
     }
 
     let mut respawns = Vec::new();
@@ -2139,22 +2264,30 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         shared.send_inventory(id);
                         continue;
                     }
-                    // Read the block to place from the player's own slot, so they
-                    // can only place what they actually hold.
-                    match shared.take_from_slot(id, slot as usize) {
+                    // Read (without removing) the block to place from the player's
+                    // own slot, so they can only place what they actually hold —
+                    // and so a non-placeable item (e.g. a worn tool) is never
+                    // taken out and refunded, which would reset its durability.
+                    match shared.peek_slot(id, slot as usize) {
                         // Plain items (bark, sticks, tools) can't be placed —
-                        // refund and resync the slot.
+                        // leave the slot untouched and just resync it.
                         Some(block) if !shared.world.lock().registry.is_placeable(block) => {
-                            shared.add_item(id, block);
                             shared.send_inventory(id);
                         }
-                        Some(block) => {
-                            let changed = shared.world.lock().set(x, y, block);
-                            if changed {
-                                shared.broadcast_all(ServerMessage::BlockUpdate { x, y, block });
-                            } else {
-                                // Cell was occupied: refund the spent block.
-                                shared.add_item(id, block);
+                        Some(_) => {
+                            // Now commit: spend the block from the slot and place it.
+                            if let Some(block) = shared.take_from_slot(id, slot as usize) {
+                                let changed = shared.world.lock().set(x, y, block);
+                                if changed {
+                                    shared.broadcast_all(ServerMessage::BlockUpdate {
+                                        x,
+                                        y,
+                                        block,
+                                    });
+                                } else {
+                                    // Cell was occupied: refund the spent block.
+                                    shared.add_item(id, block);
+                                }
                             }
                             shared.send_inventory(id);
                         }
@@ -2176,6 +2309,10 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 }
                 ClientMessage::MoveItem { from, to } => {
                     shared.move_item(id, from as usize, to as usize);
+                    shared.send_inventory(id);
+                }
+                ClientMessage::DropItem { slot, all, dir } => {
+                    shared.drop_item(id, slot as usize, all, dir);
                     shared.send_inventory(id);
                 }
                 ClientMessage::Craft { recipe } => {

@@ -107,6 +107,33 @@ impl Inventory {
         count
     }
 
+    /// Add a dropped stack of `count` of `block` that carries `durability` (a
+    /// tool's remaining uses), preserving that wear instead of resetting it to
+    /// full the way [`add`](Self::add) does. Tools never stack, so each one takes
+    /// its own empty slot at the given durability; ordinary items have no
+    /// durability and stack normally. Returns the amount that did not fit.
+    ///
+    /// Used when a player walks into a dropped item, so a half-worn pickaxe that
+    /// was dropped comes back half-worn.
+    pub fn add_stack(&mut self, block: BlockId, count: u32, durability: u16) -> u32 {
+        // Items without durability (everything but tools) just stack normally;
+        // their stored durability is always 0, so nothing is lost.
+        if max_durability(block) == 0 {
+            return self.add(block, count);
+        }
+        let mut left = count;
+        for slot in self.slots.iter_mut() {
+            if left == 0 {
+                break;
+            }
+            if slot.is_none() {
+                *slot = Some((block, 1, durability));
+                left -= 1;
+            }
+        }
+        left
+    }
+
     /// Total number of `item` held across every slot.
     pub fn count(&self, item: BlockId) -> u32 {
         self.slots
@@ -152,6 +179,27 @@ impl Inventory {
             *s = None;
         }
         Some(block)
+    }
+
+    /// Remove one item from `slot`, returning its full `(block, 1, durability)`
+    /// stack (or `None` if the slot was empty / out of range). Like
+    /// [`take_one`](Self::take_one) but it keeps the tool's durability so a
+    /// dropped item can carry it. Empties the slot when its last item is taken.
+    pub fn take_one_full(&mut self, slot: usize) -> Slot {
+        let s = self.slots.get_mut(slot)?;
+        let (block, n, dur) = s.as_mut()?;
+        let taken = Some((*block, 1, *dur));
+        *n -= 1;
+        if *n == 0 {
+            *s = None;
+        }
+        taken
+    }
+
+    /// Remove and return the entire stack in `slot` (or `None` if empty / out of
+    /// range), leaving the slot empty. Used to drop a whole stack at once.
+    pub fn take_slot(&mut self, slot: usize) -> Slot {
+        self.slots.get_mut(slot)?.take()
     }
 
     /// Move the stack in `from` onto `to`. Same-block stacks merge up to
@@ -267,6 +315,47 @@ mod tests {
         assert!(inv.repair_tool(PICKAXE, 100)); // caps at max
         assert_eq!(inv.get(0), Some((PICKAXE, 1, PICK_DUR)));
         assert!(!inv.repair_tool(PICKAXE, 4)); // already full: nothing to do
+    }
+
+    #[test]
+    fn dropped_tool_keeps_its_durability_round_trip() {
+        // A worn tool dropped and picked back up must keep its remaining uses,
+        // unlike a freshly crafted one (which `add` resets to full).
+        let mut inv = Inventory::new();
+        inv.add(PICKAXE, 1);
+        inv.damage_tool(PICKAXE, 25); // now at PICK_DUR - 25
+        let worn = inv.take_one_full(0);
+        assert_eq!(worn, Some((PICKAXE, 1, PICK_DUR - 25)));
+        assert_eq!(inv.get(0), None);
+        // Picking the dropped stack back up preserves the wear.
+        assert_eq!(inv.add_stack(PICKAXE, 1, PICK_DUR - 25), 0);
+        assert_eq!(inv.get(0), Some((PICKAXE, 1, PICK_DUR - 25)));
+        // By contrast, plain `add` would have reset it to full.
+        let mut inv2 = Inventory::new();
+        inv2.add(PICKAXE, 1);
+        assert_eq!(inv2.get(0), Some((PICKAXE, 1, PICK_DUR)));
+    }
+
+    #[test]
+    fn add_stack_places_tools_one_per_slot_and_reports_overflow() {
+        let mut inv = Inventory::new();
+        // Fill every slot but one with junk so only one free slot remains.
+        for s in 0..TOTAL_SLOTS - 1 {
+            inv.move_stack(s, s); // no-op, just to be explicit about layout
+        }
+        inv.add(STONE, STACK_MAX * (TOTAL_SLOTS as u32 - 1));
+        // Two worn pickaxes, one free slot: one lands, one overflows.
+        assert_eq!(inv.add_stack(PICKAXE, 2, 10), 1);
+        assert_eq!(inv.get(TOTAL_SLOTS - 1), Some((PICKAXE, 1, 10)));
+    }
+
+    #[test]
+    fn take_slot_empties_and_returns_whole_stack() {
+        let mut inv = Inventory::new();
+        inv.add(STONE, 40);
+        assert_eq!(inv.take_slot(0), Some((STONE, 40, 0)));
+        assert_eq!(inv.get(0), None);
+        assert_eq!(inv.take_slot(0), None); // already empty
     }
 
     #[test]
