@@ -65,6 +65,9 @@ blocks!(
     "cooked_meat",
     "campfire",
     "campfire_lit",
+    "wood_axe",
+    "stone_axe",
+    "iron_axe",
 );
 
 sprites!(

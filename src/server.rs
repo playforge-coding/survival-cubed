@@ -148,6 +148,10 @@ const ITEM_DROP_VELOCITY_X: f32 = 90.0;
 const ITEM_DROP_PICKUP_DELAY: f32 = 1.0;
 /// How often the world is flushed to disk while running, in seconds.
 const AUTOSAVE_SECS: f32 = 30.0;
+/// Chebyshev distance (in cells) within which a leaf must find a log to survive.
+/// When the last log in range is removed, the leaf decays (breaking, but still
+/// dropping its items). Comfortably covers a generated tree's canopy.
+const LEAF_SUPPORT_RANGE: i32 = 3;
 /// Longest chat line the server will relay, in characters; longer lines are
 /// truncated so a peer can't flood others with a huge message.
 const MAX_CHAT_LEN: usize = 256;
@@ -331,6 +335,11 @@ struct Shared {
     /// counts each down and extinguishes it (reverting the block) at zero.
     /// Persisted in [`WorldMeta`] so fires survive a save/reload.
     campfires: Mutex<HashMap<(i32, i32), f32>>,
+    /// Cells holding a log the player placed (rather than naturally grown).
+    /// Tracked so an axe's tree-felling leaves player-built log structures
+    /// standing — a placed log is neither chopped nor traversed by the fell.
+    /// Persisted in [`WorldMeta`] so the distinction survives a save/reload.
+    placed_logs: Mutex<HashSet<(i32, i32)>>,
     /// Set when the owning [`RunningServer`] is dropped, to stop the autosave
     /// loop.
     shutdown: AtomicBool,
@@ -400,6 +409,7 @@ impl Shared {
             .iter()
             .map(|(&(x, y), &secs)| (x, y, secs))
             .collect();
+        let placed_logs = self.placed_logs.lock().iter().copied().collect();
 
         let meta = WorldMeta {
             seed,
@@ -409,6 +419,7 @@ impl Shared {
             entities: creatures,
             players: players.into_values().collect(),
             campfires,
+            placed_logs,
         };
         if let Err(e) = world.store.save_meta(&meta) {
             log::error!("failed to save world: {e:#}");
@@ -763,6 +774,84 @@ impl Shared {
         }
         msgs
     }
+
+    /// Fell the rest of a tree: flood-fill the run of logs 4-connected to the
+    /// (already-cleared) cell `(x, y)`, clearing each and returning their cells so
+    /// the caller can drop them. Naturally-grown logs only — a player-placed log
+    /// (tracked in [`Shared::placed_logs`]) is left standing and also blocks the
+    /// spread, so building with logs never collapses an adjacent tree and felling
+    /// a tree never eats a player's log structure.
+    fn chop_connected_logs(&self, x: i32, y: i32) -> Vec<(i32, i32)> {
+        let mut world = self.world.lock();
+        let placed = self.placed_logs.lock();
+        let mut removed = Vec::new();
+        let mut seen: HashSet<(i32, i32)> = HashSet::new();
+        seen.insert((x, y)); // origin already cleared by the caller
+        let mut stack: Vec<(i32, i32)> = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+            .iter()
+            .map(|(dx, dy)| (x + dx, y + dy))
+            .collect();
+        while let Some((cx, cy)) = stack.pop() {
+            if !seen.insert((cx, cy)) {
+                continue;
+            }
+            if world.get(cx, cy) != crate::block::LOG || placed.contains(&(cx, cy)) {
+                continue;
+            }
+            world.set(cx, cy, crate::block::AIR);
+            removed.push((cx, cy));
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                stack.push((cx + dx, cy + dy));
+            }
+        }
+        removed
+    }
+
+    /// Decay leaves left unsupported after the logs at `removed_logs` were
+    /// cleared: any leaf within [`LEAF_SUPPORT_RANGE`] of a removed log that no
+    /// longer has a log in range is broken. Returns each broken leaf's cell and
+    /// its rolled drop (leaves still shed their items as they decay).
+    fn decay_unsupported_leaves(
+        &self,
+        removed_logs: &[(i32, i32)],
+    ) -> Vec<(i32, i32, Option<BlockId>)> {
+        let r = LEAF_SUPPORT_RANGE;
+        // Every leaf that *could* have lost its only support sits within range of
+        // a removed log; gather that neighbourhood (deduped) as the candidates.
+        let mut candidates: HashSet<(i32, i32)> = HashSet::new();
+        for &(lx, ly) in removed_logs {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    candidates.insert((lx + dx, ly + dy));
+                }
+            }
+        }
+        let mut world = self.world.lock();
+        let mut decayed = Vec::new();
+        for (cx, cy) in candidates {
+            if world.get(cx, cy) != crate::block::LEAVES || leaf_supported(&mut world, cx, cy) {
+                continue;
+            }
+            world.set(cx, cy, crate::block::AIR);
+            let drop = crate::block::mined_drop_rolled(crate::block::LEAVES, self.rand_unit());
+            decayed.push((cx, cy, drop));
+        }
+        decayed
+    }
+}
+
+/// Whether a log lies within [`LEAF_SUPPORT_RANGE`] (Chebyshev) of cell
+/// `(x, y)` — i.e. whether a leaf there still has nearby wood to cling to.
+fn leaf_supported(world: &mut ServerWorld, x: i32, y: i32) -> bool {
+    let r = LEAF_SUPPORT_RANGE;
+    for dy in -r..=r {
+        for dx in -r..=r {
+            if world.get(x + dx, y + dy) == crate::block::LOG {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Items a slain creature of `kind` drops, as `(item, count)` pairs. Animals
@@ -962,6 +1051,7 @@ fn build_endpoint(
     let mut entities = Entities::new();
     let mut saved_players = HashMap::new();
     let mut campfires = HashMap::new();
+    let mut placed_logs = HashSet::new();
     if let Some(m) = &saved {
         for e in &m.entities {
             entities.insert(e.clone());
@@ -971,6 +1061,9 @@ fn build_endpoint(
         }
         for &(x, y, secs) in &m.campfires {
             campfires.insert((x, y), secs);
+        }
+        for &(x, y) in &m.placed_logs {
+            placed_logs.insert((x, y));
         }
     }
 
@@ -991,6 +1084,7 @@ fn build_endpoint(
         saved_players: Mutex::new(saved_players),
         inventories: Mutex::new(HashMap::new()),
         campfires: Mutex::new(campfires),
+        placed_logs: Mutex::new(placed_logs),
         shutdown: AtomicBool::new(false),
     });
 
@@ -2409,8 +2503,39 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         {
                             spawn_drop(&shared, x, y, drop);
                         }
+                        // Logs are special: breaking one updates the placed-log
+                        // bookkeeping, an axe fells the whole tree, and any leaves
+                        // it leaves stranded decay (still shedding their drops).
+                        if prev == crate::block::LOG {
+                            let was_placed = shared.placed_logs.lock().remove(&(x, y));
+                            let mut removed_logs = vec![(x, y)];
+                            // An axe sweeps through a naturally-grown trunk, felling
+                            // every connected log at once; a player-placed log is
+                            // exempt and just breaks on its own.
+                            if !was_placed && crate::block::is_axe(held) {
+                                for (lx, ly) in shared.chop_connected_logs(x, y) {
+                                    shared.broadcast_all(ServerMessage::BlockUpdate {
+                                        x: lx,
+                                        y: ly,
+                                        block: crate::block::AIR,
+                                    });
+                                    spawn_drop(&shared, lx, ly, crate::block::LOG);
+                                    removed_logs.push((lx, ly));
+                                }
+                            }
+                            for (lx, ly, drop) in shared.decay_unsupported_leaves(&removed_logs) {
+                                shared.broadcast_all(ServerMessage::BlockUpdate {
+                                    x: lx,
+                                    y: ly,
+                                    block: crate::block::AIR,
+                                });
+                                if let Some(drop) = drop {
+                                    spawn_drop(&shared, lx, ly, drop);
+                                }
+                            }
+                        }
                         // Mining wears the held tool: a pickaxe's intended job
-                        // costs little, a sword used to dig wears twice as fast.
+                        // costs little, a sword or axe used to dig wears twice as fast.
                         shared.wear_tool(id, held, crate::block::mine_wear(held));
                     }
                 }
@@ -2487,6 +2612,11 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             if let Some(block) = shared.take_from_slot(id, slot as usize) {
                                 let changed = shared.world.lock().set(x, y, block);
                                 if changed {
+                                    // Remember player-placed logs so an axe's
+                                    // tree-felling spares what the player built.
+                                    if block == crate::block::LOG {
+                                        shared.placed_logs.lock().insert((x, y));
+                                    }
                                     shared.broadcast_all(ServerMessage::BlockUpdate {
                                         x,
                                         y,

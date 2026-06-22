@@ -36,7 +36,7 @@ const CHUNKS_DIR: &str = "chunks";
 /// Magic prefix on `world.dat` ("SCWD" — Survival Cubed World Data).
 const MAGIC: u32 = 0x5343_5744;
 /// On-disk format version; bump on any incompatible layout change.
-const VERSION: u32 = 4;
+const VERSION: u32 = 5;
 /// Bytes per chunk file: one little-endian `u16` per cell.
 const CHUNK_BYTES: usize = CHUNK_AREA * 2;
 
@@ -71,6 +71,10 @@ pub struct WorldMeta {
     /// across a save/reload instead of staying lit forever or going dark.
     #[serde(default)]
     pub campfires: Vec<(i32, i32, f32)>,
+    /// Cells holding a player-placed log, as `(x, y)`. Tracked so an axe's
+    /// tree-felling spares logs the player built with (see [`crate::server`]).
+    #[serde(default)]
+    pub placed_logs: Vec<(i32, i32)>,
 }
 
 /// Reads and writes a single world's files under `dir`.
@@ -279,6 +283,7 @@ mod tests {
                 },
             }],
             campfires: vec![(3, -5, 12.5), (-8, 2, 30.0)],
+            placed_logs: vec![(1, 2), (-3, 4)],
         };
         store.save_meta(&meta).unwrap();
 
@@ -296,6 +301,7 @@ mod tests {
         assert_eq!(got.players[0].inventory.get(0), Some((STONE, 42, 0)));
         assert_eq!(got.players[0].inventory.get(1), Some((DIRT, 7, 0)));
         assert_eq!(got.campfires, meta.campfires);
+        assert_eq!(got.placed_logs, meta.placed_logs);
     }
 
     #[test]

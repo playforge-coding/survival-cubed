@@ -75,6 +75,13 @@ pub const CAMPFIRE: BlockId = 23;
 /// (you light a placed campfire by adding fuel), it reverts to [`CAMPFIRE`] when
 /// its fuel runs out. Raw meat can only be cooked while a campfire is lit.
 pub const CAMPFIRE_LIT: BlockId = 24;
+/// A wooden axe. A tool item; stacks to one. Hits harder than a sword but wears
+/// twice as fast, and fells whole trees (see [`is_axe`]).
+pub const WOOD_AXE: BlockId = 25;
+/// A stone axe. A tool item; stacks to one. Hits harder than the wooden axe.
+pub const STONE_AXE: BlockId = 26;
+/// An iron axe. A tool item; stacks to one. The deadliest axe.
+pub const IRON_AXE: BlockId = 27;
 
 /// Definition of a single block type.
 pub struct BlockDef {
@@ -139,6 +146,11 @@ impl BlockRegistry {
         // blocks; `campfire_lit` is never held, only the world-side burning form.
         r.register("campfire", false, true, true, 0.6);
         r.register("campfire_lit", false, true, false, 0.6);
+        // Axes: dedicated tree-felling weapons, wood < stone < iron. Hit harder
+        // than swords but wear twice as fast.
+        r.register("wood_axe", false, true, false, 0.0);
+        r.register("stone_axe", false, true, false, 0.0);
+        r.register("iron_axe", false, true, false, 0.0);
         r
     }
 
@@ -197,7 +209,8 @@ impl Default for BlockRegistry {
 /// everything else uses the default [`STACK_MAX`](crate::inventory::STACK_MAX).
 pub fn max_stack(id: BlockId) -> u32 {
     match id {
-        PICKAXE | STONE_PICKAXE | IRON_PICKAXE | WOOD_SWORD | STONE_SWORD | IRON_SWORD => 1,
+        PICKAXE | STONE_PICKAXE | IRON_PICKAXE | WOOD_SWORD | STONE_SWORD | IRON_SWORD
+        | WOOD_AXE | STONE_AXE | IRON_AXE => 1,
         _ => crate::inventory::STACK_MAX,
     }
 }
@@ -232,6 +245,10 @@ pub fn required_tier(block: BlockId) -> u8 {
 /// faster. Mining a tool-gated block with too weak a tool is punishingly slow;
 /// the right tool (or better) speeds it up, more so at higher tiers.
 pub fn mine_speed_mult(block: BlockId, held: BlockId) -> f32 {
+    // An axe is the right tool for wood: it bites through logs quickly.
+    if block == LOG && is_axe(held) {
+        return 0.4;
+    }
     let req = required_tier(block);
     if req == 0 {
         return 1.0;
@@ -262,9 +279,9 @@ pub fn drops_when_mined(block: BlockId, held: BlockId) -> bool {
 /// [`attack_wear`] / [`mine_wear`]) and it shatters at zero.
 pub fn max_durability(item: BlockId) -> u16 {
     match item {
-        PICKAXE | WOOD_SWORD => 60,
-        STONE_PICKAXE | STONE_SWORD => 132,
-        IRON_PICKAXE | IRON_SWORD => 251,
+        PICKAXE | WOOD_SWORD | WOOD_AXE => 60,
+        STONE_PICKAXE | STONE_SWORD | STONE_AXE => 132,
+        IRON_PICKAXE | IRON_SWORD | IRON_AXE => 251,
         _ => 0,
     }
 }
@@ -285,12 +302,18 @@ pub fn is_sword(item: BlockId) -> bool {
     matches!(item, WOOD_SWORD | STONE_SWORD | IRON_SWORD)
 }
 
+/// Whether `item` is an axe (felling trees and fighting are its uses).
+pub fn is_axe(item: BlockId) -> bool {
+    matches!(item, WOOD_AXE | STONE_AXE | IRON_AXE)
+}
+
 /// Durability spent attacking with `item`. A sword's intended use costs `1`; a
-/// pickaxe swung as a weapon wears twice as fast. Anything else costs nothing.
+/// pickaxe swung as a weapon wears twice as fast. An axe also wears twice as
+/// fast — its extra punch is paid for in durability. Anything else costs nothing.
 pub fn attack_wear(item: BlockId) -> u16 {
     if is_sword(item) {
         1
-    } else if is_pickaxe(item) {
+    } else if is_pickaxe(item) || is_axe(item) {
         2
     } else {
         0
@@ -298,11 +321,12 @@ pub fn attack_wear(item: BlockId) -> u16 {
 }
 
 /// Durability spent mining with `item`. A pickaxe's intended use costs `1`; a
-/// sword used to dig wears twice as fast. Anything else costs nothing.
+/// sword used to dig wears twice as fast. An axe (whose job is chopping wood)
+/// always wears twice as fast. Anything else costs nothing.
 pub fn mine_wear(item: BlockId) -> u16 {
     if is_pickaxe(item) {
         1
-    } else if is_sword(item) {
+    } else if is_sword(item) || is_axe(item) {
         2
     } else {
         0
@@ -313,9 +337,9 @@ pub fn mine_wear(item: BlockId) -> u16 {
 /// crafted from — or `None` if `item` has no durability to repair.
 pub fn repair_material(item: BlockId) -> Option<BlockId> {
     match item {
-        PICKAXE | WOOD_SWORD => Some(WOOD),
-        STONE_PICKAXE | STONE_SWORD => Some(STONE),
-        IRON_PICKAXE | IRON_SWORD => Some(IRON_INGOT),
+        PICKAXE | WOOD_SWORD | WOOD_AXE => Some(WOOD),
+        STONE_PICKAXE | STONE_SWORD | STONE_AXE => Some(STONE),
+        IRON_PICKAXE | IRON_SWORD | IRON_AXE => Some(IRON_INGOT),
         _ => None,
     }
 }
@@ -333,6 +357,10 @@ pub fn repair_step(item: BlockId) -> u16 {
 /// Wood < stone < iron within each family.
 pub fn attack_damage(item: BlockId) -> i32 {
     match item {
+        // Axes out-hit swords of the same tier, the trade-off being durability.
+        WOOD_AXE => 10,
+        STONE_AXE => 13,
+        IRON_AXE => 16,
         WOOD_SWORD => 8,
         STONE_SWORD => 11,
         IRON_SWORD => 14,
@@ -433,6 +461,26 @@ mod tests {
             assert_eq!(mined_drop_rolled(IRON_ORE, roll), Some(RAW_IRON));
             assert_eq!(mined_drop_rolled(CAMPFIRE_LIT, roll), Some(CAMPFIRE));
         }
+    }
+
+    #[test]
+    fn axes_out_hit_swords_but_wear_twice_as_fast() {
+        // Each axe hits harder than the sword of its tier.
+        assert!(attack_damage(WOOD_AXE) > attack_damage(WOOD_SWORD));
+        assert!(attack_damage(STONE_AXE) > attack_damage(STONE_SWORD));
+        assert!(attack_damage(IRON_AXE) > attack_damage(IRON_SWORD));
+        // An axe wears twice as fast as a sword, both attacking and mining.
+        for axe in [WOOD_AXE, STONE_AXE, IRON_AXE] {
+            assert!(is_axe(axe));
+            assert_eq!(attack_wear(axe), 2);
+            assert_eq!(mine_wear(axe), 2);
+            assert_eq!(attack_wear(axe), 2 * attack_wear(WOOD_SWORD));
+            assert!(max_durability(axe) > 0);
+            assert_eq!(max_stack(axe), 1);
+            assert!(repair_material(axe).is_some());
+        }
+        // An axe is the fast tool for logs; bare hands aren't.
+        assert!(mine_speed_mult(LOG, IRON_AXE) < mine_speed_mult(LOG, AIR));
     }
 
     #[test]
