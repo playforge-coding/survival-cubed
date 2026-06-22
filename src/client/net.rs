@@ -94,6 +94,7 @@ pub enum NetCommand {
         x: i32,
         y: i32,
         block: BlockId,
+        held: BlockId,
     },
     PlaceBlock {
         x: i32,
@@ -107,6 +108,11 @@ pub enum NetCommand {
     /// Craft the recipe at index `recipe` once (server validates materials).
     Craft {
         recipe: u16,
+    },
+    /// Smelt the forge recipe at index `recipe` up to `count` times.
+    Smelt {
+        recipe: u16,
+        count: u32,
     },
     PlayerMove {
         x: f32,
@@ -260,10 +266,11 @@ async fn client_main(
 
 fn to_client_message(cmd: NetCommand) -> ClientMessage {
     match cmd {
-        NetCommand::SetBlock { x, y, block } => ClientMessage::SetBlock { x, y, block },
+        NetCommand::SetBlock { x, y, block, held } => ClientMessage::SetBlock { x, y, block, held },
         NetCommand::PlaceBlock { x, y, slot } => ClientMessage::PlaceBlock { x, y, slot },
         NetCommand::MoveItem { from, to } => ClientMessage::MoveItem { from, to },
         NetCommand::Craft { recipe } => ClientMessage::Craft { recipe },
+        NetCommand::Smelt { recipe, count } => ClientMessage::Smelt { recipe, count },
         NetCommand::PlayerMove { x, y } => ClientMessage::PlayerMove { x, y },
         NetCommand::RequestChunk { cx, cy } => ClientMessage::RequestChunk { cx, cy },
         NetCommand::Attack { target } => ClientMessage::Attack { target },

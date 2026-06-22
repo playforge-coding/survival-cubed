@@ -392,19 +392,16 @@ impl Shared {
         }
     }
 
-    /// Craft `RECIPES[recipe_idx]` once for player `id`: if they hold every
-    /// input, consume the inputs and grant the outputs. Outputs that don't fit
-    /// the inventory spill onto the ground at the player's feet. No-op for an
-    /// unknown recipe or insufficient materials.
-    fn craft(&self, id: EntityId, recipe_idx: usize) {
-        let Some(recipe) = crate::recipe::RECIPES.get(recipe_idx) else {
-            return;
-        };
+    /// Apply one execution of `recipe` to player `id`: if they hold every input,
+    /// consume the inputs and grant the outputs, spilling any overflow at their
+    /// feet. Returns whether the recipe was applied (false if materials were
+    /// insufficient).
+    fn apply_recipe(&self, id: EntityId, recipe: &crate::recipe::Recipe) -> bool {
         let overflow = {
             let mut invs = self.inventories.lock();
             let inv = invs.entry(id).or_default();
             if !recipe.craftable(inv) {
-                return;
+                return false;
             }
             for (item, n) in recipe.inputs {
                 inv.remove(*item, *n);
@@ -430,6 +427,28 @@ impl Shared {
                     for _ in 0..n {
                         spawn_drop(self, cx, cy, item);
                     }
+                }
+            }
+        }
+        true
+    }
+
+    /// Craft `RECIPES[recipe_idx]` once for player `id`. No-op for an unknown
+    /// recipe or insufficient materials.
+    fn craft(&self, id: EntityId, recipe_idx: usize) {
+        if let Some(recipe) = crate::recipe::RECIPES.get(recipe_idx) {
+            self.apply_recipe(id, recipe);
+        }
+    }
+
+    /// Smelt `SMELT_RECIPES[recipe_idx]` up to `count` times for player `id`,
+    /// stopping as soon as the raw material or fuel runs out. No-op for an
+    /// unknown recipe.
+    fn smelt(&self, id: EntityId, recipe_idx: usize, count: u32) {
+        if let Some(recipe) = crate::recipe::SMELT_RECIPES.get(recipe_idx) {
+            for _ in 0..count {
+                if !self.apply_recipe(id, recipe) {
+                    break;
                 }
             }
         }
@@ -1677,7 +1696,12 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         maybe_spawn_in_chunk(&shared, cx, cy);
                     }
                 }
-                ClientMessage::SetBlock { x, y, block: _ } => {
+                ClientMessage::SetBlock {
+                    x,
+                    y,
+                    block: _,
+                    held,
+                } => {
                     // Mining is gated by the player's melee reach — the same limit
                     // that governs attacks and placement.
                     let in_reach = {
@@ -1727,14 +1751,12 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             y,
                             block: crate::block::AIR,
                         });
-                        // Leaves shed a stick rather than a leaf block; every
-                        // other block drops itself.
-                        let drop = if prev == crate::block::LEAVES {
-                            crate::block::STICK
-                        } else {
-                            prev
-                        };
-                        spawn_drop(&shared, x, y, drop);
+                        // Tool-gated blocks (stone, iron ore) only yield a drop
+                        // when mined with a strong enough pickaxe; broken with too
+                        // weak a tool they crumble to nothing.
+                        if crate::block::drops_when_mined(prev, held) {
+                            spawn_drop(&shared, x, y, crate::block::mined_drop(prev));
+                        }
                     }
                 }
                 ClientMessage::PlaceBlock { x, y, slot } => {
@@ -1823,6 +1845,10 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 }
                 ClientMessage::Craft { recipe } => {
                     shared.craft(id, recipe as usize);
+                    shared.send_inventory(id);
+                }
+                ClientMessage::Smelt { recipe, count } => {
+                    shared.smelt(id, recipe as usize, count);
                     shared.send_inventory(id);
                 }
                 ClientMessage::PlayerMove { x, y } => {

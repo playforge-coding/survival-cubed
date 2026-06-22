@@ -37,6 +37,20 @@ pub const STICK: BlockId = 8;
 pub const PICKAXE: BlockId = 9;
 /// A stone pickaxe. A tool item; stacks to one.
 pub const STONE_PICKAXE: BlockId = 10;
+/// Iron ore, generated underground and in mountains. A block; mined with a
+/// stone or iron pickaxe, it drops [`RAW_IRON`].
+pub const IRON_ORE: BlockId = 11;
+/// Raw iron, dropped by [`IRON_ORE`]. An item; smelted at a [`FORGE`] into an
+/// [`IRON_INGOT`].
+pub const RAW_IRON: BlockId = 12;
+/// A refined iron ingot, smelted from [`RAW_IRON`]. An item; used to craft an
+/// [`IRON_PICKAXE`].
+pub const IRON_INGOT: BlockId = 13;
+/// A forge. A placeable block crafted from stone; right-click it to open the
+/// smelting GUI.
+pub const FORGE: BlockId = 14;
+/// An iron pickaxe. A tool item; stacks to one. The fastest pickaxe.
+pub const IRON_PICKAXE: BlockId = 15;
 
 /// Generates an RGBA texel at `(x, y)` (both in `0..TILE_TEX`). Used only to
 /// seed a starter PNG when the real texture file is missing.
@@ -92,6 +106,20 @@ impl BlockRegistry {
             false,
             0.0,
             Some(tex_stone_pickaxe),
+        );
+        // Iron: ore block, its raw drop, the smelted ingot, the forge that
+        // smelts it, and the iron pickaxe it crafts into.
+        r.register("iron_ore", true, true, true, 2.0, Some(tex_iron_ore));
+        r.register("raw_iron", false, true, false, 0.0, Some(tex_raw_iron));
+        r.register("iron_ingot", false, true, false, 0.0, Some(tex_iron_ingot));
+        r.register("forge", true, true, true, 1.5, Some(tex_forge));
+        r.register(
+            "iron_pickaxe",
+            false,
+            true,
+            false,
+            0.0,
+            Some(tex_iron_pickaxe),
         );
         r
     }
@@ -153,8 +181,71 @@ impl Default for BlockRegistry {
 /// everything else uses the default [`STACK_MAX`](crate::inventory::STACK_MAX).
 pub fn max_stack(id: BlockId) -> u32 {
     match id {
-        PICKAXE | STONE_PICKAXE => 1,
+        PICKAXE | STONE_PICKAXE | IRON_PICKAXE => 1,
         _ => crate::inventory::STACK_MAX,
+    }
+}
+
+// --- Tools & mining ------------------------------------------------------
+
+/// Mining tier of a held item: the strength of a pickaxe, or `0` for bare hands
+/// and anything that isn't a pickaxe. Higher tiers mine faster and can harvest
+/// tougher blocks (see [`required_tier`]). Wood `1` < stone `2` < iron `3`.
+pub fn pickaxe_tier(item: BlockId) -> u8 {
+    match item {
+        PICKAXE => 1,
+        STONE_PICKAXE => 2,
+        IRON_PICKAXE => 3,
+        _ => 0,
+    }
+}
+
+/// Minimum [`pickaxe_tier`] needed to mine `block` quickly and have it drop.
+/// `0` means no pickaxe is required. A block can still be chipped at by hand or
+/// with too weak a tool, but only very slowly and without yielding a drop.
+pub fn required_tier(block: BlockId) -> u8 {
+    match block {
+        STONE => 1,    // any pickaxe
+        IRON_ORE => 2, // stone or iron pickaxe only
+        _ => 0,
+    }
+}
+
+/// Multiplier applied to a block's [`break_secs`](BlockDef::break_secs) given
+/// the item the player is holding (`held`; [`AIR`] means bare hands). Smaller is
+/// faster. Mining a tool-gated block with too weak a tool is punishingly slow;
+/// the right tool (or better) speeds it up, more so at higher tiers.
+pub fn mine_speed_mult(block: BlockId, held: BlockId) -> f32 {
+    let req = required_tier(block);
+    if req == 0 {
+        return 1.0;
+    }
+    let tier = pickaxe_tier(held);
+    if tier < req {
+        return 5.0; // wrong/no tool: very long
+    }
+    match tier {
+        1 => 0.6,
+        2 => 0.3,
+        _ => 0.18, // iron (tier 3) and up
+    }
+}
+
+/// Whether breaking `block` while holding `held` yields a dropped item. A
+/// tool-gated block only drops when mined with a pickaxe of at least its
+/// [`required_tier`].
+pub fn drops_when_mined(block: BlockId, held: BlockId) -> bool {
+    pickaxe_tier(held) >= required_tier(block)
+}
+
+/// The item a broken `block` drops (assuming [`drops_when_mined`]). Most blocks
+/// drop themselves; a few transform (leaves shed a stick, iron ore yields raw
+/// iron).
+pub fn mined_drop(block: BlockId) -> BlockId {
+    match block {
+        LEAVES => STICK,
+        IRON_ORE => RAW_IRON,
+        other => other,
     }
 }
 
@@ -252,6 +343,55 @@ fn tex_pickaxe(x: u32, y: u32) -> [u8; 4] {
 
 fn tex_stone_pickaxe(x: u32, y: u32) -> [u8; 4] {
     pickaxe_tex(x, y, [138, 96, 54], [120, 120, 128])
+}
+
+fn tex_iron_pickaxe(x: u32, y: u32) -> [u8; 4] {
+    pickaxe_tex(x, y, [138, 96, 54], [214, 210, 205])
+}
+
+fn tex_iron_ore(x: u32, y: u32) -> [u8; 4] {
+    // Stone speckled with tan iron nuggets.
+    if hash(x, y, 20) % 6 == 0 {
+        let n = (hash(x, y, 21) % 4) as i32 * 8 - 8;
+        shade([196, 152, 104], n)
+    } else {
+        tex_stone(x, y)
+    }
+}
+
+fn tex_raw_iron(x: u32, y: u32) -> [u8; 4] {
+    // A rough rusty-tan nugget over transparency.
+    let cx = x as i32 - 8;
+    let cy = y as i32 - 8;
+    if cx * cx + cy * cy <= 30 {
+        let n = (hash(x, y, 22) % 5) as i32 * 7 - 14;
+        shade([170, 130, 96], n)
+    } else {
+        [0, 0, 0, 0]
+    }
+}
+
+fn tex_iron_ingot(x: u32, y: u32) -> [u8; 4] {
+    // A metallic bar: a rounded grey block with a lighter top bevel.
+    if (3..=12).contains(&x) && (5..=11).contains(&y) {
+        let bevel = if y <= 6 { 24 } else { 0 };
+        let n = (hash(x, y, 23) % 3) as i32 * 5 - 5;
+        shade([196, 198, 205], bevel + n)
+    } else {
+        [0, 0, 0, 0]
+    }
+}
+
+fn tex_forge(x: u32, y: u32) -> [u8; 4] {
+    // Dark stone block with a glowing mouth in the lower middle.
+    let in_mouth = (4..=11).contains(&x) && (8..=13).contains(&y);
+    if in_mouth {
+        let n = (hash(x, y, 24) % 4) as i32 * 10;
+        shade([180, 80, 30], n) // embers
+    } else {
+        let n = (hash(x, y, 25) % 5) as i32 * 6 - 12;
+        shade([84, 82, 88], n) // dark masonry
+    }
 }
 
 /// Shared pickaxe silhouette: a diagonal handle of `handle` colour with a curved

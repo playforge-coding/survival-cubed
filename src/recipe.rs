@@ -8,7 +8,10 @@
 //!
 //! A recipe is identified on the wire by its index in [`RECIPES`].
 
-use crate::block::{BARK, LOG, PICKAXE, STICK, STONE, STONE_PICKAXE, WOOD};
+use crate::block::{
+    BARK, FORGE, IRON_INGOT, IRON_PICKAXE, LOG, PICKAXE, RAW_IRON, STICK, STONE, STONE_PICKAXE,
+    WOOD,
+};
 use crate::inventory::Inventory;
 use crate::protocol::BlockId;
 
@@ -42,11 +45,45 @@ pub const RECIPES: &[Recipe] = &[
         inputs: &[(STONE, 3), (STICK, 2)],
         outputs: &[(STONE_PICKAXE, 1)],
     },
+    // Iron ingots bound to sticks make the fastest pickaxe.
+    Recipe {
+        name: "Iron Pickaxe",
+        inputs: &[(IRON_INGOT, 3), (STICK, 2)],
+        outputs: &[(IRON_PICKAXE, 1)],
+    },
+    // Stacked stone builds a forge for smelting.
+    Recipe {
+        name: "Forge",
+        inputs: &[(STONE, 8)],
+        outputs: &[(FORGE, 1)],
+    },
+];
+
+/// Smelting recipes, available only at a [`FORGE`](crate::block::FORGE) (its GUI
+/// lists these; the plain crafting panel lists [`RECIPES`]). Each consumes some
+/// fuel alongside its raw input. A recipe's index here is its wire id.
+pub const SMELT_RECIPES: &[Recipe] = &[
+    // Raw iron smelts into a refined ingot, burning a piece of wood as fuel.
+    Recipe {
+        name: "Iron Ingot",
+        inputs: &[(RAW_IRON, 1), (WOOD, 1)],
+        outputs: &[(IRON_INGOT, 1)],
+    },
 ];
 
 impl Recipe {
     /// Whether `inv` holds enough of every input to craft this recipe once.
     pub fn craftable(&self, inv: &Inventory) -> bool {
         self.inputs.iter().all(|(item, n)| inv.count(*item) >= *n)
+    }
+
+    /// How many times this recipe could be crafted back-to-back from `inv`,
+    /// limited by the scarcest input. Used by the forge's "All" button.
+    pub fn max_crafts(&self, inv: &Inventory) -> u32 {
+        self.inputs
+            .iter()
+            .map(|(item, n)| inv.count(*item) / n)
+            .min()
+            .unwrap_or(0)
     }
 }

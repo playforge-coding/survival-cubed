@@ -164,6 +164,10 @@ struct GameState {
     inventory_open: bool,
     /// Slot picked as the source of a pending move on the inventory screen.
     move_from: Option<usize>,
+    /// Whether the forge smelting GUI is open, and which forge cell it belongs
+    /// to (opened by right-clicking a forge block).
+    forge_open: bool,
+    forge_cell: Option<(i32, i32)>,
     action_timer: f32,
     move_send_timer: f32,
     last_sent: Vec2,
@@ -214,6 +218,8 @@ impl GameState {
             inventory: Inventory::new(),
             inventory_open: false,
             move_from: None,
+            forge_open: false,
+            forge_cell: None,
             action_timer: 0.0,
             move_send_timer: 0.0,
             last_sent: spawn,
@@ -681,6 +687,9 @@ impl App {
                 if self.game.as_ref().is_some_and(|g| g.inventory_open) {
                     self.inventory_window(ui);
                 }
+                if self.game.as_ref().is_some_and(|g| g.forge_open) {
+                    self.forge_window(ui);
+                }
                 if self.game.as_ref().is_some_and(|g| g.debug) {
                     self.debug_window(ui);
                 }
@@ -1036,6 +1045,84 @@ impl App {
         }
     }
 
+    /// The forge smelting GUI, opened by right-clicking a forge block. Lists the
+    /// smelting recipes ([`SMELT_RECIPES`](crate::recipe::SMELT_RECIPES)) with a
+    /// stock readout; smelting is server-authoritative (a request is sent and the
+    /// resulting inventory snapshot updates the display).
+    fn forge_window(&mut self, ui: &mut egui::Ui) {
+        // Close if the forge this GUI belongs to is gone (mined or out of reach).
+        let valid = {
+            let g = self.game.as_ref().unwrap();
+            g.forge_cell.is_some_and(|(x, y)| {
+                g.world.get_block(x, y) == crate::block::FORGE && cell_in_reach(g, x, y)
+            })
+        };
+        if !valid {
+            if let Some(g) = self.game.as_mut() {
+                g.forge_open = false;
+                g.forge_cell = None;
+            }
+            return;
+        }
+        let registry = self.registry.clone();
+        let inventory = self.game.as_ref().unwrap().inventory.clone();
+        // (recipe index, how many times to smelt)
+        let mut smelt: Option<(u16, u32)> = None;
+        let mut close = false;
+
+        egui::Window::new("Forge")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                ui.label("Smelt raw materials into refined goods (consumes fuel).");
+                ui.separator();
+                for (idx, recipe) in crate::recipe::SMELT_RECIPES.iter().enumerate() {
+                    let one = recipe.craftable(&inventory);
+                    let max = recipe.max_crafts(&inventory);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(one, egui::Button::new(recipe.name))
+                            .on_hover_text(recipe_tooltip(&registry, recipe))
+                            .clicked()
+                        {
+                            smelt = Some((idx as u16, 1));
+                        }
+                        if ui
+                            .add_enabled(max > 1, egui::Button::new(format!("All ({max})")))
+                            .clicked()
+                        {
+                            smelt = Some((idx as u16, max));
+                        }
+                        ui.weak(recipe_summary(&registry, recipe));
+                    });
+                }
+                ui.add_space(8.0);
+                ui.weak(format!(
+                    "Raw iron: {}   ·   Wood (fuel): {}   ·   Iron ingots: {}",
+                    inventory.count(crate::block::RAW_IRON),
+                    inventory.count(crate::block::WOOD),
+                    inventory.count(crate::block::IRON_INGOT),
+                ));
+                ui.add_space(4.0);
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+
+        // Smelting is server-authoritative: send the request and let the
+        // resulting Inventory snapshot update the display.
+        if let (Some((recipe, count)), Some(net)) = (smelt, &self.net)
+            && count > 0
+        {
+            let _ = net.commands.send(NetCommand::Smelt { recipe, count });
+        }
+        if close && let Some(g) = self.game.as_mut() {
+            g.forge_open = false;
+            g.forge_cell = None;
+        }
+    }
+
     /// The dev-tools window, shown in-game when dev mode is active for this
     /// session. Toggles flight, jumps the world clock, spawns creatures, and
     /// picks the block placed for free by infinite-block placement.
@@ -1223,7 +1310,13 @@ impl App {
         // Block-breaking overlay: darken the targeted cell as mining progresses.
         if let Some((tx, ty)) = g.break_target {
             let block = g.world.get_block(tx, ty);
-            let secs = self.registry.get(block).break_secs;
+            let held = g
+                .inventory
+                .get(g.selected_slot)
+                .map(|(b, _)| b)
+                .unwrap_or(AIR);
+            let secs =
+                self.registry.get(block).break_secs * crate::block::mine_speed_mult(block, held);
             if block != AIR && secs > 0.0 {
                 let frac = (g.break_progress / secs).clamp(0.0, 1.0);
                 tiles.push(flat_quad(
@@ -1354,6 +1447,11 @@ fn block_color(registry: &BlockRegistry, block: BlockId) -> egui::Color32 {
         "stick" => egui::Color32::from_rgb(138, 96, 54),
         "pickaxe" => egui::Color32::from_rgb(200, 200, 210),
         "stone_pickaxe" => egui::Color32::from_rgb(120, 120, 128),
+        "iron_ore" => egui::Color32::from_rgb(196, 152, 104),
+        "raw_iron" => egui::Color32::from_rgb(170, 130, 96),
+        "iron_ingot" => egui::Color32::from_rgb(196, 198, 205),
+        "forge" => egui::Color32::from_rgb(84, 82, 88),
+        "iron_pickaxe" => egui::Color32::from_rgb(214, 210, 205),
         _ => egui::Color32::from_gray(150),
     }
 }
@@ -1696,9 +1794,9 @@ fn handle_block_actions(
 ) {
     game.action_timer -= dt;
 
-    // The inventory screen captures the mouse for slot management; don't mine or
-    // place in the world while it's open.
-    if game.inventory_open {
+    // Open menus (inventory, forge) capture the mouse for their own UI; don't
+    // mine or place in the world while one is open.
+    if game.inventory_open || game.forge_open {
         game.break_target = None;
         game.break_progress = 0.0;
         return;
@@ -1732,6 +1830,19 @@ fn handle_block_actions(
     } else {
         game.break_target = None;
         game.break_progress = 0.0;
+    }
+
+    // Right-clicking a forge opens its smelting GUI instead of placing a block.
+    // This takes priority over both dev-mode and normal placement.
+    if input.placing
+        && game.action_timer <= 0.0
+        && game.world.get_block(tx, ty) == crate::block::FORGE
+        && cell_in_reach(game, tx, ty)
+    {
+        game.forge_open = true;
+        game.forge_cell = Some((tx, ty));
+        game.action_timer = ACTION_COOLDOWN;
+        return;
     }
 
     // Dev mode: right button places the dev-selected block for free, with no
@@ -1806,12 +1917,22 @@ fn mine_block(
     }
     game.break_progress += dt;
 
-    if game.break_progress >= reg.get(current).break_secs {
+    // The held tool scales how fast the block breaks: a pickaxe shreds stone,
+    // bare hands barely scratch it.
+    let held = game
+        .inventory
+        .get(game.selected_slot)
+        .map(|(b, _)| b)
+        .unwrap_or(AIR);
+    let secs = reg.get(current).break_secs * crate::block::mine_speed_mult(current, held);
+
+    if game.break_progress >= secs {
         game.world.set_block(tx, ty, AIR);
         let _ = net.commands.send(NetCommand::SetBlock {
             x: tx,
             y: ty,
             block: AIR,
+            held,
         });
         game.break_target = None;
         game.break_progress = 0.0;
@@ -2010,12 +2131,19 @@ impl App {
             KeyCode::Digit8 if pressed => self.select_slot(7),
             KeyCode::Digit9 if pressed => self.select_slot(8),
             KeyCode::KeyE if pressed => self.toggle_inventory(),
-            // Escape closes the inventory if open, otherwise leaves the world.
+            // Escape closes an open menu (inventory or forge) if any, otherwise
+            // leaves the world.
             KeyCode::Escape if pressed => {
-                if self.game.as_ref().is_some_and(|g| g.inventory_open) {
+                let menu_open = self
+                    .game
+                    .as_ref()
+                    .is_some_and(|g| g.inventory_open || g.forge_open);
+                if menu_open {
                     if let Some(g) = &mut self.game {
                         g.inventory_open = false;
                         g.move_from = None;
+                        g.forge_open = false;
+                        g.forge_cell = None;
                     }
                 } else {
                     self.leave();

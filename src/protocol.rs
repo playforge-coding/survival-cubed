@@ -29,7 +29,15 @@ pub enum ClientMessage {
     /// Ask the server for the contents of a chunk.
     RequestChunk { cx: i32, cy: i32 },
     /// Break the block at a world cell (it drops on the ground to be collected).
-    SetBlock { x: i32, y: i32, block: BlockId },
+    /// `held` is the item the player is wielding ([`crate::block::AIR`] for bare
+    /// hands); the server uses it to decide whether the broken block drops (e.g.
+    /// stone needs a pickaxe).
+    SetBlock {
+        x: i32,
+        y: i32,
+        block: BlockId,
+        held: BlockId,
+    },
     /// Place the block from hotbar `slot` at a world cell. The server reads the
     /// block from that slot and consumes one, so the client can't place blocks
     /// it doesn't hold.
@@ -39,6 +47,10 @@ pub enum ClientMessage {
     /// Craft [`RECIPES`](crate::recipe::RECIPES)`[recipe]` once: the server
     /// checks the player holds all inputs, consumes them, and grants the outputs.
     Craft { recipe: u16 },
+    /// Smelt [`SMELT_RECIPES`](crate::recipe::SMELT_RECIPES)`[recipe]` up to
+    /// `count` times at a forge. The server validates inputs (raw material plus
+    /// fuel) per repetition and stops early when they run out.
+    Smelt { recipe: u16, count: u32 },
     /// Report the owning player entity's position (pixels, world space).
     PlayerMove { x: f32, y: f32 },
     /// Melee-attack another entity (e.g. a slime). The server validates range
