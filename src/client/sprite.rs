@@ -77,8 +77,17 @@ pub static ZOMBIE_DEATH_SPRITE: SpriteDef = SpriteDef {
     fps: 6.0,
 };
 
+/// Spider: a low, many-legged scuttler whose legs ripple as it darts and climbs.
+pub static SPIDER_SPRITE: SpriteDef = SpriteDef {
+    name: "spider",
+    frame_w: 16,
+    frame_h: 16,
+    frames: 4,
+    fps: 10.0,
+};
+
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 6] {
+pub fn all() -> [&'static SpriteDef; 7] {
     [
         &PLAYER_SPRITE,
         &SLIME_SPRITE,
@@ -86,6 +95,7 @@ pub fn all() -> [&'static SpriteDef; 6] {
         &GOAT_SPRITE,
         &ZOMBIE_SPRITE,
         &ZOMBIE_DEATH_SPRITE,
+        &SPIDER_SPRITE,
     ]
 }
 
@@ -97,6 +107,7 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         EntityKind::Chicken => &CHICKEN_SPRITE,
         EntityKind::Goat => &GOAT_SPRITE,
         EntityKind::Zombie => &ZOMBIE_SPRITE,
+        EntityKind::Spider => &SPIDER_SPRITE,
         // Dropped items are drawn from their block texture, not an animation
         // sheet (see the client's scene builder), so this is never queried for
         // them; fall back to the slime sheet to keep the match total.

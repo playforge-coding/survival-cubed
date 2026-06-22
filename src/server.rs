@@ -27,7 +27,7 @@ use crate::inventory::Inventory;
 use crate::net::{VERSION_MISMATCH_CLOSE, fingerprint, read_msg, read_version, write_msg};
 use crate::protocol::{ALPN, BlockId, ClientMessage, PROTOCOL_VERSION, ServerMessage};
 use crate::save::{SavedPlayer, WorldMeta, WorldStore};
-use crate::world::{CHUNK_AREA, CHUNK_SIZE, ChunkCoord, TILE_SIZE, World};
+use crate::world::{CHUNK_AREA, CHUNK_SIZE, ChunkCoord, TILE_SIZE, WORLD_HEIGHT, World};
 use crate::worldgen::{Biome, WorldGen, spawn_point};
 
 /// How often the server simulates non-player entities, in seconds.
@@ -63,6 +63,34 @@ const ZOMBIE_MAX_PER_PLAYER: usize = 5;
 const ZOMBIE_SPAWN_MIN_DIST: f32 = 220.0;
 /// Farthest a freshly spawned zombie appears from its target player, in pixels.
 const ZOMBIE_SPAWN_MAX_DIST: f32 = 360.0;
+/// Quick scuttling speed of a spider, in pixels/second — faster than anything
+/// else that walks, so it closes distance and a player can't simply outrun it.
+const SPIDER_SPEED: f32 = 46.0;
+/// Speed (px/s) at which a chasing spider scales a wall it has run into. Matched
+/// to its ground speed so climbing never stalls the pursuit.
+const SPIDER_CLIMB_SPEED: f32 = 46.0;
+/// How far (px) a spider notices a player and gives chase.
+const SPIDER_AGGRO: f32 = 180.0;
+/// Maximum gap (px between AABBs) at which a spider can land a bite.
+const SPIDER_ATTACK_RANGE: f32 = 4.0;
+/// Damage a spider deals per bite.
+const SPIDER_DAMAGE: i32 = 4;
+/// Seconds a spider waits between bites.
+const SPIDER_ATTACK_INTERVAL: f32 = 0.9;
+/// Percent chance that a fresh, eligible chunk (forest surface, or anywhere deep
+/// underground) seeds spiders.
+const SPIDER_CHUNK_CHANCE: u32 = 35;
+/// Most spiders a single eligible chunk seeds at once.
+const SPIDER_CHUNK_MAX: u32 = 2;
+/// World row at or below which a chunk counts as the deep dark spiders haunt, so
+/// they only nest in the underground caverns and never in surface tunnels that
+/// open to daylight. Sits well below the surface baseline (`WORLD_HEIGHT / 2`).
+const SPIDER_CAVERN_MIN_Y: i32 = WORLD_HEIGHT * 11 / 16;
+/// Distance (px) from the nearest player beyond which any non-player entity is
+/// culled, so creatures and dropped items don't pile up in terrain no one is
+/// near. Set comfortably past the screen edge and every spawn distance, so an
+/// entity never vanishes in view or pops away the instant it spawns.
+const DESPAWN_DIST: f32 = 1200.0;
 /// How many spawn slots to scatter around the origin at world start. Each slot
 /// spawns whatever creature its biome supports.
 const SPAWN_SLOTS: i32 = 12;
@@ -841,6 +869,91 @@ fn maybe_spawn_in_chunk(shared: &Shared, cx: i32, cy: i32) {
     }
 }
 
+/// Possibly seed spiders into a freshly generated chunk. Spiders keep to two
+/// haunts: the tree-shadowed **forest** surface and the **caverns** deep
+/// underground. A forest chunk that holds the grass line drops them onto the
+/// ground like the other surface critters; any chunk below [`SPIDER_CAVERN_MIN_Y`]
+/// drops them into a carved-out pocket with a solid floor. The per-chunk decision
+/// is deterministic via [`chunk_hash`] on its own salt range, so exploring the
+/// same terrain never double-spawns, and it runs independently of
+/// [`maybe_spawn_in_chunk`].
+fn maybe_spawn_spiders(shared: &Shared, cx: i32, cy: i32) {
+    let mut world = shared.world.lock();
+    let seed = world.generator.seed();
+    if chunk_hash(seed, cx, cy, 100) % 100 >= SPIDER_CHUNK_CHANCE {
+        return;
+    }
+
+    let base_x = cx * CHUNK_SIZE;
+    let chunk_top = cy * CHUNK_SIZE;
+    let chunk_bottom = chunk_top + CHUNK_SIZE;
+    let count = 1 + chunk_hash(seed, cx, cy, 101) % SPIDER_CHUNK_MAX;
+    let (_, sh) = EntityKind::Spider.size();
+
+    let mut spawned = Vec::new();
+    {
+        let mut entities = shared.entities.lock();
+        for n in 0..count {
+            // Scatter spawns across the chunk's columns.
+            let lx = chunk_hash(seed, cx, cy, 102 + n) % CHUNK_SIZE as u32;
+            let cell_x = base_x + lx as i32;
+            let surface = world.surface(cell_x);
+
+            // Forest surface: settle a spider on the grass, but only in the chunk
+            // that actually holds this column's surface line.
+            let forest_surface = world.biome(cell_x) == Biome::Forest
+                && surface >= chunk_top
+                && surface < chunk_bottom;
+            let pos = if forest_surface {
+                Some((cell_x as f32 * TILE_SIZE, surface as f32 * TILE_SIZE - sh))
+            } else if chunk_bottom > SPIDER_CAVERN_MIN_Y {
+                // Deep underground: look for an open cavern floor in this column.
+                cavern_floor_y(&mut world, cell_x, chunk_top, chunk_bottom, sh)
+                    .map(|y| (cell_x as f32 * TILE_SIZE, y))
+            } else {
+                None
+            };
+            let Some((x, y)) = pos else { continue };
+
+            let id = shared.alloc_id();
+            let entity = Entity::new(id, EntityKind::Spider, x, y);
+            entities.insert(entity.clone());
+            spawned.push(entity);
+        }
+    }
+    drop(world);
+
+    for entity in spawned {
+        shared.broadcast_all(ServerMessage::EntitySpawn { entity });
+    }
+}
+
+/// Find a spawn y (top-left px) for a spider standing on a cavern floor within
+/// column `cell_x`, searching only rows `[chunk_top, chunk_bottom)` that lie at
+/// or below [`SPIDER_CAVERN_MIN_Y`]. A valid spot is an air cell with headroom
+/// above and solid rock directly beneath — the floor of an open pocket — so a
+/// spider never spawns embedded in stone. Returns `None` if the column's slice
+/// holds no such pocket.
+fn cavern_floor_y(
+    world: &mut ServerWorld,
+    cell_x: i32,
+    chunk_top: i32,
+    chunk_bottom: i32,
+    sh: f32,
+) -> Option<f32> {
+    // Scan from the chunk's floor upward; stop once rows climb above cavern depth.
+    for ty in (chunk_top..chunk_bottom).rev() {
+        if ty < SPIDER_CAVERN_MIN_Y {
+            break;
+        }
+        if !world.solid(cell_x, ty) && !world.solid(cell_x, ty - 1) && world.solid(cell_x, ty + 1) {
+            // Rest the spider's feet on that floor cell.
+            return Some((ty + 1) as f32 * TILE_SIZE - sh);
+        }
+    }
+    None
+}
+
 /// Advance a small xorshift RNG state and return the new value. Used to scatter
 /// night-zombie spawns; determinism isn't important here, only cheap variety.
 fn next_rng(state: &mut u32) {
@@ -1014,6 +1127,29 @@ fn step_entities(shared: &Shared) -> Step {
         .map(|e| (e.id, e.x, e.y))
         .collect();
 
+    // Cull any non-player entity that has drifted beyond DESPAWN_DIST of every
+    // player, removing it before it is simulated this tick. This keeps the world
+    // from accumulating creatures and stray items in terrain nobody is near
+    // (and naturally caps the always-spawning hostiles). Skipped entirely when no
+    // one is connected, so a quiet world keeps its inhabitants until a player
+    // returns.
+    let despawns: Vec<EntityId> = if players.is_empty() {
+        Vec::new()
+    } else {
+        entities
+            .values()
+            .filter(|e| !e.kind.is_player())
+            .filter(|e| {
+                let (w, h) = e.size();
+                nearest_player(&players, e.x + w * 0.5, e.y + h * 0.5, DESPAWN_DIST).is_none()
+            })
+            .map(|e| e.id)
+            .collect()
+    };
+    for &id in &despawns {
+        entities.remove(id);
+    }
+
     let slime_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::Slime))
@@ -1034,6 +1170,11 @@ fn step_entities(shared: &Shared) -> Step {
         .filter(|e| matches!(e.kind, EntityKind::Zombie))
         .map(|e| e.id)
         .collect();
+    let spider_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Spider))
+        .map(|e| e.id)
+        .collect();
     let item_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| e.kind.is_item())
@@ -1041,6 +1182,10 @@ fn step_entities(shared: &Shared) -> Step {
         .collect();
 
     let mut broadcasts = Vec::new();
+    // Tell every client to drop the entities culled for distance above.
+    for id in despawns {
+        broadcasts.push(ServerMessage::EntityDespawn { id });
+    }
     let mut pickups: Vec<EntityId> = Vec::new();
     // Players a creature hit this tick; applied after the movement loop so we
     // never hold two mutable entity borrows at once. Each entry is the bitten
@@ -1110,6 +1255,66 @@ fn step_entities(shared: &Shared) -> Step {
                     -1.0
                 };
                 bites.push((pid, (dir * KNOCKBACK_X, -KNOCKBACK_Y), SLIME_DAMAGE));
+            }
+        }
+    }
+
+    // Spiders: fast, fragile predators that scuttle after any player on sight
+    // and scale sheer walls to reach them. Unlike the night-bound zombie they
+    // hunt around the clock — their caverns are always pitch dark and the forest
+    // canopy keeps them bold by day.
+    for id in spider_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let home = *e.home_x.get_or_insert(e.x);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+
+        let target = nearest_player(&players, scx, scy, SPIDER_AGGRO);
+        let chasing = target.is_some();
+        let dir = match target {
+            Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -1.0,
+            Some(_) => 1.0,
+            None => wander_dir(scx, e.vx, home),
+        };
+
+        // A chasing spider climbs walls to reach its target; a wandering one
+        // patrols its patch on the ground.
+        let m = step_climber(
+            &mut world,
+            (e.x, e.y, w, h),
+            e.vy,
+            dir,
+            SPIDER_SPEED,
+            chasing,
+        );
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: m.vx,
+            vy: m.vy,
+        });
+
+        if let Some((pid, px, py)) = target {
+            if e.attack_cd <= 0.0
+                && aabb_gap(m.x, m.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1)
+                    <= SPIDER_ATTACK_RANGE
+            {
+                e.attack_cd = SPIDER_ATTACK_INTERVAL;
+                let dir = if px + PLAYER_SIZE.0 * 0.5 >= m.x + w * 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                bites.push((pid, (dir * KNOCKBACK_X, -KNOCKBACK_Y), SPIDER_DAMAGE));
             }
         }
     }
@@ -1546,6 +1751,62 @@ fn step_ground(
     }
 }
 
+/// Advance a wall-climbing creature (spider) one tick.
+///
+/// Like [`step_ground`] it walks in direction `dir` at `speed` and falls under
+/// gravity, but when it runs into a wall it can *climb*: a `committed` (chasing)
+/// spider that hits a wall ascends it at [`SPIDER_CLIMB_SPEED`] instead of being
+/// stopped, so it scales sheer terrain to reach a player above. An uncommitted
+/// (wandering) one behaves like a plain ground creature — hopping single-block
+/// steps and turning back at taller walls and deep drops — so it patrols its
+/// patch instead of climbing out of sight.
+fn step_climber(
+    world: &mut ServerWorld,
+    aabb: (f32, f32, f32, f32),
+    vy_in: f32,
+    dir: f32,
+    speed: f32,
+    committed: bool,
+) -> GroundMotion {
+    let (x, y, w, h) = aabb;
+    let grounded_before = grounded(world, x, y, w, h);
+    let mut vx = dir * speed;
+    let mut vy = (vy_in + GRAVITY * TICK_DT).min(MAX_FALL);
+
+    let (nx, hit_wall) = move_x(world, x, y, w, h, vx * TICK_DT);
+
+    if hit_wall {
+        if committed {
+            // Chasing into a wall: climb straight up its face to follow the player.
+            vy = -SPIDER_CLIMB_SPEED;
+        } else if grounded_before && can_step_up(world, nx, y, w, h, vx) {
+            // Wandering: clear a single-block step like a ground creature.
+            vy = HOP_VELOCITY;
+        }
+    }
+
+    let (ny, on_ground) = move_y(world, nx, y, w, h, vy * TICK_DT);
+    if on_ground {
+        vy = 0.0;
+    }
+
+    // A wandering spider reverses at a wall it didn't hop and at deep drops; a
+    // chasing one never turns (it climbs the wall or follows the player off ledges).
+    if !committed
+        && on_ground
+        && ((hit_wall && vy >= 0.0) || drop_ahead(world, nx, ny, w, h, vx) >= 2)
+    {
+        vx = -vx;
+    }
+
+    GroundMotion {
+        x: nx,
+        y: ny,
+        vx,
+        vy,
+    }
+}
+
 /// Heading (`-1.0`/`1.0`) for a wandering creature whose center is at `center_x`:
 /// keep going the way it was, but turn back toward `home_x` once it strays past
 /// [`WANDER_RANGE`], so it loiters in one area instead of marching off.
@@ -1745,6 +2006,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     // medium chance to seed creatures into its terrain.
                     if fresh {
                         maybe_spawn_in_chunk(&shared, cx, cy);
+                        maybe_spawn_spiders(&shared, cx, cy);
                     }
                 }
                 ClientMessage::SetBlock {

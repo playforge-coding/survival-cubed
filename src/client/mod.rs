@@ -1396,6 +1396,9 @@ impl App {
                     if ui.button("Zombie").clicked() {
                         spawn = Some(EntityKind::Zombie);
                     }
+                    if ui.button("Spider").clicked() {
+                        spawn = Some(EntityKind::Spider);
+                    }
                 });
 
                 ui.separator();

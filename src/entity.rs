@@ -31,6 +31,8 @@ pub const CHICKEN_SIZE: (f32, f32) = (12.0, 14.0);
 pub const GOAT_SIZE: (f32, f32) = (16.0, 16.0);
 /// Collision/draw size (width, height) in pixels of a zombie.
 pub const ZOMBIE_SIZE: (f32, f32) = (14.0, 19.0);
+/// Collision/draw size (width, height) in pixels of a spider — low and wide.
+pub const SPIDER_SIZE: (f32, f32) = (14.0, 10.0);
 /// Collision/draw size (width, height) in pixels of a dropped block item.
 pub const ITEM_SIZE: (f32, f32) = (8.0, 8.0);
 
@@ -50,6 +52,9 @@ pub const GOAT_MAX_HEALTH: i32 = 16;
 /// Maximum health of a zombie, in hit points. Far tougher than anything else
 /// that walks the surface — it soaks up many hits before going down.
 pub const ZOMBIE_MAX_HEALTH: i32 = 40;
+/// Maximum health of a spider, in hit points. Frail — it relies on speed and
+/// numbers rather than soaking up hits.
+pub const SPIDER_MAX_HEALTH: i32 = 12;
 
 /// What an entity *is*. Adding a new creature/object means adding a variant
 /// here plus (for server-simulated kinds) a branch in the server tick loop.
@@ -70,6 +75,10 @@ pub enum EntityKind {
     /// in daylight (playing a death animation before despawning). Spawns in any
     /// biome after dark. Server-simulated.
     Zombie,
+    /// A fast, fragile predator that scuttles after players and scales sheer
+    /// walls to reach them. Lurks only in the forest's shade and in the caverns
+    /// deep underground. Server-simulated.
+    Spider,
     /// A block lying on the ground after being mined, waiting to be walked into
     /// and picked up. Server-simulated (falls under gravity); carries the block
     /// id it will add to a player's inventory on pickup.
@@ -85,6 +94,7 @@ impl EntityKind {
             EntityKind::Chicken => CHICKEN_SIZE,
             EntityKind::Goat => GOAT_SIZE,
             EntityKind::Zombie => ZOMBIE_SIZE,
+            EntityKind::Spider => SPIDER_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -110,6 +120,7 @@ impl EntityKind {
             EntityKind::Chicken => CHICKEN_MAX_HEALTH,
             EntityKind::Goat => GOAT_MAX_HEALTH,
             EntityKind::Zombie => ZOMBIE_MAX_HEALTH,
+            EntityKind::Spider => SPIDER_MAX_HEALTH,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }
