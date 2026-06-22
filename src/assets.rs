@@ -68,6 +68,8 @@ blocks!(
     "wood_axe",
     "stone_axe",
     "iron_axe",
+    "rope",
+    "rope_ladder",
 );
 
 sprites!(

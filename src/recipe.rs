@@ -10,8 +10,8 @@
 
 use crate::block::{
     BARK, CAMPFIRE, COOKED_MEAT, FORGE, IRON_AXE, IRON_INGOT, IRON_PICKAXE, IRON_SWORD, LADDER,
-    LOG, PICKAXE, RAW_IRON, RAW_MEAT, STICK, STONE, STONE_AXE, STONE_PICKAXE, STONE_SWORD, WOOD,
-    WOOD_AXE, WOOD_SWORD,
+    LOG, PICKAXE, RAW_IRON, RAW_MEAT, ROPE, ROPE_LADDER, STICK, STONE, STONE_AXE, STONE_PICKAXE,
+    STONE_SWORD, WOOD, WOOD_AXE, WOOD_SWORD,
 };
 use crate::inventory::Inventory;
 use crate::protocol::BlockId;
@@ -105,6 +105,18 @@ pub const RECIPES: &[Recipe] = &[
         name: "Iron Axe",
         inputs: &[(IRON_INGOT, 3), (STICK, 2)],
         outputs: &[(IRON_AXE, 1)],
+    },
+    // Strips of bark twist into a length of rope.
+    Recipe {
+        name: "Rope",
+        inputs: &[(BARK, 2)],
+        outputs: &[(ROPE, 1)],
+    },
+    // Coils of rope knot into a rope ladder for descending caves.
+    Recipe {
+        name: "Rope Ladder",
+        inputs: &[(ROPE, 3)],
+        outputs: &[(ROPE_LADDER, 1)],
     },
 ];
 

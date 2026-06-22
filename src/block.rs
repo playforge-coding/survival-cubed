@@ -82,6 +82,13 @@ pub const WOOD_AXE: BlockId = 25;
 pub const STONE_AXE: BlockId = 26;
 /// An iron axe. A tool item; stacks to one. The deadliest axe.
 pub const IRON_AXE: BlockId = 27;
+/// Rope, twisted from [`BARK`]. A plain item used to craft a [`ROPE_LADDER`].
+pub const ROPE: BlockId = 28;
+/// A rope ladder. A placeable, non-solid, climbable block meant for cave diving:
+/// placing one unrolls a run of rope downward until it hits the cave floor or
+/// reaches its length limit (see [`crate::server`]). Drop another onto the bottom
+/// of a spent run to continue the descent. Crafted from [`ROPE`].
+pub const ROPE_LADDER: BlockId = 29;
 
 /// Definition of a single block type.
 pub struct BlockDef {
@@ -151,6 +158,10 @@ impl BlockRegistry {
         r.register("wood_axe", false, true, false, 0.0);
         r.register("stone_axe", false, true, false, 0.0);
         r.register("iron_axe", false, true, false, 0.0);
+        // Rope (an item) and the rope ladder it crafts into: a non-solid,
+        // climbable block that unrolls down a cave shaft when placed.
+        r.register("rope", false, true, false, 0.0);
+        r.register("rope_ladder", false, true, true, 0.4);
         r
     }
 
@@ -289,7 +300,13 @@ pub fn max_durability(item: BlockId) -> u16 {
 /// Whether `block` can be climbed — a ladder the player clings to and moves up
 /// and down with the jump/down inputs instead of falling through.
 pub fn is_climbable(block: BlockId) -> bool {
-    block == LADDER
+    matches!(block, LADDER | ROPE_LADDER)
+}
+
+/// Whether `block` is a rope ladder — the climbable block that unrolls down a
+/// shaft on placement and may be anchored from a solid block above.
+pub fn is_rope_ladder(block: BlockId) -> bool {
+    block == ROPE_LADDER
 }
 
 /// Whether `item` is a pickaxe (mining is its intended use).
@@ -481,6 +498,21 @@ mod tests {
         }
         // An axe is the fast tool for logs; bare hands aren't.
         assert!(mine_speed_mult(LOG, IRON_AXE) < mine_speed_mult(LOG, AIR));
+    }
+
+    #[test]
+    fn rope_ladders_are_climbable_placeable_and_rope_is_not() {
+        let reg = BlockRegistry::new();
+        // Both ladder kinds can be climbed; rope (the material) cannot.
+        assert!(is_climbable(LADDER));
+        assert!(is_climbable(ROPE_LADDER));
+        assert!(is_rope_ladder(ROPE_LADDER));
+        assert!(!is_rope_ladder(LADDER));
+        assert!(!is_climbable(ROPE));
+        // A rope ladder is a placeable, non-solid block; rope is a plain item.
+        assert!(reg.is_placeable(ROPE_LADDER));
+        assert!(!reg.is_solid(ROPE_LADDER));
+        assert!(!reg.is_placeable(ROPE));
     }
 
     #[test]

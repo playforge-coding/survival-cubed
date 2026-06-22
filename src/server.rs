@@ -152,6 +152,10 @@ const AUTOSAVE_SECS: f32 = 30.0;
 /// When the last log in range is removed, the leaf decays (breaking, but still
 /// dropping its items). Comfortably covers a generated tree's canopy.
 const LEAF_SUPPORT_RANGE: i32 = 3;
+/// Greatest length (in cells) one placed rope ladder unrolls before its rope
+/// runs out. A deeper shaft needs a second rope ladder dropped onto the bottom
+/// of the first to carry on down.
+const ROPE_LADDER_MAX_DROP: i32 = 8;
 /// Longest chat line the server will relay, in characters; longer lines are
 /// truncated so a peer can't flood others with a huge message.
 const MAX_CHAT_LEN: usize = 256;
@@ -837,6 +841,51 @@ impl Shared {
             decayed.push((cx, cy, drop));
         }
         decayed
+    }
+
+    /// Unroll a rope ladder downward from `(x, y)`: fill that cell and each open
+    /// cell directly beneath it with rope ladder, stopping at the first
+    /// obstruction (the cave floor), the world's bottom, or after
+    /// [`ROPE_LADDER_MAX_DROP`] cells (the rope running out). Returns the filled
+    /// cells, top-first, so the caller can broadcast them. `(x, y)` is assumed to
+    /// already be air and validated for support.
+    fn roll_rope_ladder(&self, x: i32, y: i32) -> Vec<(i32, i32)> {
+        let mut world = self.world.lock();
+        let mut filled = Vec::new();
+        let mut ty = y;
+        while (filled.len() as i32) < ROPE_LADDER_MAX_DROP {
+            if !crate::world::in_bounds(x, ty) || world.get(x, ty) != crate::block::AIR {
+                break;
+            }
+            if !world.set(x, ty, crate::block::ROPE_LADDER) {
+                break;
+            }
+            filled.push((x, ty));
+            ty += 1;
+        }
+        filled
+    }
+
+    /// Reel in a whole rope ladder: clear every rope ladder cell vertically
+    /// connected to `(x, y)` (the run runs up and down from there), returning the
+    /// cells cleared so the caller can broadcast them. `(x, y)` itself has already
+    /// been broken by the caller; this gathers the rest of the dangling run, which
+    /// collapses as a unit rather than leaving floating rungs (and so a multi-cell
+    /// run yields a single dropped rope ladder, not one per cell).
+    fn collapse_rope_ladder(&self, x: i32, y: i32) -> Vec<(i32, i32)> {
+        let mut world = self.world.lock();
+        let mut cleared = Vec::new();
+        for dir in [-1, 1] {
+            let mut ty = y + dir;
+            while crate::world::in_bounds(x, ty)
+                && world.get(x, ty) == crate::block::ROPE_LADDER
+                && world.set(x, ty, crate::block::AIR)
+            {
+                cleared.push((x, ty));
+                ty += dir;
+            }
+        }
+        cleared
     }
 }
 
@@ -2534,6 +2583,19 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                 }
                             }
                         }
+                        // Breaking any part of a rope ladder reels in the whole
+                        // dangling run: the cells below (and above) collapse with
+                        // it. Only the cell the player struck drops an item (handled
+                        // above), so a long run yields one rope ladder, not many.
+                        if prev == crate::block::ROPE_LADDER {
+                            for (cx, cy) in shared.collapse_rope_ladder(x, y) {
+                                shared.broadcast_all(ServerMessage::BlockUpdate {
+                                    x: cx,
+                                    y: cy,
+                                    block: crate::block::AIR,
+                                });
+                            }
+                        }
                         // Mining wears the held tool: a pickaxe's intended job
                         // costs little, a sword or axe used to dig wears twice as fast.
                         shared.wear_tool(id, held, crate::block::mine_wear(held));
@@ -2546,9 +2608,13 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     // ladder is stricter: it mounts on the side of a wall, so it
                     // needs a solid block to the left or right (or a ladder
                     // directly above, to extend a run downward).
-                    let placing_ladder = shared
-                        .peek_slot(id, slot as usize)
-                        .is_some_and(crate::block::is_climbable);
+                    let held_slot = shared.peek_slot(id, slot as usize);
+                    let placing_ladder = held_slot.is_some_and(crate::block::is_climbable);
+                    // A rope ladder may additionally hang from a solid block
+                    // directly above (anchored to the ground at a shaft's mouth),
+                    // since it unrolls down into open air rather than clinging to a
+                    // wall.
+                    let placing_rope = held_slot.is_some_and(crate::block::is_rope_ladder);
                     let supported = {
                         let mut world = shared.world.lock();
                         if world.get(x, y) != crate::block::AIR {
@@ -2557,6 +2623,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             world.solid(x - 1, y)
                                 || world.solid(x + 1, y)
                                 || crate::block::is_climbable(world.get(x, y - 1))
+                                || (placing_rope && world.solid(x, y - 1))
                         } else {
                             [(1, 0), (-1, 0), (0, 1), (0, -1)]
                                 .iter()
@@ -2610,8 +2677,23 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         Some(_) => {
                             // Now commit: spend the block from the slot and place it.
                             if let Some(block) = shared.take_from_slot(id, slot as usize) {
-                                let changed = shared.world.lock().set(x, y, block);
-                                if changed {
+                                if block == crate::block::ROPE_LADDER {
+                                    // A rope ladder unrolls downward from the target
+                                    // cell, filling the shaft until it bottoms out or
+                                    // its rope runs out. One placed item, many cells.
+                                    let filled = shared.roll_rope_ladder(x, y);
+                                    if filled.is_empty() {
+                                        shared.add_item(id, block); // nothing placed: refund
+                                    } else {
+                                        for (fx, fy) in filled {
+                                            shared.broadcast_all(ServerMessage::BlockUpdate {
+                                                x: fx,
+                                                y: fy,
+                                                block,
+                                            });
+                                        }
+                                    }
+                                } else if shared.world.lock().set(x, y, block) {
                                     // Remember player-placed logs so an axe's
                                     // tree-felling spares what the player built.
                                     if block == crate::block::LOG {

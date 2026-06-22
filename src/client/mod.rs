@@ -2318,8 +2318,9 @@ fn move_y(game: &mut GameState, reg: &BlockRegistry, dy: f32) -> bool {
 
 /// Whether a ladder may be placed at `(tx, ty)` — it must mount on the side of a
 /// wall (a solid block to the left or right) or extend a ladder run directly
-/// below an existing one. Non-ladder blocks are unaffected. Mirrors the
-/// authoritative check in [`crate::server`].
+/// below an existing one. A rope ladder may additionally hang from a solid block
+/// directly above (anchored at a shaft's mouth). Non-ladder blocks are
+/// unaffected. Mirrors the authoritative check in [`crate::server`].
 fn ladder_supported(
     game: &GameState,
     reg: &BlockRegistry,
@@ -2333,6 +2334,7 @@ fn ladder_supported(
     reg.is_solid(game.world.get_block(tx - 1, ty))
         || reg.is_solid(game.world.get_block(tx + 1, ty))
         || crate::block::is_climbable(game.world.get_block(tx, ty - 1))
+        || (crate::block::is_rope_ladder(block) && reg.is_solid(game.world.get_block(tx, ty - 1)))
 }
 
 /// Whether the player's body currently overlaps any ladder cell — the condition
