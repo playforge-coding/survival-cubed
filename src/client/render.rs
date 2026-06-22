@@ -599,15 +599,35 @@ impl Gfx {
         self.queue
             .write_buffer(&self.camera_buf, 0, bytemuck::cast_slice(&[camera]));
 
+        // Apply egui texture uploads BEFORE acquiring the surface texture.
+        // egui emits each delta exactly once; if we drop this frame after
+        // get_current_texture() fails (common on macOS during initial swapchain
+        // setup), the delta is gone forever — leaving the font atlas Managed(0)
+        // permanently absent and spamming "Missing texture: Managed(0)".
+        for (id, delta) in &egui_frame.textures_delta.set {
+            self.egui_renderer
+                .update_texture(&self.device, &self.queue, *id, delta);
+        }
+        let freed = std::mem::take(&mut egui_frame.textures_delta.free);
+        let free_textures = |r: &mut Renderer| {
+            for id in &freed {
+                r.free_texture(id);
+            }
+        };
+
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.device, &self.config);
+                free_textures(&mut self.egui_renderer);
                 return;
             }
             // Timeout / Occluded / Validation: skip this frame.
-            _ => return,
+            _ => {
+                free_textures(&mut self.egui_renderer);
+                return;
+            }
         };
         let view = frame
             .texture
@@ -619,11 +639,6 @@ impl Gfx {
                 label: Some("frame"),
             });
 
-        // egui texture uploads.
-        for (id, delta) in &egui_frame.textures_delta.set {
-            self.egui_renderer
-                .update_texture(&self.device, &self.queue, *id, delta);
-        }
         let screen = ScreenDescriptor {
             size_in_pixels: [self.config.width, self.config.height],
             pixels_per_point: egui_frame.pixels_per_point,
@@ -682,8 +697,6 @@ impl Gfx {
         );
         frame.present();
 
-        for id in egui_frame.textures_delta.free.drain(..) {
-            self.egui_renderer.free_texture(&id);
-        }
+        free_textures(&mut self.egui_renderer);
     }
 }
