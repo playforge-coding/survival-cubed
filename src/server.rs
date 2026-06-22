@@ -90,8 +90,6 @@ const SLIME_ATTACK_RANGE: f32 = 4.0;
 const SLIME_DAMAGE: i32 = 3;
 /// Seconds a slime waits between bites.
 const SLIME_ATTACK_INTERVAL: f32 = 1.0;
-/// Damage the player's melee swing deals.
-const PLAYER_ATTACK_DAMAGE: i32 = 4;
 /// Player melee reach (max gap, px, between attacker and target AABBs).
 const PLAYER_ATTACK_REACH: f32 = 80.0;
 /// Horizontal knockback speed (px/s) shoved onto whatever a hit lands on, away
@@ -1870,7 +1868,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         },
                     );
                 }
-                ClientMessage::Attack { target } => {
+                ClientMessage::Attack { target, held } => {
                     // Validate reach and, if good, compute the knockback shoving
                     // the target away from the attacker.
                     let knockback = {
@@ -1901,7 +1899,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             apply_damage(
                                 &mut entities,
                                 target,
-                                PLAYER_ATTACK_DAMAGE,
+                                crate::block::attack_damage(held),
                                 kb,
                                 shared.spawn,
                             )

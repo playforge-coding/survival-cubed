@@ -54,8 +54,11 @@ pub enum ClientMessage {
     /// Report the owning player entity's position (pixels, world space).
     PlayerMove { x: f32, y: f32 },
     /// Melee-attack another entity (e.g. a slime). The server validates range
-    /// before applying damage.
-    Attack { target: EntityId },
+    /// before applying damage. `held` is the item the player is wielding
+    /// ([`crate::block::AIR`] for bare hands); the server uses it to scale the
+    /// damage (swords hit hardest, pickaxes far less). See
+    /// [`crate::block::attack_damage`].
+    Attack { target: EntityId, held: BlockId },
     /// Report fall damage the client computed from its own landing. The server
     /// is authoritative over the resulting health.
     FallDamage { amount: i32 },

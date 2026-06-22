@@ -129,6 +129,7 @@ pub enum NetCommand {
     },
     Attack {
         target: EntityId,
+        held: BlockId,
     },
     FallDamage {
         amount: i32,
@@ -293,7 +294,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::Smelt { recipe, count } => ClientMessage::Smelt { recipe, count },
         NetCommand::PlayerMove { x, y } => ClientMessage::PlayerMove { x, y },
         NetCommand::RequestChunk { cx, cy } => ClientMessage::RequestChunk { cx, cy },
-        NetCommand::Attack { target } => ClientMessage::Attack { target },
+        NetCommand::Attack { target, held } => ClientMessage::Attack { target, held },
         NetCommand::FallDamage { amount } => ClientMessage::FallDamage { amount },
         NetCommand::SetTime { t } => ClientMessage::SetTime { t },
         NetCommand::SpawnEntity { kind, x, y } => ClientMessage::SpawnEntity { kind, x, y },

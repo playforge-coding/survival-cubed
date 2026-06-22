@@ -49,6 +49,13 @@ pub const IRON_INGOT: BlockId = 13;
 pub const FORGE: BlockId = 14;
 /// An iron pickaxe. A tool item; stacks to one. The fastest pickaxe.
 pub const IRON_PICKAXE: BlockId = 15;
+/// A wooden sword. A tool item; stacks to one. A dedicated weapon that hits
+/// harder than a bare fist (see [`attack_damage`]).
+pub const WOOD_SWORD: BlockId = 16;
+/// A stone sword. A tool item; stacks to one. Hits harder than the wooden sword.
+pub const STONE_SWORD: BlockId = 17;
+/// An iron sword. A tool item; stacks to one. The deadliest melee weapon.
+pub const IRON_SWORD: BlockId = 18;
 
 /// Definition of a single block type.
 pub struct BlockDef {
@@ -98,6 +105,10 @@ impl BlockRegistry {
         r.register("iron_ingot", false, true, false, 0.0);
         r.register("forge", true, true, true, 1.5);
         r.register("iron_pickaxe", false, true, false, 0.0);
+        // Swords: dedicated melee weapons, wood < stone < iron.
+        r.register("wood_sword", false, true, false, 0.0);
+        r.register("stone_sword", false, true, false, 0.0);
+        r.register("iron_sword", false, true, false, 0.0);
         r
     }
 
@@ -156,7 +167,7 @@ impl Default for BlockRegistry {
 /// everything else uses the default [`STACK_MAX`](crate::inventory::STACK_MAX).
 pub fn max_stack(id: BlockId) -> u32 {
     match id {
-        PICKAXE | STONE_PICKAXE | IRON_PICKAXE => 1,
+        PICKAXE | STONE_PICKAXE | IRON_PICKAXE | WOOD_SWORD | STONE_SWORD | IRON_SWORD => 1,
         _ => crate::inventory::STACK_MAX,
     }
 }
@@ -211,6 +222,22 @@ pub fn mine_speed_mult(block: BlockId, held: BlockId) -> f32 {
 /// [`required_tier`].
 pub fn drops_when_mined(block: BlockId, held: BlockId) -> bool {
     pickaxe_tier(held) >= required_tier(block)
+}
+
+/// Melee damage dealt by a swing while holding `item` ([`AIR`] for bare hands).
+/// Swords are dedicated weapons and hit hardest; pickaxes can still be swung but
+/// deal far less, and anything else (including bare hands) deals the base amount.
+/// Wood < stone < iron within each family.
+pub fn attack_damage(item: BlockId) -> i32 {
+    match item {
+        WOOD_SWORD => 8,
+        STONE_SWORD => 11,
+        IRON_SWORD => 14,
+        PICKAXE => 4,
+        STONE_PICKAXE => 5,
+        IRON_PICKAXE => 6,
+        _ => 3, // bare hands or any non-weapon item
+    }
 }
 
 /// The item a broken `block` drops (assuming [`drops_when_mined`]). Most blocks

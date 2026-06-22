@@ -9,8 +9,8 @@
 //! A recipe is identified on the wire by its index in [`RECIPES`].
 
 use crate::block::{
-    BARK, FORGE, IRON_INGOT, IRON_PICKAXE, LOG, PICKAXE, RAW_IRON, STICK, STONE, STONE_PICKAXE,
-    WOOD,
+    BARK, FORGE, IRON_INGOT, IRON_PICKAXE, IRON_SWORD, LOG, PICKAXE, RAW_IRON, STICK, STONE,
+    STONE_PICKAXE, STONE_SWORD, WOOD, WOOD_SWORD,
 };
 use crate::inventory::Inventory;
 use crate::protocol::BlockId;
@@ -50,6 +50,24 @@ pub const RECIPES: &[Recipe] = &[
         name: "Iron Pickaxe",
         inputs: &[(IRON_INGOT, 3), (STICK, 2)],
         outputs: &[(IRON_PICKAXE, 1)],
+    },
+    // A plank edge bound to a stick makes a crude wooden sword.
+    Recipe {
+        name: "Wood Sword",
+        inputs: &[(WOOD, 2), (STICK, 1)],
+        outputs: &[(WOOD_SWORD, 1)],
+    },
+    // Sharpened stone on a stick: a sturdier blade.
+    Recipe {
+        name: "Stone Sword",
+        inputs: &[(STONE, 2), (STICK, 1)],
+        outputs: &[(STONE_SWORD, 1)],
+    },
+    // Forged iron on a stick: the deadliest blade.
+    Recipe {
+        name: "Iron Sword",
+        inputs: &[(IRON_INGOT, 2), (STICK, 1)],
+        outputs: &[(IRON_SWORD, 1)],
     },
     // Stacked stone builds a forge for smelting.
     Recipe {

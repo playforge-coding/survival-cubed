@@ -56,6 +56,9 @@ blocks!(
     "iron_ingot",
     "forge",
     "iron_pickaxe",
+    "wood_sword",
+    "stone_sword",
+    "iron_sword",
 );
 
 sprites!(

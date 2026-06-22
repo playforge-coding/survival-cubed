@@ -2128,7 +2128,12 @@ fn handle_block_actions(
             game.break_target = None;
             game.break_progress = 0.0;
             if game.action_timer <= 0.0 {
-                let _ = net.commands.send(NetCommand::Attack { target });
+                let held = game
+                    .inventory
+                    .get(game.selected_slot)
+                    .map(|(b, _)| b)
+                    .unwrap_or(AIR);
+                let _ = net.commands.send(NetCommand::Attack { target, held });
                 game.action_timer = ACTION_COOLDOWN;
             }
         } else {
