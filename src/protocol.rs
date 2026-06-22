@@ -12,8 +12,26 @@ use crate::inventory::Slot;
 /// Identifier of a block type. `0` is always air. See [`crate::block`].
 pub type BlockId = u16;
 
-/// ALPN protocol identifier negotiated during the QUIC/TLS handshake.
-pub const ALPN: &[u8] = b"survival-cubed/0";
+/// Wire-protocol compatibility version. **Bump this on every incompatible change
+/// to anything that crosses the wire** — adding/removing/reordering a
+/// [`ClientMessage`] or [`ServerMessage`] variant, changing a variant's fields,
+/// or altering a transported type like [`Entity`](crate::entity::Entity) or
+/// [`Slot`].
+///
+/// Peers exchange this as a fixed 4-byte header before any bincode (see
+/// [`crate::net::read_version`]), so a version-skewed client is rejected with a
+/// clear "version mismatch" message instead of the cryptic bincode
+/// `invalid value: integer N, expected variant index 0 <= i < K`
+/// deserialization error that a mis-aligned enum tag produces.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
+/// trailing number is a coarse guard bumped only for changes deep enough to
+/// affect the version handshake itself; ordinary wire changes are covered by
+/// [`PROTOCOL_VERSION`]. Bumping it from `/0` to `/1` here also cleanly severs
+/// this build from the older `/0` binaries that predate the handshake, so they
+/// can no longer connect and reproduce the bug.
+pub const ALPN: &[u8] = b"survival-cubed/1";
 
 /// Sent from client to server over the single bidirectional stream.
 #[derive(Debug, Clone, Serialize, Deserialize)]

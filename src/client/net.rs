@@ -18,7 +18,7 @@ use rustls::{DigitallySignedStruct, SignatureScheme};
 
 use crate::entity::{Entity, EntityId, EntityKind};
 use crate::inventory::Slot;
-use crate::net::{KnownHosts, fingerprint, fingerprint_hex, read_msg, write_msg};
+use crate::net::{KnownHosts, fingerprint, fingerprint_hex, read_msg, write_msg, write_version};
 use crate::protocol::{ALPN, BlockId, ClientMessage, ServerMessage};
 
 /// Events flowing from the network thread to the UI.
@@ -251,6 +251,11 @@ async fn client_main(
     let connection = endpoint.connect(addr, "localhost")?.await?;
     let (mut send, mut recv) = connection.open_bi().await?;
 
+    // Announce our wire version first; a server on a different version closes the
+    // connection with an explanatory reason (surfaced below) rather than letting
+    // us mis-decode its messages later.
+    write_version(&mut send).await?;
+
     write_msg(
         &mut send,
         &ClientMessage::Hello {
@@ -263,7 +268,23 @@ async fn client_main(
     loop {
         tokio::select! {
             msg = read_msg::<ServerMessage>(&mut recv) => {
-                let msg = msg?;
+                let msg = match msg {
+                    Ok(msg) => msg,
+                    // If the server closed the stream with a reason (e.g. a
+                    // version mismatch), report that rather than the low-level
+                    // read error it manifests as on our end.
+                    Err(e) => match connection.close_reason() {
+                        Some(quinn::ConnectionError::ApplicationClosed(close))
+                            if !close.reason.is_empty() =>
+                        {
+                            return Err(anyhow::anyhow!(
+                                "{}",
+                                String::from_utf8_lossy(&close.reason)
+                            ));
+                        }
+                        _ => return Err(e),
+                    },
+                };
                 if dispatch(msg, ev_tx).is_break() {
                     break;
                 }

@@ -24,8 +24,8 @@ use crate::block::BlockRegistry;
 use crate::daylight;
 use crate::entity::{Entities, Entity, EntityId, EntityKind, ITEM_SIZE, PLAYER_SIZE};
 use crate::inventory::Inventory;
-use crate::net::{fingerprint, read_msg, write_msg};
-use crate::protocol::{ALPN, BlockId, ClientMessage, ServerMessage};
+use crate::net::{VERSION_MISMATCH_CLOSE, fingerprint, read_msg, read_version, write_msg};
+use crate::protocol::{ALPN, BlockId, ClientMessage, PROTOCOL_VERSION, ServerMessage};
 use crate::save::{SavedPlayer, WorldMeta, WorldStore};
 use crate::world::{CHUNK_AREA, CHUNK_SIZE, ChunkCoord, TILE_SIZE, World};
 use crate::worldgen::{Biome, WorldGen, spawn_point};
@@ -1613,6 +1613,22 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
         .accept_bi()
         .await
         .context("accepting bidirectional stream")?;
+
+    // Before anything else, check the peer speaks our wire version. Rejecting a
+    // skewed client here — with a clear reason — prevents the cryptic bincode
+    // "invalid variant index" errors that mismatched ClientMessage/ServerMessage
+    // layouts would otherwise produce mid-session.
+    let peer_version = read_version(&mut recv)
+        .await
+        .context("reading client protocol version")?;
+    if peer_version != PROTOCOL_VERSION {
+        let reason = format!(
+            "protocol version mismatch: server is v{PROTOCOL_VERSION}, client is v{peer_version} — update both to the same build"
+        );
+        log::warn!("rejecting connection: {reason}");
+        connection.close(VERSION_MISMATCH_CLOSE.into(), reason.as_bytes());
+        return Ok(());
+    }
 
     let id = shared.alloc_id();
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerMessage>();

@@ -11,8 +11,31 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
+use crate::protocol::PROTOCOL_VERSION;
+
 /// Largest frame we will read, as a guard against bad/hostile peers.
 const MAX_FRAME: usize = 16 * 1024 * 1024;
+
+/// QUIC application close code the server uses to reject a version-skewed peer.
+/// (The accompanying close reason carries the human-readable explanation.)
+pub const VERSION_MISMATCH_CLOSE: u32 = 1;
+
+/// Write the fixed 4-byte little-endian [`PROTOCOL_VERSION`] header that opens
+/// every connection. This framing is frozen across all versions, so even peers
+/// that disagree on the bincode layout can still read it and detect the skew
+/// instead of mis-decoding each other's messages.
+pub async fn write_version(send: &mut SendStream) -> Result<()> {
+    send.write_all(&PROTOCOL_VERSION.to_le_bytes()).await?;
+    Ok(())
+}
+
+/// Read the peer's 4-byte protocol-version header (the counterpart to
+/// [`write_version`]).
+pub async fn read_version(recv: &mut RecvStream) -> Result<u32> {
+    let mut v = [0u8; 4];
+    recv.read_exact(&mut v).await?;
+    Ok(u32::from_le_bytes(v))
+}
 
 /// Write a bincode-serialized message with a 4-byte little-endian length prefix.
 pub async fn write_msg<T: Serialize>(send: &mut SendStream, msg: &T) -> Result<()> {
@@ -32,7 +55,11 @@ pub async fn read_msg<T: DeserializeOwned>(recv: &mut RecvStream) -> Result<T> {
     }
     let mut buf = vec![0u8; len];
     recv.read_exact(&mut buf).await?;
-    Ok(bincode::deserialize(&buf)?)
+    // A decode failure here almost always means the peer serialized a different
+    // wire layout (i.e. a version mismatch the handshake somehow let through),
+    // so surface that rather than the raw bincode error.
+    bincode::deserialize(&buf)
+        .map_err(|e| anyhow!("malformed message ({e}); client and server versions may differ"))
 }
 
 /// SHA-256 of a certificate's DER encoding.
