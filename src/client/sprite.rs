@@ -1,11 +1,9 @@
 //! Animated entity sprites.
 //!
-//! Every [`EntityKind`] maps to a [`SpriteDef`]: a horizontal strip of equal
-//! frames loaded from `<assets>/textures/entities/<name>.png`. Like block
-//! textures, a missing file is seeded from a procedural default (see
-//! [`SpriteDef::default`]) so the game always has real, overwritable art on
-//! disk. Frame selection is time-driven (see [`frame_index`]), so the same
-//! sheet animates the player and the slimes.
+//! Every [`EntityKind`] maps to a [`SpriteDef`]: a strip of equal frames, one
+//! PNG per frame, baked into the binary (see [`crate::assets`]) and decoded by
+//! the atlas loader. Frame selection is time-driven (see [`frame_index`]), so
+//! the same sheet animates the player and the slimes.
 
 use crate::entity::EntityKind;
 
@@ -21,9 +19,6 @@ pub struct SpriteDef {
     pub frames: u32,
     /// Animation playback speed, in frames per second.
     pub fps: f32,
-    /// Procedural starter: RGBA texel for `(frame, x, y)`, used to write a
-    /// placeholder PNG when no art exists yet.
-    pub default: fn(frame: u32, x: u32, y: u32) -> [u8; 4],
 }
 
 /// Player avatar: a little humanoid whose legs stride as it walks.
@@ -33,7 +28,6 @@ pub static PLAYER_SPRITE: SpriteDef = SpriteDef {
     frame_h: 32,
     frames: 4,
     fps: 8.0,
-    default: player_tex,
 };
 
 /// Slime: a small blob that squashes and stretches as it hops along.
@@ -43,7 +37,6 @@ pub static SLIME_SPRITE: SpriteDef = SpriteDef {
     frame_h: 12,
     frames: 4,
     fps: 6.0,
-    default: slime_tex,
 };
 
 /// Chicken: a small bird that bobs as it struts and flaps when startled.
@@ -53,7 +46,6 @@ pub static CHICKEN_SPRITE: SpriteDef = SpriteDef {
     frame_h: 14,
     frames: 4,
     fps: 8.0,
-    default: chicken_tex,
 };
 
 /// Goat: a stocky mountain grazer that ambles along on four legs.
@@ -63,7 +55,6 @@ pub static GOAT_SPRITE: SpriteDef = SpriteDef {
     frame_h: 16,
     frames: 4,
     fps: 6.0,
-    default: goat_tex,
 };
 
 /// Zombie: a shambling undead that lurches along, arms out.
@@ -73,7 +64,6 @@ pub static ZOMBIE_SPRITE: SpriteDef = SpriteDef {
     frame_h: 19,
     frames: 4,
     fps: 4.0,
-    default: zombie_tex,
 };
 
 /// Zombie death: a one-shot crumble played as the undead burns up in daylight.
@@ -85,7 +75,6 @@ pub static ZOMBIE_DEATH_SPRITE: SpriteDef = SpriteDef {
     frame_h: 19,
     frames: 4,
     fps: 6.0,
-    default: zombie_death_tex,
 };
 
 /// Every sprite the atlas needs to pack.
@@ -123,214 +112,4 @@ pub fn frame_index(moving: bool, clock: f32, def: &SpriteDef) -> u32 {
     } else {
         ((clock * def.fps) as u32) % def.frames
     }
-}
-
-// --- Procedural starter art ----------------------------------------------
-
-fn player_tex(frame: u32, x: u32, y: u32) -> [u8; 4] {
-    const TRANS: [u8; 4] = [0, 0, 0, 0];
-    const SKIN: [u8; 4] = [235, 180, 140, 255];
-    const SHIRT: [u8; 4] = [60, 110, 200, 255];
-    const PANTS: [u8; 4] = [45, 50, 75, 255];
-    const EYE: [u8; 4] = [25, 25, 35, 255];
-    let (xi, yi) = (x as i32, y as i32);
-
-    // Head with two eyes.
-    if (3..11).contains(&yi) && (4..12).contains(&xi) {
-        if (6..8).contains(&yi) && (xi == 6 || xi == 9) {
-            return EYE;
-        }
-        return SKIN;
-    }
-    // Torso.
-    if (11..23).contains(&yi) && (3..13).contains(&xi) {
-        return SHIRT;
-    }
-    // Legs: two columns whose stride shifts per frame to read as a walk cycle.
-    if (23..32).contains(&yi) {
-        let stride = [0i32, 2, 0, -2][(frame % 4) as usize];
-        let left = 5 + stride;
-        let right = 10 - stride;
-        if (xi - left).abs() <= 1 || (xi - right).abs() <= 1 {
-            return PANTS;
-        }
-        return TRANS;
-    }
-    TRANS
-}
-
-fn slime_tex(frame: u32, x: u32, y: u32) -> [u8; 4] {
-    const TRANS: [u8; 4] = [0, 0, 0, 0];
-    const BODY: [u8; 4] = [110, 190, 90, 255];
-    const DARK: [u8; 4] = [70, 140, 60, 255];
-    const EYE: [u8; 4] = [25, 30, 25, 255];
-
-    // Squash/stretch the body ellipse per frame.
-    let squash = [0.0f32, 1.0, 0.0, -1.0][(frame % 4) as usize];
-    let cx = 6.0;
-    let cy = 7.0 + squash * 0.5;
-    let rx = 5.0 + squash;
-    let ry = 4.5 - squash;
-    let dx = (x as f32 + 0.5 - cx) / rx;
-    let dy = (y as f32 + 0.5 - cy) / ry;
-    let d = dx * dx + dy * dy;
-    if d <= 1.0 {
-        if y == 5 && (x == 4 || x == 8) {
-            return EYE;
-        }
-        if d > 0.6 {
-            return DARK; // rim shading
-        }
-        return BODY;
-    }
-    TRANS
-}
-
-fn chicken_tex(frame: u32, x: u32, y: u32) -> [u8; 4] {
-    const TRANS: [u8; 4] = [0, 0, 0, 0];
-    const BODY: [u8; 4] = [240, 240, 240, 255];
-    const WING: [u8; 4] = [205, 205, 210, 255];
-    const BEAK: [u8; 4] = [235, 170, 60, 255];
-    const COMB: [u8; 4] = [210, 60, 55, 255];
-    const LEG: [u8; 4] = [235, 170, 60, 255];
-    const EYE: [u8; 4] = [25, 25, 30, 255];
-    let (xi, yi) = (x as i32, y as i32);
-
-    // Legs stride per frame to read as a walk; flap the wing on alternate frames.
-    let stride = [0i32, 1, 0, -1][(frame % 4) as usize];
-    let flap = frame % 2 == 1;
-
-    // Comb on top of the head.
-    if yi == 2 && (xi == 8 || xi == 9) {
-        return COMB;
-    }
-    // Body ellipse (the plump middle of the bird).
-    let dx = (xi as f32 + 0.5 - 6.0) / 5.0;
-    let dy = (yi as f32 + 0.5 - 7.0) / 4.5;
-    if dx * dx + dy * dy <= 1.0 {
-        // Eye and beak sit toward the front (right) of the head.
-        if yi == 4 && xi == 8 {
-            return EYE;
-        }
-        if yi == 5 && xi >= 10 {
-            return BEAK;
-        }
-        // A wing patch along the bird's flank, raised a row when flapping.
-        let wing_top = if flap { 4 } else { 5 };
-        if (wing_top..wing_top + 3).contains(&yi) && (3..6).contains(&xi) {
-            return WING;
-        }
-        return BODY;
-    }
-    // Two legs below the body.
-    if (11..14).contains(&yi) {
-        let left = 5 + stride;
-        let right = 7 - stride;
-        if xi == left || xi == right {
-            return LEG;
-        }
-    }
-    TRANS
-}
-
-fn goat_tex(frame: u32, x: u32, y: u32) -> [u8; 4] {
-    const TRANS: [u8; 4] = [0, 0, 0, 0];
-    const BODY: [u8; 4] = [190, 185, 175, 255];
-    const DARK: [u8; 4] = [150, 145, 135, 255];
-    const HORN: [u8; 4] = [110, 100, 85, 255];
-    const HOOF: [u8; 4] = [70, 65, 60, 255];
-    const EYE: [u8; 4] = [25, 25, 30, 255];
-    let (xi, yi) = (x as i32, y as i32);
-
-    // Four legs stride in two pairs so it reads as an amble.
-    let stride = [0i32, 1, 0, -1][(frame % 4) as usize];
-
-    // Curled horns sweeping back over the head (front of the goat is the left).
-    if yi == 3 && (xi == 3 || xi == 4) {
-        return HORN;
-    }
-    // Head/snout block at the front-left.
-    if (4..9).contains(&yi) && (1..5).contains(&xi) {
-        if yi == 5 && xi == 3 {
-            return EYE;
-        }
-        return BODY;
-    }
-    // Stocky body slab.
-    if (5..11).contains(&yi) && (4..14).contains(&xi) {
-        // A little belly shading along the underside.
-        if yi >= 9 {
-            return DARK;
-        }
-        return BODY;
-    }
-    // Four legs below the body, front pair and back pair countermarching.
-    if (11..15).contains(&yi) {
-        let fl = 5 - stride;
-        let fr = 7 - stride;
-        let bl = 11 + stride;
-        let br = 13 + stride;
-        if xi == fl || xi == fr || xi == bl || xi == br {
-            return if yi >= 14 { HOOF } else { DARK };
-        }
-    }
-    TRANS
-}
-
-fn zombie_tex(frame: u32, x: u32, y: u32) -> [u8; 4] {
-    const TRANS: [u8; 4] = [0, 0, 0, 0];
-    const SKIN: [u8; 4] = [105, 140, 85, 255];
-    const DARK: [u8; 4] = [70, 100, 60, 255];
-    const SHIRT: [u8; 4] = [80, 70, 95, 255];
-    const EYE: [u8; 4] = [200, 40, 40, 255];
-    let (xi, yi) = (x as i32, y as i32);
-
-    // Lurching legs and a swaying body shift a little per frame.
-    let stride = [0i32, 1, 0, -1][(frame % 4) as usize];
-
-    // Head with two baleful red eyes.
-    if (2..9).contains(&yi) && (3..11).contains(&xi) {
-        if yi == 5 && (xi == 5 || xi == 8) {
-            return EYE;
-        }
-        return SKIN;
-    }
-    // Torso in a tattered shirt.
-    if (9..15).contains(&yi) && (3..11).contains(&xi) {
-        return SHIRT;
-    }
-    // Arms held out ahead (the classic shamble), bobbing with the stride.
-    if (10..13).contains(&yi) && (11..14).contains(&xi) {
-        return DARK;
-    }
-    // Two legs that drag along below the body.
-    if (15..19).contains(&yi) {
-        let left = 5 + stride;
-        let right = 8 - stride;
-        if (xi - left).abs() <= 1 || (xi - right).abs() <= 1 {
-            return DARK;
-        }
-    }
-    TRANS
-}
-
-fn zombie_death_tex(frame: u32, x: u32, y: u32) -> [u8; 4] {
-    const TRANS: [u8; 4] = [0, 0, 0, 0];
-    const SKIN: [u8; 4] = [105, 140, 85, 255];
-    const DARK: [u8; 4] = [70, 100, 60, 255];
-    let (xi, yi) = (x as i32, y as i32);
-
-    // Collapse: the body sinks toward the ground and shrinks frame by frame
-    // until almost nothing is left, reading as a crumble in the daylight.
-    let fall = (frame % 4) as i32 * 4; // 0, 4, 8, 12 px lower each frame
-    let top = 2 + fall;
-    let bottom = 19;
-    if yi >= top && yi < bottom && (3..11).contains(&xi) {
-        // A thinning slab that frays at its edges as it goes.
-        if (xi == 3 || xi == 10) && frame >= 2 {
-            return TRANS;
-        }
-        return if yi >= bottom - 3 { DARK } else { SKIN };
-    }
-    TRANS
 }

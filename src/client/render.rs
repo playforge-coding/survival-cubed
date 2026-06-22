@@ -2,7 +2,6 @@
 //! overlay drawn into the same render pass.
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 
 use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
@@ -10,7 +9,7 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 use super::sprite::{self, SpriteDef};
-use crate::block::{BlockDef, BlockRegistry, TILE_TEX, render_default};
+use crate::block::{BlockDef, BlockRegistry, TILE_TEX};
 use crate::protocol::BlockId;
 
 /// A UV rectangle (texture-space min/max) addressing one image inside the atlas.
@@ -59,22 +58,22 @@ pub struct Atlas {
 }
 
 impl Atlas {
-    /// Build the atlas from block textures in `blocks_dir` and entity sprite
-    /// sheets in `entities_dir`. Missing files are seeded from procedural
-    /// defaults so there is always real, overwritable art on disk.
-    pub fn build(reg: &BlockRegistry, blocks_dir: &Path, entities_dir: &Path) -> Atlas {
+    /// Build the atlas from the block tiles and entity sprite sheets embedded
+    /// in the binary (see [`crate::assets`]). Any art not embedded falls back to
+    /// an obvious placeholder so the game still runs.
+    pub fn build(reg: &BlockRegistry) -> Atlas {
         let t = TILE_TEX;
 
         // Gather every image to pack: (what it is, w, h, rgba).
         let mut items: Vec<(AtlasKey, u32, u32, Vec<u8>)> = Vec::new();
         for def in reg.iter() {
             if def.visible {
-                items.push((AtlasKey::Block(def.id), t, t, load_cell(def, blocks_dir)));
+                items.push((AtlasKey::Block(def.id), t, t, load_cell(def)));
             }
         }
         items.push((AtlasKey::White, t, t, vec![255u8; (t * t * 4) as usize]));
         for def in sprite::all() {
-            for (frame, pixels) in load_sheet(def, entities_dir).into_iter().enumerate() {
+            for (frame, pixels) in load_sheet(def).into_iter().enumerate() {
                 items.push((
                     AtlasKey::Sprite(def.name, frame as u32),
                     def.frame_w,
@@ -150,115 +149,59 @@ impl Atlas {
     }
 }
 
-/// Load one block's 16x16 RGBA cell (row-major, length `TILE_TEX*TILE_TEX*4`).
-fn load_cell(def: &BlockDef, blocks_dir: &Path) -> Vec<u8> {
-    let t = TILE_TEX;
-    let path = blocks_dir.join(format!("{}.png", def.name));
-
-    if !path.exists() {
-        // Seed a starter file from the procedural default so the texture is a
-        // real PNG on disk that can simply be overwritten.
-        if let Some(default_tex) = def.default_tex {
-            let buf = render_default(default_tex);
-            match write_starter_png(&path, &buf, t, t) {
-                Ok(()) => log::info!("wrote starter texture {}", path.display()),
-                Err(e) => log::warn!("could not write starter texture {}: {e}", path.display()),
-            }
-            return buf;
-        }
-        log::warn!("missing texture {} (using placeholder)", path.display());
-        return placeholder(t, t);
-    }
-
-    match image::open(&path) {
+/// Decode an embedded PNG into a `w`x`h` RGBA buffer (row-major), nearest-resizing
+/// if the source dimensions differ. Broken bytes fall back to a placeholder.
+fn decode_png(label: &str, bytes: &[u8], w: u32, h: u32) -> Vec<u8> {
+    match image::load_from_memory(bytes) {
         Ok(img) => {
             let rgba = img.to_rgba8();
-            let resized = if rgba.dimensions() == (t, t) {
+            let resized = if rgba.dimensions() == (w, h) {
                 rgba
             } else {
-                image::imageops::resize(&rgba, t, t, image::imageops::FilterType::Nearest)
+                image::imageops::resize(&rgba, w, h, image::imageops::FilterType::Nearest)
             };
             resized.into_raw()
         }
         Err(e) => {
+            log::warn!("failed to decode embedded texture {label}: {e} (using placeholder)");
+            placeholder(w, h)
+        }
+    }
+}
+
+/// Load one block's 16x16 RGBA cell (row-major, length `TILE_TEX*TILE_TEX*4`)
+/// from the embedded block textures.
+fn load_cell(def: &BlockDef) -> Vec<u8> {
+    let t = TILE_TEX;
+    match crate::assets::block_png(def.name) {
+        Some(bytes) => decode_png(def.name, bytes, t, t),
+        None => {
             log::warn!(
-                "failed to load texture {}: {e} (using placeholder)",
-                path.display()
+                "no embedded texture for block {} (using placeholder)",
+                def.name
             );
             placeholder(t, t)
         }
     }
 }
 
-/// Load an entity's animation frames, one PNG per frame from `<name>/<frame>.png`
-/// (e.g. `player/0.png`, `player/1.png`). Missing frame files are seeded from the
-/// procedural default and written to disk; broken files fall back to placeholders.
-fn load_sheet(def: &SpriteDef, entities_dir: &Path) -> Vec<Vec<u8>> {
+/// Load an entity's animation frames from the embedded sprite sheets, one PNG
+/// per frame (e.g. `player/0.png`, `player/1.png`).
+fn load_sheet(def: &SpriteDef) -> Vec<Vec<u8>> {
     let (fw, fh, n) = (def.frame_w, def.frame_h, def.frames);
-    let dir = entities_dir.join(def.name);
 
     (0..n)
-        .map(|frame| {
-            let path = dir.join(format!("{frame}.png"));
-
-            if !path.exists() {
-                let pixels = render_frame(def, frame);
-                match write_starter_png(&path, &pixels, fw, fh) {
-                    Ok(()) => log::info!("wrote starter sprite frame {}", path.display()),
-                    Err(e) => {
-                        log::warn!(
-                            "could not write starter sprite frame {}: {e}",
-                            path.display()
-                        )
-                    }
-                }
-                return pixels;
-            }
-
-            match image::open(&path) {
-                Ok(img) => {
-                    let rgba = img.to_rgba8();
-                    let resized = if rgba.dimensions() == (fw, fh) {
-                        rgba
-                    } else {
-                        image::imageops::resize(&rgba, fw, fh, image::imageops::FilterType::Nearest)
-                    };
-                    resized.into_raw()
-                }
-                Err(e) => {
-                    log::warn!(
-                        "failed to load sprite frame {}: {e} (using placeholder)",
-                        path.display()
-                    );
-                    placeholder(fw, fh)
-                }
+        .map(|frame| match crate::assets::sprite_png(def.name, frame) {
+            Some(bytes) => decode_png(&format!("{}/{frame}", def.name), bytes, fw, fh),
+            None => {
+                log::warn!(
+                    "no embedded sprite frame {}/{frame} (using placeholder)",
+                    def.name
+                );
+                placeholder(fw, fh)
             }
         })
         .collect()
-}
-
-/// Render a single frame of a sprite's procedural default into an RGBA buffer.
-fn render_frame(def: &SpriteDef, frame: u32) -> Vec<u8> {
-    let (fw, fh) = (def.frame_w, def.frame_h);
-    let mut buf = vec![0u8; (fw * fh * 4) as usize];
-    for y in 0..fh {
-        for x in 0..fw {
-            let dst = ((y * fw + x) * 4) as usize;
-            buf[dst..dst + 4].copy_from_slice(&(def.default)(frame, x, y));
-        }
-    }
-    buf
-}
-
-/// Write a `w`x`h` RGBA buffer to `path` as a PNG, creating parent dirs.
-fn write_starter_png(path: &Path, rgba: &[u8], w: u32, h: u32) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let img: image::RgbaImage = image::ImageBuffer::from_raw(w, h, rgba.to_vec())
-        .ok_or_else(|| anyhow::anyhow!("buffer size mismatch"))?;
-    img.save(path)?;
-    Ok(())
 }
 
 /// Obvious magenta/black checker for missing or broken textures.
@@ -321,18 +264,8 @@ mod tests {
 
     #[test]
     fn build_packs_blocks_and_animated_sprites() {
-        // Unique empty dirs so the builder writes starter art from defaults.
-        let base = std::env::temp_dir().join(format!("sc-atlas-{}", std::process::id()));
-        let blocks = base.join("blocks");
-        let entities = base.join("entities");
-
         let reg = BlockRegistry::new();
-        let atlas = Atlas::build(&reg, &blocks, &entities);
-
-        // Starter sprite frames were written to disk as real per-frame PNGs.
-        assert!(entities.join("player").join("0.png").exists());
-        assert!(entities.join("slime").join("0.png").exists());
-        assert!(entities.join("chicken").join("0.png").exists());
+        let atlas = Atlas::build(&reg);
 
         // Texture is tall enough for the tallest sprite (the 32px player).
         assert_eq!(atlas.height, sprite::PLAYER_SPRITE.frame_h);
@@ -352,8 +285,6 @@ mod tests {
         // Visible blocks resolve to a non-empty UV rect.
         let stone = atlas.block(crate::block::STONE);
         assert!(stone.max[0] > stone.min[0]);
-
-        let _ = std::fs::remove_dir_all(&base);
     }
 }
 

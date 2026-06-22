@@ -4,6 +4,7 @@
 //! from the menu). Run `survival-cubed server [port]` for a dedicated headless
 //! server that prints its certificate fingerprint for clients to verify.
 
+mod assets;
 mod block;
 mod client;
 mod daylight;

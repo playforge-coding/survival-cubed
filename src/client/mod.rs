@@ -6,7 +6,6 @@ mod render;
 mod sprite;
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -55,37 +54,6 @@ const HIT_FLASH_TIME: f32 = 0.25;
 /// Exponential decay rate (per second) of the player's horizontal knockback, so
 /// a shove fades over roughly a quarter second.
 const KNOCKBACK_DAMP: f32 = 9.0;
-
-/// Locate a textures subdirectory: `<assets>/textures/<sub>`.
-///
-/// Resolution order: `$SURVIVAL_CUBED_ASSETS`, then `./assets` (next to the
-/// project / working dir), then `assets` beside the executable. The first
-/// existing candidate wins; otherwise the working-dir path is returned so the
-/// atlas loader can create it and drop starter textures there.
-fn textures_dir(sub: &str) -> PathBuf {
-    if let Ok(dir) = std::env::var("SURVIVAL_CUBED_ASSETS") {
-        return PathBuf::from(dir).join("textures").join(sub);
-    }
-    let mut candidates = vec![PathBuf::from("assets").join("textures").join(sub)];
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            candidates.push(parent.join("assets").join("textures").join(sub));
-        }
-    }
-    candidates
-        .iter()
-        .find(|c| c.exists())
-        .cloned()
-        .unwrap_or_else(|| candidates.remove(0))
-}
-
-fn blocks_texture_dir() -> PathBuf {
-    textures_dir("blocks")
-}
-
-fn entities_texture_dir() -> PathBuf {
-    textures_dir("entities")
-}
 
 /// Validate a user-entered world name, returning the trimmed name if it is safe
 /// to use as a directory. Restricting to letters, numbers, spaces, '-' and '_'
@@ -288,7 +256,7 @@ struct App {
 impl App {
     fn new() -> Self {
         let registry = Arc::new(BlockRegistry::new());
-        let atlas = Atlas::build(&registry, &blocks_texture_dir(), &entities_texture_dir());
+        let atlas = Atlas::build(&registry);
         App {
             window: None,
             gfx: None,
