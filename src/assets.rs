@@ -59,6 +59,7 @@ blocks!(
     "wood_sword",
     "stone_sword",
     "iron_sword",
+    "ladder",
 );
 
 sprites!(

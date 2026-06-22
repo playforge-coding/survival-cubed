@@ -35,6 +35,8 @@ const MOVE_SPEED: f32 = 150.0;
 const JUMP_VELOCITY: f32 = -440.0;
 /// Vertical speed (px/s) of the player while flying in dev mode.
 const FLY_SPEED: f32 = 240.0;
+/// Vertical speed (px/s) of the player while climbing a ladder.
+const CLIMB_SPEED: f32 = 90.0;
 // The local player is just a (special) entity; reuse its shared size.
 const PLAYER_W: f32 = crate::entity::PLAYER_SIZE.0;
 const PLAYER_H: f32 = crate::entity::PLAYER_SIZE.1;
@@ -943,7 +945,7 @@ impl App {
                 ui.separator();
                 ui.label(if night { "🌙 Night" } else { "☀ Day" });
                 ui.separator();
-                ui.label("Move: A/D · Jump: Space · Mine: LMB · Place: RMB");
+                ui.label("Move: A/D · Jump/Climb: Space · Down: S · Mine: LMB · Place: RMB");
                 ui.separator();
                 ui.label("[1–9] Select · [E] Inventory");
                 ui.separator();
@@ -2046,6 +2048,23 @@ fn step_physics(game: &mut GameState, reg: &BlockRegistry, input: &Input, dt: f3
         return None;
     }
 
+    // Ladder climbing: while overlapping a ladder the player clings to it,
+    // ignoring gravity, and moves vertically with the jump (up) and down inputs.
+    // This overrides the normal jump/gravity arc below.
+    if player_on_ladder(game) {
+        let climb = (input.down as i32 - input.jump as i32) as f32;
+        game.vel.y = climb * CLIMB_SPEED;
+        move_x(game, reg, game.vel.x * dt);
+        let landed = move_y(game, reg, game.vel.y * dt);
+        // Standing on solid footing at the foot of the ladder still counts as
+        // grounded, so stepping off and walking away works normally.
+        game.on_ground = landed && game.vel.y >= 0.0;
+        // Reset the fall apex so dropping off a ladder never deals fall damage
+        // for the climb itself.
+        game.air_min_y = game.pos.y;
+        return None;
+    }
+
     // Jump (only when grounded).
     if input.jump && game.on_ground {
         game.vel.y = JUMP_VELOCITY;
@@ -2131,6 +2150,35 @@ fn move_y(game: &mut GameState, reg: &BlockRegistry, dy: f32) -> bool {
     }
     game.pos.y = new_y;
     false
+}
+
+/// Whether a ladder may be placed at `(tx, ty)` — it must mount on the side of a
+/// wall (a solid block to the left or right) or extend a ladder run directly
+/// below an existing one. Non-ladder blocks are unaffected. Mirrors the
+/// authoritative check in [`crate::server`].
+fn ladder_supported(
+    game: &GameState,
+    reg: &BlockRegistry,
+    block: BlockId,
+    tx: i32,
+    ty: i32,
+) -> bool {
+    if !crate::block::is_climbable(block) {
+        return true;
+    }
+    reg.is_solid(game.world.get_block(tx - 1, ty))
+        || reg.is_solid(game.world.get_block(tx + 1, ty))
+        || crate::block::is_climbable(game.world.get_block(tx, ty - 1))
+}
+
+/// Whether the player's body currently overlaps any ladder cell — the condition
+/// for climbing instead of falling.
+fn player_on_ladder(game: &GameState) -> bool {
+    let x0 = (game.pos.x / TILE_SIZE).floor() as i32;
+    let x1 = ((game.pos.x + PLAYER_W - EPS) / TILE_SIZE).floor() as i32;
+    let y0 = (game.pos.y / TILE_SIZE).floor() as i32;
+    let y1 = ((game.pos.y + PLAYER_H - EPS) / TILE_SIZE).floor() as i32;
+    (y0..=y1).any(|ty| (x0..=x1).any(|tx| crate::block::is_climbable(game.world.get_block(tx, ty))))
 }
 
 fn column_solid(game: &GameState, reg: &BlockRegistry, tx: i32, y0: i32, y1: i32) -> bool {
@@ -2266,6 +2314,7 @@ fn handle_block_actions(
             && current == AIR
             && !overlaps_player(game, tx, ty)
             && cell_in_reach(game, tx, ty)
+            && ladder_supported(game, reg, block, tx, ty)
         {
             game.world.set_block(tx, ty, block);
             // Optimistically spend one; the server confirms (or corrects) with an

@@ -56,6 +56,9 @@ pub const WOOD_SWORD: BlockId = 16;
 pub const STONE_SWORD: BlockId = 17;
 /// An iron sword. A tool item; stacks to one. The deadliest melee weapon.
 pub const IRON_SWORD: BlockId = 18;
+/// A ladder. A placeable, non-solid block mounted on the side of a wall and
+/// climbed vertically with the jump/down inputs (see [`is_climbable`]).
+pub const LADDER: BlockId = 19;
 
 /// Definition of a single block type.
 pub struct BlockDef {
@@ -109,6 +112,8 @@ impl BlockRegistry {
         r.register("wood_sword", false, true, false, 0.0);
         r.register("stone_sword", false, true, false, 0.0);
         r.register("iron_sword", false, true, false, 0.0);
+        // A ladder: a placeable but non-solid block you climb through.
+        r.register("ladder", false, true, true, 0.4);
         r
     }
 
@@ -237,6 +242,12 @@ pub fn max_durability(item: BlockId) -> u16 {
         IRON_PICKAXE | IRON_SWORD => 251,
         _ => 0,
     }
+}
+
+/// Whether `block` can be climbed — a ladder the player clings to and moves up
+/// and down with the jump/down inputs instead of falling through.
+pub fn is_climbable(block: BlockId) -> bool {
+    block == LADDER
 }
 
 /// Whether `item` is a pickaxe (mining is its intended use).

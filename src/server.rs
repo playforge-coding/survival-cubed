@@ -414,6 +414,12 @@ impl Shared {
         self.inventories.lock().get_mut(&id)?.take_one(slot)
     }
 
+    /// Read (without removing) the block in hotbar/inventory `slot` of player
+    /// `id`. Used to validate placement before committing to spend the item.
+    fn peek_slot(&self, id: EntityId, slot: usize) -> Option<BlockId> {
+        self.inventories.lock().get(&id)?.get(slot).map(|(b, ..)| b)
+    }
+
     /// Rearrange player `id`'s inventory by moving slot `from` onto slot `to`.
     fn move_item(&self, id: EntityId, from: usize, to: usize) {
         if let Some(inv) = self.inventories.lock().get_mut(&id) {
@@ -2078,13 +2084,26 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 ClientMessage::PlaceBlock { x, y, slot } => {
                     // A block may only be placed into an empty cell that is
                     // orthogonally adjacent to an existing block, so players build
-                    // off the world rather than dropping blocks into open air.
+                    // off the world rather than dropping blocks into open air. A
+                    // ladder is stricter: it mounts on the side of a wall, so it
+                    // needs a solid block to the left or right (or a ladder
+                    // directly above, to extend a run downward).
+                    let placing_ladder = shared
+                        .peek_slot(id, slot as usize)
+                        .is_some_and(crate::block::is_climbable);
                     let supported = {
                         let mut world = shared.world.lock();
-                        world.get(x, y) == crate::block::AIR
-                            && [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                        if world.get(x, y) != crate::block::AIR {
+                            false
+                        } else if placing_ladder {
+                            world.solid(x - 1, y)
+                                || world.solid(x + 1, y)
+                                || crate::block::is_climbable(world.get(x, y - 1))
+                        } else {
+                            [(1, 0), (-1, 0), (0, 1), (0, -1)]
                                 .iter()
                                 .any(|(dx, dy)| world.get(x + dx, y + dy) != crate::block::AIR)
+                        }
                     };
                     // Placement is also gated by the player's melee reach, so a
                     // block can only go where the player could swing — the same
