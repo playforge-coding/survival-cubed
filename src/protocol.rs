@@ -23,7 +23,7 @@ pub type BlockId = u16;
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -96,6 +96,11 @@ pub enum ClientMessage {
         recipe: u16,
         count: u32,
     },
+    /// Mark the campfire at world cell `(x, y)` as this player's respawn point, so
+    /// a later death returns them here instead of world spawn. The server validates
+    /// the cell is a campfire before recording it. Sent when the player opens a
+    /// campfire's GUI (i.e. interacts with it).
+    SetRespawn { x: i32, y: i32 },
     /// Report the owning player entity's position (pixels, world space).
     PlayerMove { x: f32, y: f32 },
     /// Melee-attack another entity (e.g. a slime). The server validates range

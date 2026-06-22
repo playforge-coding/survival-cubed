@@ -2462,6 +2462,8 @@ fn handle_block_actions(
         game.campfire_open = true;
         game.campfire_cell = Some((tx, ty));
         game.action_timer = ACTION_COOLDOWN;
+        // Interacting with a campfire makes it this player's respawn point.
+        let _ = net.commands.send(NetCommand::SetRespawn { x: tx, y: ty });
         return;
     }
 

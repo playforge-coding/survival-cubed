@@ -334,6 +334,12 @@ struct Shared {
     /// Authoritative: placements consume from it and pickups add to it. Folded
     /// into [`SavedPlayer`] on disconnect so it persists.
     inventories: Mutex<HashMap<EntityId, Inventory>>,
+    /// Campfire cell each connected player last interacted with, keyed by entity
+    /// id. Death returns the player to this campfire (instead of world
+    /// [`spawn`](Self::spawn)) — but only if the campfire is still there; a broken
+    /// one falls back to world spawn. Folded into [`SavedPlayer`] on disconnect so
+    /// it survives reconnects.
+    respawn_points: Mutex<HashMap<EntityId, (i32, i32)>>,
     /// Lit campfires, keyed by world cell, holding each one's remaining burn time
     /// in seconds. A cell is present only while its campfire is lit; the tick loop
     /// counts each down and extinguishes it (reverting the block) at zero.
@@ -399,6 +405,7 @@ impl Shared {
                             y: e.y,
                             health: e.health,
                             inventory: invs.get(&e.id).cloned().unwrap_or_default(),
+                            respawn: self.respawn_points.lock().get(&e.id).copied(),
                         },
                     );
                 }
@@ -670,7 +677,13 @@ impl Shared {
         let mut entities = self.entities.lock();
         if delta < 0 {
             // Raw meat: route through the damage path so a fatal bite respawns.
-            apply_damage(&mut entities, id, -delta, (0.0, 0.0), self.spawn)
+            apply_damage(
+                &mut entities,
+                id,
+                -delta,
+                (0.0, 0.0),
+                self.respawn_target(id),
+            )
         } else {
             let Some(e) = entities.get_mut(id) else {
                 return (Vec::new(), None);
@@ -721,6 +734,32 @@ impl Shared {
             });
         }
         self.send_inventory(id);
+    }
+
+    /// Record the campfire at cell `(x, y)` as player `id`'s respawn point. No-op
+    /// unless that cell really holds a campfire.
+    fn set_respawn(&self, id: EntityId, x: i32, y: i32) {
+        if !crate::block::is_campfire(self.world.lock().get(x, y)) {
+            return;
+        }
+        self.respawn_points.lock().insert(id, (x, y));
+    }
+
+    /// Where player `id` should respawn: their last campfire if they've set one and
+    /// it's still standing, otherwise world [`spawn`](Self::spawn) (so a broken
+    /// campfire sends them back to spawn).
+    fn respawn_target(&self, id: EntityId) -> (f32, f32) {
+        let Some((cx, cy)) = self.respawn_points.lock().get(&id).copied() else {
+            return self.spawn;
+        };
+        if !crate::block::is_campfire(self.world.lock().get(cx, cy)) {
+            return self.spawn;
+        }
+        // Centre the player's 11px-wide body in the campfire's tile; its top sits
+        // a tile up so its feet rest on the ground the campfire stands on.
+        let px = cx as f32 * TILE_SIZE + (TILE_SIZE - crate::entity::PLAYER_SIZE.0) / 2.0;
+        let py = cy as f32 * TILE_SIZE;
+        (px, py)
     }
 
     /// Cook `COOK_RECIPES[recipe_idx]` up to `count` times for player `id` on the
@@ -1132,6 +1171,7 @@ fn build_endpoint(
         dev_token,
         saved_players: Mutex::new(saved_players),
         inventories: Mutex::new(HashMap::new()),
+        respawn_points: Mutex::new(HashMap::new()),
         campfires: Mutex::new(campfires),
         placed_logs: Mutex::new(placed_logs),
         shutdown: AtomicBool::new(false),
@@ -1994,7 +2034,8 @@ fn step_entities(shared: &Shared) -> Step {
 
     let mut respawns = Vec::new();
     for (pid, kb, damage) in bites {
-        let (msgs, respawn) = apply_damage(&mut entities, pid, damage, kb, shared.spawn);
+        let (msgs, respawn) =
+            apply_damage(&mut entities, pid, damage, kb, shared.respawn_target(pid));
         broadcasts.extend(msgs);
         if let Some(r) = respawn {
             respawns.push(r);
@@ -2044,7 +2085,7 @@ fn apply_damage(
     id: EntityId,
     amount: i32,
     knockback: (f32, f32),
-    spawn: (f32, f32),
+    respawn: (f32, f32),
 ) -> (Vec<ServerMessage>, Option<(EntityId, f32, f32)>) {
     let Some(e) = entities.get_mut(id) else {
         return (Vec::new(), None);
@@ -2082,10 +2123,11 @@ fn apply_damage(
     }
 
     if e.kind.is_player() {
-        // Death = respawn at full health back at spawn.
+        // Death = respawn at full health at the player's respawn point (their last
+        // campfire, or world spawn if they haven't used one).
         e.health = e.max_health;
-        e.x = spawn.0;
-        e.y = spawn.1;
+        e.x = respawn.0;
+        e.y = respawn.1;
         let health = e.health;
         let max_health = e.max_health;
         msgs.push(ServerMessage::EntityHealth {
@@ -2093,7 +2135,7 @@ fn apply_damage(
             health,
             max_health,
         });
-        (msgs, Some((id, spawn.0, spawn.1)))
+        (msgs, Some((id, respawn.0, respawn.1)))
     } else {
         entities.remove(id);
         msgs.push(ServerMessage::EntityDespawn { id });
@@ -2450,6 +2492,10 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         }
                     }
                     if let Some(sp) = restored {
+                        // Restore their last campfire respawn point, if any.
+                        if let Some(rp) = sp.respawn {
+                            shared.respawn_points.lock().insert(id, rp);
+                        }
                         // Restore their saved inventory and push it to them.
                         shared.inventories.lock().insert(id, sp.inventory.clone());
                         shared.send_inventory(id);
@@ -2757,6 +2803,9 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     }
                     shared.send_inventory(id);
                 }
+                ClientMessage::SetRespawn { x, y } => {
+                    shared.set_respawn(id, x, y);
+                }
                 ClientMessage::FuelCampfire { x, y, fuel } => {
                     shared.fuel_campfire(id, x, y, fuel);
                 }
@@ -2823,7 +2872,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                 target,
                                 crate::block::attack_damage(held),
                                 kb,
-                                shared.spawn,
+                                shared.respawn_target(target),
                             )
                         };
                         for m in msgs {
@@ -2854,7 +2903,13 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     if amount > 0 {
                         let (msgs, respawn) = {
                             let mut entities = shared.entities.lock();
-                            apply_damage(&mut entities, id, amount, (0.0, 0.0), shared.spawn)
+                            apply_damage(
+                                &mut entities,
+                                id,
+                                amount,
+                                (0.0, 0.0),
+                                shared.respawn_target(id),
+                            )
                         };
                         for m in msgs {
                             shared.broadcast_all(m);
@@ -2926,6 +2981,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
     shared.clients.lock().remove(&id);
     let removed = shared.entities.lock().remove(id);
     let inventory = shared.inventories.lock().remove(&id).unwrap_or_default();
+    let respawn = shared.respawn_points.lock().remove(&id);
     if let Some(Entity {
         kind: EntityKind::Player { name },
         x,
@@ -2943,6 +2999,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 y,
                 health,
                 inventory,
+                respawn,
             },
         );
     }

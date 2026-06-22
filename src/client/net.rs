@@ -149,6 +149,11 @@ pub enum NetCommand {
         recipe: u16,
         count: u32,
     },
+    /// Set the player's respawn point to the campfire at cell `(x, y)`.
+    SetRespawn {
+        x: i32,
+        y: i32,
+    },
     PlayerMove {
         x: f32,
         y: f32,
@@ -361,6 +366,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
             recipe,
             count,
         },
+        NetCommand::SetRespawn { x, y } => ClientMessage::SetRespawn { x, y },
         NetCommand::FallDamage { amount } => ClientMessage::FallDamage { amount },
         NetCommand::SetTime { t } => ClientMessage::SetTime { t },
         NetCommand::SpawnEntity { kind, x, y } => ClientMessage::SpawnEntity { kind, x, y },

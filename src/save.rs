@@ -50,6 +50,11 @@ pub struct SavedPlayer {
     /// The player's slot inventory, so collected blocks (and how they're
     /// arranged) survive disconnects and restarts.
     pub inventory: Inventory,
+    /// Cell of the last campfire the player interacted with, or `None` to fall back
+    /// to world spawn. Persisted so a death after a reconnect still returns the
+    /// player to their fire (provided it's still standing).
+    #[serde(default)]
+    pub respawn: Option<(i32, i32)>,
 }
 
 /// Top-level world metadata stored in `world.dat`.
@@ -281,6 +286,7 @@ mod tests {
                     inv.add(DIRT, 7);
                     inv
                 },
+                respawn: Some((3, -5)),
             }],
             campfires: vec![(3, -5, 12.5), (-8, 2, 30.0)],
             placed_logs: vec![(1, 2), (-3, 4)],
@@ -300,6 +306,7 @@ mod tests {
         assert_eq!(got.players[0].health, 13);
         assert_eq!(got.players[0].inventory.get(0), Some((STONE, 42, 0)));
         assert_eq!(got.players[0].inventory.get(1), Some((DIRT, 7, 0)));
+        assert_eq!(got.players[0].respawn, Some((3, -5)));
         assert_eq!(got.campfires, meta.campfires);
         assert_eq!(got.placed_logs, meta.placed_logs);
     }
