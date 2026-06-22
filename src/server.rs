@@ -114,6 +114,9 @@ const ITEM_PICKUP_REACH: f32 = 2.0;
 const ITEM_GROUND_DRAG: f32 = 0.8;
 /// How often the world is flushed to disk while running, in seconds.
 const AUTOSAVE_SECS: f32 = 30.0;
+/// Longest chat line the server will relay, in characters; longer lines are
+/// truncated so a peer can't flood others with a huge message.
+const MAX_CHAT_LEN: usize = 256;
 
 /// Handle to a server running on its own thread + tokio runtime.
 pub struct RunningServer {
@@ -1923,6 +1926,27 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         if let Some((rid, rx, ry)) = respawn {
                             shared.send_to(rid, ServerMessage::Respawn { x: rx, y: ry });
                         }
+                    }
+                }
+                ClientMessage::Chat { text } => {
+                    // Attribute the line to the sender's player name (falling back
+                    // to a generic label before they've identified via Hello), cap
+                    // its length, and fan it out to everyone — sender included.
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        let text: String = trimmed.chars().take(MAX_CHAT_LEN).collect();
+                        let from = shared
+                            .entities
+                            .lock()
+                            .get(id)
+                            .and_then(|e| match &e.kind {
+                                EntityKind::Player { name } if !name.is_empty() => {
+                                    Some(name.clone())
+                                }
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| format!("Player {id}"));
+                        shared.broadcast_all(ServerMessage::Chat { from, text });
                     }
                 }
                 // --- Dev-mode commands: honored only for the authorized creator.

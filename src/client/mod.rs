@@ -168,6 +168,20 @@ struct GameState {
     fly: bool,
     /// Dev mode: the block placed for free by infinite-block placement (RMB).
     debug_block: BlockId,
+    /// Received chat lines, oldest first, capped at [`MAX_CHAT_LOG`].
+    chat_log: Vec<ChatLine>,
+    /// Whether the chat input box is open (capturing keyboard input).
+    chat_open: bool,
+    /// Current chat input text, preserved across frames while typing.
+    chat_input: String,
+    /// Set when chat opens so the input box grabs keyboard focus next frame.
+    chat_focus: bool,
+}
+
+/// One received chat line: who said it and what they said.
+struct ChatLine {
+    from: String,
+    text: String,
 }
 
 impl GameState {
@@ -202,9 +216,23 @@ impl GameState {
             debug: false,
             fly: false,
             debug_block: STONE,
+            chat_log: Vec::new(),
+            chat_open: false,
+            chat_input: String::new(),
+            chat_focus: false,
         }
     }
 }
+
+/// Most chat lines kept in the scrollback before old ones are dropped.
+const MAX_CHAT_LOG: usize = 100;
+/// How many of the most recent chat lines are drawn in the overlay.
+const CHAT_VISIBLE_LINES: usize = 8;
+/// Longest chat line the input box accepts, matching the server's relay cap.
+const MAX_CHAT_INPUT_LEN: usize = 256;
+/// Entity sprite sheets exposed as `:name:` chat icons, alongside block/item
+/// names. (Dropped-item and zombie-death sheets are intentionally excluded.)
+const CHAT_ENTITY_ICONS: &[&str] = &["player", "slime", "chicken", "goat", "zombie"];
 
 struct App {
     window: Option<Arc<Window>>,
@@ -221,6 +249,9 @@ struct App {
 
     screen: Screen,
     status: String,
+    /// Display name announced to servers; attributes this client's chat and keys
+    /// its saved state on the server.
+    name_input: String,
     address_input: String,
     port_input: String,
     /// Name typed in the "New world" form.
@@ -267,6 +298,7 @@ impl App {
             block_tex: None,
             screen: Screen::Menu,
             status: String::new(),
+            name_input: "player".to_string(),
             address_input: "127.0.0.1:5000".to_string(),
             port_input: "5000".to_string(),
             world_name_input: "world".to_string(),
@@ -359,6 +391,7 @@ impl App {
                 let handle = connect(
                     srv.addr,
                     name.clone(),
+                    self.player_name(),
                     Some(srv.fingerprint),
                     Some(srv.dev_token),
                 );
@@ -381,6 +414,7 @@ impl App {
                 let handle = connect(
                     addr,
                     name.clone(),
+                    self.player_name(),
                     Some(srv.fingerprint),
                     Some(srv.dev_token),
                 );
@@ -393,6 +427,17 @@ impl App {
         }
     }
 
+    /// The trimmed display name to announce, falling back to "player" when the
+    /// field is left blank.
+    fn player_name(&self) -> String {
+        let n = self.name_input.trim();
+        if n.is_empty() {
+            "player".to_string()
+        } else {
+            n.to_string()
+        }
+    }
+
     fn start_connect(&mut self) {
         let label = self.address_input.trim().to_string();
         let addr = match label.parse::<std::net::SocketAddr>() {
@@ -402,7 +447,7 @@ impl App {
                 return;
             }
         };
-        let handle = connect(addr, label.clone(), None, None);
+        let handle = connect(addr, label.clone(), self.player_name(), None, None);
         self.net = Some(handle);
         self.screen = Screen::Connecting;
         self.status = format!("Connecting to {label}...");
@@ -414,6 +459,7 @@ impl App {
         let handle = connect(
             server.addr,
             server.addr.to_string(),
+            self.player_name(),
             server.fingerprint,
             None,
         );
@@ -575,6 +621,16 @@ impl App {
                     g.inventory = Inventory::from_slots(slots);
                 }
             }
+            NetEvent::Chat { from, text } => {
+                if let Some(g) = &mut self.game {
+                    g.chat_log.push(ChatLine { from, text });
+                    // Trim the oldest lines once the scrollback is full.
+                    if g.chat_log.len() > MAX_CHAT_LOG {
+                        let cut = g.chat_log.len() - MAX_CHAT_LOG;
+                        g.chat_log.drain(..cut);
+                    }
+                }
+            }
             NetEvent::Disconnected { reason } => {
                 self.status = format!("Disconnected: {reason}");
                 self.net = None;
@@ -671,6 +727,7 @@ impl App {
             }
             Screen::InGame => {
                 self.hud_ui(ui);
+                self.chat_ui(ui);
                 if self.game.as_ref().is_some_and(|g| g.inventory_open) {
                     self.inventory_window(ui);
                 }
@@ -696,6 +753,18 @@ impl App {
                 ui.add_space(8.0);
                 ui.label("A multiplayer-first 2D block game.");
                 ui.add_space(24.0);
+
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Name:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.name_input)
+                                .desired_width(160.0)
+                                .hint_text("player"),
+                        );
+                    });
+                });
+                ui.add_space(8.0);
 
                 ui.group(|ui| {
                     ui.label("New world");
@@ -925,6 +994,96 @@ impl App {
             }
             if open_inventory {
                 g.inventory_open = true;
+            }
+        }
+    }
+
+    /// Chat overlay: a scrollback of recent lines pinned to the bottom-left, plus
+    /// an input box that appears (and grabs focus) while chatting. Sender names
+    /// and `:icon:` tokens in each line are drawn with their real sprites.
+    fn chat_ui(&mut self, ui: &mut egui::Ui) {
+        // Only draw the panel when there's something to show or the box is open,
+        // so an idle game has a clean screen.
+        let (chat_open, has_log) = {
+            let g = self.game.as_ref().unwrap();
+            (g.chat_open, !g.chat_log.is_empty())
+        };
+        if !chat_open && !has_log {
+            return;
+        }
+
+        // Snapshot what the closure needs so it never borrows `self.game`.
+        let recent: Vec<(String, String)> = {
+            let g = self.game.as_ref().unwrap();
+            let start = g.chat_log.len().saturating_sub(CHAT_VISIBLE_LINES);
+            g.chat_log[start..]
+                .iter()
+                .map(|l| (l.from.clone(), l.text.clone()))
+                .collect()
+        };
+        let mut input = self.game.as_ref().unwrap().chat_input.clone();
+        let want_focus = self.game.as_ref().unwrap().chat_focus;
+
+        let registry = self.registry.clone();
+        let atlas = &self.atlas;
+        let tex = self.block_tex.as_ref().unwrap().id();
+
+        let mut submit: Option<String> = None;
+        let mut close = false;
+        let mut focused = false;
+
+        egui::Area::new(egui::Id::new("chat"))
+            .anchor(egui::Align2::LEFT_BOTTOM, [8.0, -64.0])
+            .show(ui.ctx(), |ui| {
+                ui.set_max_width(440.0);
+                egui::Frame::NONE
+                    .fill(egui::Color32::from_black_alpha(150))
+                    .inner_margin(egui::Margin::same(6))
+                    .corner_radius(egui::CornerRadius::same(4))
+                    .show(ui, |ui| {
+                        for (from, text) in &recent {
+                            render_chat_line(ui, &registry, atlas, tex, from, text);
+                        }
+                        if chat_open {
+                            ui.add_space(2.0);
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(&mut input)
+                                    .desired_width(428.0)
+                                    .hint_text("Say something… ( :stone: :zombie: for icons )")
+                                    .char_limit(MAX_CHAT_INPUT_LEN),
+                            );
+                            if want_focus {
+                                resp.request_focus();
+                            }
+                            focused = resp.has_focus();
+                            // Enter while focused sends; losing focus any other way
+                            // (Escape, clicking out) just closes the box.
+                            if resp.lost_focus() {
+                                let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                if enter && !input.trim().is_empty() {
+                                    submit = Some(input.clone());
+                                }
+                                close = true;
+                            }
+                        }
+                    });
+            });
+
+        if let Some(text) = &submit
+            && let Some(net) = &self.net
+        {
+            let _ = net.commands.send(NetCommand::Chat { text: text.clone() });
+        }
+        if let Some(g) = self.game.as_mut() {
+            g.chat_input = input;
+            // Clear focus request once the box has actually taken focus.
+            if focused {
+                g.chat_focus = false;
+            }
+            if submit.is_some() || close {
+                g.chat_open = false;
+                g.chat_focus = false;
+                g.chat_input.clear();
             }
         }
     }
@@ -1558,6 +1717,134 @@ fn item_display_name(name: &str) -> String {
         .join(" ")
 }
 
+/// A `:token:` chat icon resolved to the art it should draw.
+enum ChatIcon {
+    /// A block or item, drawn from its atlas tile.
+    Block(BlockId),
+    /// An entity, drawn from frame 0 of its animation sheet.
+    Sprite(&'static str),
+}
+
+/// Resolve a `:token:` to a block/item tile or an entity sprite, or `None` if the
+/// token names nothing drawable (so it should render as literal text).
+fn resolve_chat_icon(registry: &BlockRegistry, token: &str) -> Option<ChatIcon> {
+    if let Some(def) = registry.iter().find(|d| d.visible && d.name == token) {
+        return Some(ChatIcon::Block(def.id));
+    }
+    CHAT_ENTITY_ICONS
+        .iter()
+        .find(|name| **name == token)
+        .map(|name| ChatIcon::Sprite(name))
+}
+
+/// Draw one chat line: the sender's name (tinted by a stable per-name color),
+/// then the message body with any `:icon:` tokens replaced by their sprites.
+fn render_chat_line(
+    ui: &mut egui::Ui,
+    registry: &BlockRegistry,
+    atlas: &Atlas,
+    tex: egui::TextureId,
+    from: &str,
+    text: &str,
+) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(3.0, 1.0);
+        ui.label(
+            egui::RichText::new(format!("{from}:"))
+                .strong()
+                .color(chat_name_color(from)),
+        );
+        render_chat_body(ui, registry, atlas, tex, text);
+    });
+}
+
+/// Render a message body, swapping each `:token:` that names a block, item, or
+/// entity for its sprite and leaving everything else as text. An unmatched or
+/// malformed `:...:` is left verbatim.
+fn render_chat_body(
+    ui: &mut egui::Ui,
+    registry: &BlockRegistry,
+    atlas: &Atlas,
+    tex: egui::TextureId,
+    text: &str,
+) {
+    let mut rest = text;
+    while !rest.is_empty() {
+        let Some(open) = rest.find(':') else {
+            ui.label(rest);
+            break;
+        };
+        // Emit any text preceding the colon.
+        if open > 0 {
+            ui.label(&rest[..open]);
+        }
+        let after = &rest[open + 1..];
+        match after.find(':') {
+            Some(close_rel) => {
+                let token = &after[..close_rel];
+                let is_token = !token.is_empty()
+                    && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                if is_token && let Some(icon) = resolve_chat_icon(registry, token) {
+                    add_chat_icon(ui, atlas, tex, icon, token);
+                    rest = &after[close_rel + 1..];
+                    continue;
+                }
+                // Not a drawable token: emit the literal ':' and resume right after
+                // it, so a later ':' can still open a real token.
+                ui.label(":");
+                rest = after;
+            }
+            // No closing colon: the remainder (including this ':') is plain text.
+            None => {
+                ui.label(&rest[open..]);
+                break;
+            }
+        }
+    }
+}
+
+/// Draw a single inline chat icon (16px) from the atlas, named on hover.
+fn add_chat_icon(
+    ui: &mut egui::Ui,
+    atlas: &Atlas,
+    tex: egui::TextureId,
+    icon: ChatIcon,
+    token: &str,
+) {
+    let uv = match icon {
+        ChatIcon::Block(id) => atlas.block(id),
+        ChatIcon::Sprite(name) => atlas.sprite_frame(name, 0),
+    };
+    let img = egui::Image::new(egui::load::SizedTexture::new(tex, egui::vec2(16.0, 16.0))).uv(
+        egui::Rect::from_min_max(
+            egui::pos2(uv.min[0], uv.min[1]),
+            egui::pos2(uv.max[0], uv.max[1]),
+        ),
+    );
+    ui.add(img).on_hover_text(item_display_name(token));
+}
+
+/// A stable, readable color for a chat sender's name, chosen from a small palette
+/// by hashing the name so a given player keeps the same color.
+fn chat_name_color(name: &str) -> egui::Color32 {
+    const PALETTE: [egui::Color32; 8] = [
+        egui::Color32::from_rgb(0xf2, 0x8b, 0x82),
+        egui::Color32::from_rgb(0xf7, 0xc6, 0x6b),
+        egui::Color32::from_rgb(0xb6, 0xe3, 0x7a),
+        egui::Color32::from_rgb(0x7a, 0xd1, 0xc4),
+        egui::Color32::from_rgb(0x8a, 0xb4, 0xf8),
+        egui::Color32::from_rgb(0xc5, 0x9b, 0xf0),
+        egui::Color32::from_rgb(0xf2, 0x9d, 0xd0),
+        egui::Color32::from_rgb(0xd7, 0xcc, 0xb0),
+    ];
+    let mut h: u32 = 0x811c_9dc5;
+    for b in name.bytes() {
+        h ^= b as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    PALETTE[(h as usize) % PALETTE.len()]
+}
+
 /// Map a keyboard key to its uppercase letter for the dev-unlock detector, or
 /// `None` for keys that aren't letters used by the sequence.
 fn dev_key_letter(code: KeyCode) -> Option<char> {
@@ -2151,6 +2438,8 @@ impl App {
             KeyCode::Digit8 if pressed => self.select_slot(7),
             KeyCode::Digit9 if pressed => self.select_slot(8),
             KeyCode::KeyE if pressed => self.toggle_inventory(),
+            // Enter or T opens the chat box (typing is then captured by egui).
+            KeyCode::Enter | KeyCode::KeyT if pressed => self.open_chat(),
             // Escape closes an open menu (inventory or forge) if any, otherwise
             // leaves the world.
             KeyCode::Escape if pressed => {
@@ -2199,6 +2488,16 @@ impl App {
         }
     }
 
+    /// Open the chat input box and ask it to grab keyboard focus next frame.
+    fn open_chat(&mut self) {
+        if let Some(g) = &mut self.game
+            && !g.chat_open
+        {
+            g.chat_open = true;
+            g.chat_focus = true;
+        }
+    }
+
     /// Open or close the inventory management screen.
     fn toggle_inventory(&mut self) {
         if let Some(g) = &mut self.game {
@@ -2207,5 +2506,32 @@ impl App {
                 g.move_from = None;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chat_icons_resolve_blocks_items_and_entities() {
+        let reg = BlockRegistry::new();
+        // Placeable block, plain item, and crafted tool all map to atlas tiles.
+        assert!(matches!(
+            resolve_chat_icon(&reg, "stone"),
+            Some(ChatIcon::Block(_))
+        ));
+        assert!(matches!(
+            resolve_chat_icon(&reg, "iron_pickaxe"),
+            Some(ChatIcon::Block(_))
+        ));
+        // Entity sheets map to a sprite.
+        assert!(matches!(
+            resolve_chat_icon(&reg, "zombie"),
+            Some(ChatIcon::Sprite("zombie"))
+        ));
+        // Air is invisible and unknown tokens don't resolve (rendered as text).
+        assert!(resolve_chat_icon(&reg, "air").is_none());
+        assert!(resolve_chat_icon(&reg, "dragon").is_none());
     }
 }

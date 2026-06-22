@@ -82,6 +82,11 @@ pub enum NetEvent {
     Inventory {
         slots: Vec<Slot>,
     },
+    /// A chat line to display, attributed to player `from`.
+    Chat {
+        from: String,
+        text: String,
+    },
     /// Connection closed (or never established). `reason` is human-readable.
     Disconnected {
         reason: String,
@@ -144,6 +149,10 @@ pub enum NetCommand {
         y: i32,
         block: BlockId,
     },
+    /// Send a line of chat to the server for rebroadcast.
+    Chat {
+        text: String,
+    },
     Disconnect,
 }
 
@@ -154,13 +163,15 @@ pub struct NetHandle {
 }
 
 /// Connect to `addr`. `host_label` keys the `known_hosts` store and is shown in
-/// prompts. `trust`, if set, is a fingerprint to silently accept (used by the
-/// embedded singleplayer server). `dev_token`, if set, is the per-server dev
-/// secret presented in `Hello` to authorize dev mode (only the creator's own
-/// client holds it).
+/// prompts. `player_name` is the display name announced in `Hello` (used to
+/// restore saved state and to attribute chat). `trust`, if set, is a fingerprint
+/// to silently accept (used by the embedded singleplayer server). `dev_token`,
+/// if set, is the per-server dev secret presented in `Hello` to authorize dev
+/// mode (only the creator's own client holds it).
 pub fn connect(
     addr: SocketAddr,
     host_label: String,
+    player_name: String,
     trust: Option<[u8; 32]>,
     dev_token: Option<u64>,
 ) -> NetHandle {
@@ -184,8 +195,16 @@ pub fn connect(
                 }
             };
             rt.block_on(async move {
-                if let Err(e) =
-                    client_main(addr, host_label, trust, dev_token, &ev_for_thread, cmd_rx).await
+                if let Err(e) = client_main(
+                    addr,
+                    host_label,
+                    player_name,
+                    trust,
+                    dev_token,
+                    &ev_for_thread,
+                    cmd_rx,
+                )
+                .await
                 {
                     let _ = ev_for_thread.send(NetEvent::Disconnected {
                         reason: format!("{e:#}"),
@@ -204,6 +223,7 @@ pub fn connect(
 async fn client_main(
     addr: SocketAddr,
     host_label: String,
+    player_name: String,
     trust: Option<[u8; 32]>,
     dev_token: Option<u64>,
     ev_tx: &Sender<NetEvent>,
@@ -229,7 +249,7 @@ async fn client_main(
     write_msg(
         &mut send,
         &ClientMessage::Hello {
-            name: "player".to_string(),
+            name: player_name,
             dev_token,
         },
     )
@@ -278,6 +298,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::SetTime { t } => ClientMessage::SetTime { t },
         NetCommand::SpawnEntity { kind, x, y } => ClientMessage::SpawnEntity { kind, x, y },
         NetCommand::DebugSetBlock { x, y, block } => ClientMessage::DebugSetBlock { x, y, block },
+        NetCommand::Chat { text } => ClientMessage::Chat { text },
         NetCommand::Disconnect => unreachable!("handled before conversion"),
     }
 }
@@ -314,6 +335,7 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
         ServerMessage::TimeOfDay { t } => NetEvent::TimeOfDay { t },
         ServerMessage::Respawn { x, y } => NetEvent::Respawn { x, y },
         ServerMessage::Inventory { slots } => NetEvent::Inventory { slots },
+        ServerMessage::Chat { from, text } => NetEvent::Chat { from, text },
     };
     if ev_tx.send(ev).is_err() {
         std::ops::ControlFlow::Break(())

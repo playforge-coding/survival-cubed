@@ -68,6 +68,9 @@ pub enum ClientMessage {
     /// Debug: set the block at a world cell directly, with no inventory cost or
     /// adjacency requirement (used by dev mode's infinite-block placement).
     DebugSetBlock { x: i32, y: i32, block: BlockId },
+    /// Send a line of chat. The server attributes it to this connection's
+    /// player name and rebroadcasts it to everyone (see [`ServerMessage::Chat`]).
+    Chat { text: String },
 }
 
 /// Sent from server to client over the single bidirectional stream.
@@ -130,4 +133,7 @@ pub enum ServerMessage {
     /// first, then storage). Sent on join and after any change (pickup,
     /// placement, slot move). Only ever sent to the inventory's owner.
     Inventory { slots: Vec<Slot> },
+    /// A chat line to display, attributed to player `from`. Broadcast to every
+    /// client (including the original sender, so they see their own message).
+    Chat { from: String, text: String },
 }
