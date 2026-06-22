@@ -246,6 +246,10 @@ struct App {
 
     registry: Arc<BlockRegistry>,
     atlas: Atlas,
+    /// The block/item texture atlas uploaded to egui, so inventory and hotbar
+    /// slots can draw the real sprites. Built lazily on the first UI frame (it
+    /// needs the egui context), then reused.
+    block_tex: Option<egui::TextureHandle>,
 
     screen: Screen,
     status: String,
@@ -292,6 +296,7 @@ impl App {
             egui_state: None,
             registry,
             atlas,
+            block_tex: None,
             screen: Screen::Menu,
             status: String::new(),
             address_input: "127.0.0.1:5000".to_string(),
@@ -661,6 +666,20 @@ impl App {
     // --- egui UI ---
 
     fn build_ui(&mut self, ui: &mut egui::Ui) {
+        // Upload the block/item atlas to egui on the first frame so slots can
+        // draw real sprites (the wgpu atlas can't be sampled from egui directly).
+        if self.block_tex.is_none() {
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [self.atlas.width as usize, self.atlas.height as usize],
+                &self.atlas.pixels,
+            );
+            self.block_tex = Some(ui.ctx().load_texture(
+                "block_atlas",
+                image,
+                egui::TextureOptions::NEAREST,
+            ));
+        }
+
         // TOFU prompt takes priority and is shown as a modal-ish window.
         if self.pending_tofu.is_some() {
             self.tofu_window(ui);
@@ -873,6 +892,8 @@ impl App {
         };
         let night = daylight::is_night(time_of_day);
         let registry = self.registry.clone();
+        let atlas = &self.atlas;
+        let tex = self.block_tex.as_ref().unwrap().id();
         let mut leave = false;
         let mut open_inventory = false;
         let mut select: Option<usize> = None;
@@ -908,8 +929,16 @@ impl App {
             ui.vertical_centered(|ui| {
                 ui.horizontal(|ui| {
                     for (i, slot) in hotbar.iter().enumerate() {
-                        let resp =
-                            slot_widget(ui, &registry, *slot, Some(i), false, i == selected_slot);
+                        let resp = slot_widget(
+                            ui,
+                            &registry,
+                            atlas,
+                            tex,
+                            *slot,
+                            Some(i),
+                            false,
+                            i == selected_slot,
+                        );
                         if resp.clicked() {
                             select = Some(i);
                         }
@@ -940,6 +969,8 @@ impl App {
             (g.inventory.to_slots(), g.move_from, g.selected_slot)
         };
         let registry = self.registry.clone();
+        let atlas = &self.atlas;
+        let tex = self.block_tex.as_ref().unwrap().id();
         let inventory = self.game.as_ref().unwrap().inventory.clone();
         let mut clicked: Option<usize> = None;
         let mut craft: Option<u16> = None;
@@ -958,6 +989,8 @@ impl App {
                             let resp = slot_widget(
                                 ui,
                                 &registry,
+                                atlas,
+                                tex,
                                 slots.get(idx).copied().flatten(),
                                 None,
                                 move_from == Some(idx),
@@ -976,6 +1009,8 @@ impl App {
                         let resp = slot_widget(
                             ui,
                             &registry,
+                            atlas,
+                            tex,
                             slots.get(idx).copied().flatten(),
                             Some(idx),
                             move_from == Some(idx),
@@ -1433,29 +1468,6 @@ fn push_health_bar(
     ));
 }
 
-/// A representative flat color for a block, used to draw it as an inventory
-/// icon (the wgpu atlas isn't an egui texture, so slots use solid swatches).
-fn block_color(registry: &BlockRegistry, block: BlockId) -> egui::Color32 {
-    match registry.get(block).name {
-        "stone" => egui::Color32::from_rgb(120, 120, 128),
-        "dirt" => egui::Color32::from_rgb(121, 85, 58),
-        "grass" => egui::Color32::from_rgb(83, 150, 60),
-        "log" => egui::Color32::from_rgb(102, 70, 44),
-        "leaves" => egui::Color32::from_rgb(54, 118, 48),
-        "wood" => egui::Color32::from_rgb(176, 138, 88),
-        "bark" => egui::Color32::from_rgb(84, 56, 34),
-        "stick" => egui::Color32::from_rgb(138, 96, 54),
-        "pickaxe" => egui::Color32::from_rgb(200, 200, 210),
-        "stone_pickaxe" => egui::Color32::from_rgb(120, 120, 128),
-        "iron_ore" => egui::Color32::from_rgb(196, 152, 104),
-        "raw_iron" => egui::Color32::from_rgb(170, 130, 96),
-        "iron_ingot" => egui::Color32::from_rgb(196, 198, 205),
-        "forge" => egui::Color32::from_rgb(84, 82, 88),
-        "iron_pickaxe" => egui::Color32::from_rgb(214, 210, 205),
-        _ => egui::Color32::from_gray(150),
-    }
-}
-
 /// A compact "in → out" line for a recipe, e.g. `1 log → 1 wood, 4 bark`.
 fn recipe_summary(registry: &BlockRegistry, recipe: &crate::recipe::Recipe) -> String {
     let names = |items: &[(BlockId, u32)]| {
@@ -1473,12 +1485,15 @@ fn recipe_tooltip(registry: &BlockRegistry, recipe: &crate::recipe::Recipe) -> S
     format!("{}\n{}", recipe.name, recipe_summary(registry, recipe))
 }
 
-/// Draw one inventory/hotbar slot: a framed cell with the block swatch, its
+/// Draw one inventory/hotbar slot: a framed cell with the item's sprite, its
 /// stack count, and an optional key number. `highlight` marks a pending move
-/// source; `selected` marks the active hotbar slot. Returns the click response.
+/// source; `selected` marks the active hotbar slot. Hovering a filled slot
+/// shows the item's name. Returns the click response.
 fn slot_widget(
     ui: &mut egui::Ui,
     registry: &BlockRegistry,
+    atlas: &Atlas,
+    tex: egui::TextureId,
     slot: Slot,
     key: Option<usize>,
     highlight: bool,
@@ -1497,17 +1512,34 @@ fn slot_widget(
     painter.rect_filled(rect, radius, bg);
 
     if let Some((block, count)) = slot {
-        painter.rect_filled(
-            rect.shrink(7.0),
-            egui::CornerRadius::same(2),
-            block_color(registry, block),
+        // Draw the block/item's actual sprite from its cell in the atlas.
+        let uv = atlas.block(block);
+        painter.image(
+            tex,
+            rect.shrink(6.0),
+            egui::Rect::from_min_max(
+                egui::pos2(uv.min[0], uv.min[1]),
+                egui::pos2(uv.max[0], uv.max[1]),
+            ),
+            egui::Color32::WHITE,
         );
         if count > 1 {
+            let anchor = egui::Align2::RIGHT_BOTTOM;
+            let font = egui::FontId::proportional(12.0);
+            let label = count.to_string();
+            // A dark drop-shadow keeps the count legible over busy sprites.
+            painter.text(
+                rect.right_bottom() - egui::vec2(2.0, 1.0),
+                anchor,
+                &label,
+                font.clone(),
+                egui::Color32::from_black_alpha(200),
+            );
             painter.text(
                 rect.right_bottom() - egui::vec2(3.0, 2.0),
-                egui::Align2::RIGHT_BOTTOM,
-                count.to_string(),
-                egui::FontId::proportional(12.0),
+                anchor,
+                &label,
+                font,
                 egui::Color32::WHITE,
             );
         }
@@ -1535,7 +1567,27 @@ fn slot_widget(
         egui::Stroke::new(width, color),
         egui::StrokeKind::Inside,
     );
-    resp
+
+    // Name the item on hover (empty slots have nothing to show).
+    match slot {
+        Some((block, _)) => resp.on_hover_text(item_display_name(registry.get(block).name)),
+        None => resp,
+    }
+}
+
+/// Turn a block/item id name like `iron_pickaxe` into a display label like
+/// `Iron Pickaxe` for tooltips.
+fn item_display_name(name: &str) -> String {
+    name.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Map a keyboard key to its uppercase letter for the dev-unlock detector, or
