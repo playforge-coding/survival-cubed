@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::block::max_stack;
+use crate::block::{max_durability, max_stack};
 use crate::protocol::BlockId;
 
 /// Number of hotbar slots (selectable with keys 1–9, used for placing).
@@ -25,9 +25,11 @@ pub const TOTAL_SLOTS: usize = HOTBAR_SLOTS + STORAGE_SLOTS;
 /// Maximum number of identical blocks that fit in one slot.
 pub const STACK_MAX: u32 = 64;
 
-/// One inventory slot: a `(block, count)` stack with `1 <= count <= STACK_MAX`,
-/// or `None` when empty.
-pub type Slot = Option<(BlockId, u32)>;
+/// One inventory slot: a `(block, count, durability)` stack with
+/// `1 <= count <= STACK_MAX`, or `None` when empty. `durability` is a tool's
+/// remaining uses (see [`max_durability`](crate::block::max_durability)); it is
+/// `0` and ignored for items that have no durability.
+pub type Slot = Option<(BlockId, u32, u16)>;
 
 /// A player's full inventory: a fixed-length list of [`Slot`]s.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,7 +82,7 @@ impl Inventory {
             if count == 0 {
                 break;
             }
-            if let Some((b, n)) = slot
+            if let Some((b, n, _)) = slot
                 && *b == block
                 && *n < cap
             {
@@ -96,7 +98,9 @@ impl Inventory {
             }
             if slot.is_none() {
                 let moved = count.min(cap);
-                *slot = Some((block, moved));
+                // A freshly-added tool comes at full durability (0 for items
+                // that have none).
+                *slot = Some((block, moved, max_durability(block)));
                 count -= moved;
             }
         }
@@ -108,8 +112,8 @@ impl Inventory {
         self.slots
             .iter()
             .filter_map(|s| *s)
-            .filter(|(b, _)| *b == item)
-            .map(|(_, n)| n)
+            .filter(|(b, _, _)| *b == item)
+            .map(|(_, n, _)| n)
             .sum()
     }
 
@@ -123,7 +127,7 @@ impl Inventory {
             if count == 0 {
                 break;
             }
-            if let Some((b, n)) = slot
+            if let Some((b, n, _)) = slot
                 && *b == item
             {
                 let taken = (*n).min(count);
@@ -141,7 +145,7 @@ impl Inventory {
     /// was empty / out of range). Empties the slot when its last item is taken.
     pub fn take_one(&mut self, slot: usize) -> Option<BlockId> {
         let s = self.slots.get_mut(slot)?;
-        let (block, n) = s.as_mut()?;
+        let (block, n, _) = s.as_mut()?;
         let block = *block;
         *n -= 1;
         if *n == 0 {
@@ -158,23 +162,69 @@ impl Inventory {
         if from == to || from >= self.slots.len() || to >= self.slots.len() {
             return;
         }
-        let Some((fb, fcount)) = self.slots[from] else {
+        let Some((fb, fcount, fdur)) = self.slots[from] else {
             return;
         };
         match self.slots[to] {
             None => {
-                self.slots[to] = Some((fb, fcount));
+                self.slots[to] = Some((fb, fcount, fdur));
                 self.slots[from] = None;
             }
-            Some((tb, tcount)) if tb == fb => {
+            Some((tb, tcount, tdur)) if tb == fb => {
                 let room = max_stack(tb).saturating_sub(tcount);
                 let moved = room.min(fcount);
-                self.slots[to] = Some((tb, tcount + moved));
+                self.slots[to] = Some((tb, tcount + moved, tdur));
                 let left = fcount - moved;
-                self.slots[from] = if left == 0 { None } else { Some((fb, left)) };
+                self.slots[from] = if left == 0 {
+                    None
+                } else {
+                    Some((fb, left, fdur))
+                };
             }
             Some(_) => self.slots.swap(from, to),
         }
+    }
+
+    /// Spend `amount` durability on the first tool matching `item` (in slot
+    /// order). Returns `true` if that tool broke — its durability hit zero and
+    /// the slot was emptied. Items with no durability are left untouched.
+    pub fn damage_tool(&mut self, item: BlockId, amount: u16) -> bool {
+        if max_durability(item) == 0 {
+            return false;
+        }
+        for slot in self.slots.iter_mut() {
+            if let Some((b, _, dur)) = slot
+                && *b == item
+            {
+                *dur = dur.saturating_sub(amount);
+                if *dur == 0 {
+                    *slot = None;
+                    return true;
+                }
+                return false;
+            }
+        }
+        false
+    }
+
+    /// Restore up to `amount` durability on the first damaged tool matching
+    /// `item` (capped at its maximum). Returns `true` if a damaged tool was
+    /// found and mended, so the caller knows to charge the repair material.
+    pub fn repair_tool(&mut self, item: BlockId, amount: u16) -> bool {
+        let max = max_durability(item);
+        if max == 0 {
+            return false;
+        }
+        for slot in self.slots.iter_mut() {
+            if let Some((b, _, dur)) = slot
+                && *b == item
+                && *dur < max
+            {
+                *dur = (*dur + amount).min(max);
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -186,15 +236,37 @@ mod tests {
     const DIRT: BlockId = 2;
     const PICKAXE: BlockId = crate::block::PICKAXE;
 
+    /// Pickaxes start at full durability; spell it out so the slot assertions
+    /// below read clearly.
+    const PICK_DUR: u16 = 60;
+
     #[test]
     fn tools_stack_to_one_per_slot() {
         let mut inv = Inventory::new();
         // Three pickaxes can't merge; each takes its own slot.
         assert_eq!(inv.add(PICKAXE, 3), 0);
-        assert_eq!(inv.get(0), Some((PICKAXE, 1)));
-        assert_eq!(inv.get(1), Some((PICKAXE, 1)));
-        assert_eq!(inv.get(2), Some((PICKAXE, 1)));
+        assert_eq!(inv.get(0), Some((PICKAXE, 1, PICK_DUR)));
+        assert_eq!(inv.get(1), Some((PICKAXE, 1, PICK_DUR)));
+        assert_eq!(inv.get(2), Some((PICKAXE, 1, PICK_DUR)));
         assert_eq!(inv.count(PICKAXE), 3);
+    }
+
+    #[test]
+    fn durability_wears_down_and_breaks() {
+        let mut inv = Inventory::new();
+        inv.add(PICKAXE, 1);
+        assert!(!inv.damage_tool(PICKAXE, PICK_DUR - 1)); // worn but intact
+        assert_eq!(inv.get(0), Some((PICKAXE, 1, 1)));
+        assert!(inv.damage_tool(PICKAXE, 1)); // last point: it breaks
+        assert_eq!(inv.get(0), None);
+        // Repair restores up to the cap and reports whether it mended anything.
+        inv.add(PICKAXE, 1);
+        inv.damage_tool(PICKAXE, 10);
+        assert!(inv.repair_tool(PICKAXE, 4));
+        assert_eq!(inv.get(0), Some((PICKAXE, 1, PICK_DUR - 6)));
+        assert!(inv.repair_tool(PICKAXE, 100)); // caps at max
+        assert_eq!(inv.get(0), Some((PICKAXE, 1, PICK_DUR)));
+        assert!(!inv.repair_tool(PICKAXE, 4)); // already full: nothing to do
     }
 
     #[test]
@@ -206,7 +278,7 @@ mod tests {
         assert!(inv.remove(STONE, 66)); // drains slot 0, dips into slot 1
         assert_eq!(inv.count(STONE), 4);
         assert_eq!(inv.get(0), None);
-        assert_eq!(inv.get(1), Some((STONE, 4)));
+        assert_eq!(inv.get(1), Some((STONE, 4, 0)));
     }
 
     #[test]
@@ -214,12 +286,12 @@ mod tests {
         let mut inv = Inventory::new();
         assert_eq!(inv.add(STONE, 70), 0);
         // 70 stone: 64 in slot 0, 6 in slot 1.
-        assert_eq!(inv.get(0), Some((STONE, 64)));
-        assert_eq!(inv.get(1), Some((STONE, 6)));
+        assert_eq!(inv.get(0), Some((STONE, 64, 0)));
+        assert_eq!(inv.get(1), Some((STONE, 6, 0)));
         // Topping up fills slot 1 to 64 before opening a new slot.
         assert_eq!(inv.add(STONE, 60), 0);
-        assert_eq!(inv.get(1), Some((STONE, 64)));
-        assert_eq!(inv.get(2), Some((STONE, 2)));
+        assert_eq!(inv.get(1), Some((STONE, 64, 0)));
+        assert_eq!(inv.get(2), Some((STONE, 2, 0)));
     }
 
     #[test]
@@ -237,17 +309,17 @@ mod tests {
         // Relocate into an empty slot.
         inv.move_stack(0, 10);
         assert_eq!(inv.get(0), None);
-        assert_eq!(inv.get(10), Some((STONE, 50)));
+        assert_eq!(inv.get(10), Some((STONE, 50, 0)));
         // Merge with cap, leaving a remainder behind.
         inv.add(STONE, 30); // lands in slot 0
         inv.move_stack(0, 10);
-        assert_eq!(inv.get(10), Some((STONE, 64)));
-        assert_eq!(inv.get(0), Some((STONE, 16)));
+        assert_eq!(inv.get(10), Some((STONE, 64, 0)));
+        assert_eq!(inv.get(0), Some((STONE, 16, 0)));
         // Swap different blocks.
         inv.add(DIRT, 5); // slot 1
         inv.move_stack(0, 1);
-        assert_eq!(inv.get(0), Some((DIRT, 5)));
-        assert_eq!(inv.get(1), Some((STONE, 16)));
+        assert_eq!(inv.get(0), Some((DIRT, 5, 0)));
+        assert_eq!(inv.get(1), Some((STONE, 16, 0)));
     }
 
     #[test]

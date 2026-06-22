@@ -119,6 +119,10 @@ pub enum NetCommand {
         recipe: u16,
         count: u32,
     },
+    /// Repair one worn tool of type `item` at a forge (consumes its material).
+    Repair {
+        item: BlockId,
+    },
     PlayerMove {
         x: f32,
         y: f32,
@@ -295,6 +299,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::PlayerMove { x, y } => ClientMessage::PlayerMove { x, y },
         NetCommand::RequestChunk { cx, cy } => ClientMessage::RequestChunk { cx, cy },
         NetCommand::Attack { target, held } => ClientMessage::Attack { target, held },
+        NetCommand::Repair { item } => ClientMessage::Repair { item },
         NetCommand::FallDamage { amount } => ClientMessage::FallDamage { amount },
         NetCommand::SetTime { t } => ClientMessage::SetTime { t },
         NetCommand::SpawnEntity { kind, x, y } => ClientMessage::SpawnEntity { kind, x, y },

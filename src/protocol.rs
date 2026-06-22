@@ -51,6 +51,10 @@ pub enum ClientMessage {
     /// `count` times at a forge. The server validates inputs (raw material plus
     /// fuel) per repetition and stops early when they run out.
     Smelt { recipe: u16, count: u32 },
+    /// Repair one worn tool of type `item` at a forge: the server restores some
+    /// durability (see [`crate::block::repair_step`]) in exchange for one unit of
+    /// the tool's [`repair_material`](crate::block::repair_material).
+    Repair { item: BlockId },
     /// Report the owning player entity's position (pixels, world space).
     PlayerMove { x: f32, y: f32 },
     /// Melee-attack another entity (e.g. a slime). The server validates range

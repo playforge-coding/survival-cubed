@@ -455,6 +455,40 @@ impl Shared {
         }
     }
 
+    /// Repair one worn `item` tool for player `id`, restoring
+    /// [`repair_step`](crate::block::repair_step) durability in exchange for one
+    /// unit of its [`repair_material`](crate::block::repair_material). No-op if
+    /// the item isn't repairable, the player holds no such damaged tool, or they
+    /// lack the material.
+    fn repair(&self, id: EntityId, item: BlockId) {
+        let Some(material) = crate::block::repair_material(item) else {
+            return;
+        };
+        let mut invs = self.inventories.lock();
+        let inv = invs.entry(id).or_default();
+        if inv.count(material) == 0 {
+            return;
+        }
+        // Only spend material if a damaged tool was actually mended.
+        if inv.repair_tool(item, crate::block::repair_step(item)) {
+            inv.remove(material, 1);
+        }
+    }
+
+    /// Spend `wear` durability on player `id`'s held `tool`, broadcasting nothing
+    /// but pushing the owner a fresh inventory snapshot so the durability bar (and
+    /// a now-broken tool's empty slot) updates. No-op when `wear` is zero.
+    fn wear_tool(&self, id: EntityId, tool: BlockId, wear: u16) {
+        if wear == 0 {
+            return;
+        }
+        {
+            let mut invs = self.inventories.lock();
+            invs.entry(id).or_default().damage_tool(tool, wear);
+        }
+        self.send_inventory(id);
+    }
+
     /// Push the authoritative inventory snapshot to its owner.
     fn send_inventory(&self, id: EntityId) {
         let slots = self
@@ -1758,6 +1792,9 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         if crate::block::drops_when_mined(prev, held) {
                             spawn_drop(&shared, x, y, crate::block::mined_drop(prev));
                         }
+                        // Mining wears the held tool: a pickaxe's intended job
+                        // costs little, a sword used to dig wears twice as fast.
+                        shared.wear_tool(id, held, crate::block::mine_wear(held));
                     }
                 }
                 ClientMessage::PlaceBlock { x, y, slot } => {
@@ -1852,6 +1889,10 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     shared.smelt(id, recipe as usize, count);
                     shared.send_inventory(id);
                 }
+                ClientMessage::Repair { item } => {
+                    shared.repair(id, item);
+                    shared.send_inventory(id);
+                }
                 ClientMessage::PlayerMove { x, y } => {
                     if let Some(e) = shared.entities.lock().get_mut(id) {
                         e.x = x;
@@ -1910,6 +1951,9 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         if let Some((rid, rx, ry)) = respawn {
                             shared.send_to(rid, ServerMessage::Respawn { x: rx, y: ry });
                         }
+                        // A landed swing wears the weapon: a sword's intended job
+                        // costs little, a pickaxe swung as a weapon wears double.
+                        shared.wear_tool(id, held, crate::block::attack_wear(held));
                     }
                 }
                 ClientMessage::FallDamage { amount } => {

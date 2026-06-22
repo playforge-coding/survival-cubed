@@ -224,6 +224,73 @@ pub fn drops_when_mined(block: BlockId, held: BlockId) -> bool {
     pickaxe_tier(held) >= required_tier(block)
 }
 
+// --- Durability ----------------------------------------------------------
+
+/// Maximum durability (uses before it breaks) of a tool, or `0` for anything
+/// without durability (blocks, materials, bare hands). Higher tiers last
+/// longer. A fresh tool starts at this value; each use spends some (see
+/// [`attack_wear`] / [`mine_wear`]) and it shatters at zero.
+pub fn max_durability(item: BlockId) -> u16 {
+    match item {
+        PICKAXE | WOOD_SWORD => 60,
+        STONE_PICKAXE | STONE_SWORD => 132,
+        IRON_PICKAXE | IRON_SWORD => 251,
+        _ => 0,
+    }
+}
+
+/// Whether `item` is a pickaxe (mining is its intended use).
+pub fn is_pickaxe(item: BlockId) -> bool {
+    matches!(item, PICKAXE | STONE_PICKAXE | IRON_PICKAXE)
+}
+
+/// Whether `item` is a sword (attacking is its intended use).
+pub fn is_sword(item: BlockId) -> bool {
+    matches!(item, WOOD_SWORD | STONE_SWORD | IRON_SWORD)
+}
+
+/// Durability spent attacking with `item`. A sword's intended use costs `1`; a
+/// pickaxe swung as a weapon wears twice as fast. Anything else costs nothing.
+pub fn attack_wear(item: BlockId) -> u16 {
+    if is_sword(item) {
+        1
+    } else if is_pickaxe(item) {
+        2
+    } else {
+        0
+    }
+}
+
+/// Durability spent mining with `item`. A pickaxe's intended use costs `1`; a
+/// sword used to dig wears twice as fast. Anything else costs nothing.
+pub fn mine_wear(item: BlockId) -> u16 {
+    if is_pickaxe(item) {
+        1
+    } else if is_sword(item) {
+        2
+    } else {
+        0
+    }
+}
+
+/// The material that repairs `item` at a [`FORGE`] — the same material it is
+/// crafted from — or `None` if `item` has no durability to repair.
+pub fn repair_material(item: BlockId) -> Option<BlockId> {
+    match item {
+        PICKAXE | WOOD_SWORD => Some(WOOD),
+        STONE_PICKAXE | STONE_SWORD => Some(STONE),
+        IRON_PICKAXE | IRON_SWORD => Some(IRON_INGOT),
+        _ => None,
+    }
+}
+
+/// Durability restored per unit of material spent repairing `item`. A quarter
+/// of its maximum (rounded up), so a fully-worn tool takes four materials to
+/// mend back to new.
+pub fn repair_step(item: BlockId) -> u16 {
+    max_durability(item).div_ceil(4)
+}
+
 /// Melee damage dealt by a swing while holding `item` ([`AIR`] for bare hands).
 /// Swords are dedicated weapons and hit hardest; pickaxes can still be swung but
 /// deal far less, and anything else (including bare hands) deals the base amount.

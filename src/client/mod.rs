@@ -1230,7 +1230,23 @@ impl App {
         let inventory = self.game.as_ref().unwrap().inventory.clone();
         // (recipe index, how many times to smelt)
         let mut smelt: Option<(u16, u32)> = None;
+        // Tool to repair, if its button is clicked this frame.
+        let mut repair: Option<BlockId> = None;
         let mut close = false;
+
+        // The distinct worn tools the player is carrying, in slot order, each
+        // with its current/maximum durability — one repair row per tool.
+        let worn: Vec<(BlockId, u16, u16)> = {
+            let mut seen = Vec::new();
+            for slot in inventory.slots().iter().flatten() {
+                let (item, _, dur) = *slot;
+                let max = crate::block::max_durability(item);
+                if max > 0 && dur < max && !seen.iter().any(|(b, _, _)| *b == item) {
+                    seen.push((item, dur, max));
+                }
+            }
+            seen
+        };
 
         egui::Window::new("Forge")
             .collapsible(false)
@@ -1266,6 +1282,32 @@ impl App {
                     inventory.count(crate::block::WOOD),
                     inventory.count(crate::block::IRON_INGOT),
                 ));
+
+                // Repair worn tools using their crafting material.
+                ui.separator();
+                ui.label("Repair tools (spends their material).");
+                if worn.is_empty() {
+                    ui.weak("No worn tools to repair.");
+                }
+                for (item, dur, max) in &worn {
+                    let material = crate::block::repair_material(*item);
+                    let have = material.is_some_and(|m| inventory.count(m) > 0);
+                    let name = item_display_name(registry.get(*item).name);
+                    let mat_name = material
+                        .map(|m| item_display_name(registry.get(m).name))
+                        .unwrap_or_default();
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(have, egui::Button::new(format!("Repair {name}")))
+                            .on_hover_text(format!("Spends 1 {mat_name}"))
+                            .clicked()
+                        {
+                            repair = Some(*item);
+                        }
+                        ui.weak(format!("{dur}/{max}"));
+                    });
+                }
+
                 ui.add_space(4.0);
                 if ui.button("Close").clicked() {
                     close = true;
@@ -1278,6 +1320,11 @@ impl App {
             && count > 0
         {
             let _ = net.commands.send(NetCommand::Smelt { recipe, count });
+        }
+        // Repairing is server-authoritative too: it consumes the material and
+        // replies with an updated inventory snapshot.
+        if let (Some(item), Some(net)) = (repair, &self.net) {
+            let _ = net.commands.send(NetCommand::Repair { item });
         }
         if close && let Some(g) = self.game.as_mut() {
             g.forge_open = false;
@@ -1475,7 +1522,7 @@ impl App {
             let held = g
                 .inventory
                 .get(g.selected_slot)
-                .map(|(b, _)| b)
+                .map(|(b, _, _)| b)
                 .unwrap_or(AIR);
             let secs =
                 self.registry.get(block).break_secs * crate::block::mine_speed_mult(block, held);
@@ -1638,7 +1685,7 @@ fn slot_widget(
     };
     painter.rect_filled(rect, radius, bg);
 
-    if let Some((block, count)) = slot {
+    if let Some((block, count, dur)) = slot {
         // Draw the block/item's actual sprite from its cell in the atlas.
         let uv = atlas.block(block);
         painter.image(
@@ -1650,6 +1697,27 @@ fn slot_widget(
             ),
             egui::Color32::WHITE,
         );
+        // A worn tool shows a durability bar across its bottom edge, green when
+        // fresh and shading to red as it nears breaking.
+        let max = crate::block::max_durability(block);
+        if max > 0 && dur < max {
+            let frac = dur as f32 / max as f32;
+            let track = egui::Rect::from_min_max(
+                rect.left_bottom() + egui::vec2(4.0, -7.0),
+                rect.right_bottom() + egui::vec2(-4.0, -4.0),
+            );
+            painter.rect_filled(track, 1, egui::Color32::from_black_alpha(180));
+            let fill = egui::Rect::from_min_max(
+                track.min,
+                egui::pos2(track.min.x + track.width() * frac, track.max.y),
+            );
+            let color = egui::Color32::from_rgb(
+                (220.0 * (1.0 - frac) + 40.0 * frac) as u8,
+                (200.0 * frac + 40.0 * (1.0 - frac)) as u8,
+                50,
+            );
+            painter.rect_filled(fill, 1, color);
+        }
         if count > 1 {
             let anchor = egui::Align2::RIGHT_BOTTOM;
             let font = egui::FontId::proportional(12.0);
@@ -1695,9 +1763,19 @@ fn slot_widget(
         egui::StrokeKind::Inside,
     );
 
-    // Name the item on hover (empty slots have nothing to show).
+    // Name the item on hover (empty slots have nothing to show); a tool also
+    // shows its remaining durability.
     match slot {
-        Some((block, _)) => resp.on_hover_text(item_display_name(registry.get(block).name)),
+        Some((block, _, dur)) => {
+            let name = item_display_name(registry.get(block).name);
+            let max = crate::block::max_durability(block);
+            let label = if max > 0 {
+                format!("{name} ({dur}/{max})")
+            } else {
+                name
+            };
+            resp.on_hover_text(label)
+        }
         None => resp,
     }
 }
@@ -2131,7 +2209,7 @@ fn handle_block_actions(
                 let held = game
                     .inventory
                     .get(game.selected_slot)
-                    .map(|(b, _)| b)
+                    .map(|(b, _, _)| b)
                     .unwrap_or(AIR);
                 let _ = net.commands.send(NetCommand::Attack { target, held });
                 game.action_timer = ACTION_COOLDOWN;
@@ -2180,7 +2258,7 @@ fn handle_block_actions(
     if input.placing && game.action_timer <= 0.0 && (0..WORLD_HEIGHT).contains(&ty) {
         let slot = game.selected_slot;
         let current = game.world.get_block(tx, ty);
-        if let Some((block, _)) = game.inventory.get(slot)
+        if let Some((block, _, _)) = game.inventory.get(slot)
             && reg.is_placeable(block)
             && current == AIR
             && !overlaps_player(game, tx, ty)
@@ -2234,7 +2312,7 @@ fn mine_block(
     let held = game
         .inventory
         .get(game.selected_slot)
-        .map(|(b, _)| b)
+        .map(|(b, _, _)| b)
         .unwrap_or(AIR);
     let secs = reg.get(current).break_secs * crate::block::mine_speed_mult(current, held);
 

@@ -36,7 +36,7 @@ const CHUNKS_DIR: &str = "chunks";
 /// Magic prefix on `world.dat` ("SCWD" — Survival Cubed World Data).
 const MAGIC: u32 = 0x5343_5744;
 /// On-disk format version; bump on any incompatible layout change.
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 /// Bytes per chunk file: one little-endian `u16` per cell.
 const CHUNK_BYTES: usize = CHUNK_AREA * 2;
 
@@ -288,8 +288,8 @@ mod tests {
         assert_eq!(got.players.len(), 1);
         assert_eq!(got.players[0].name, "ada");
         assert_eq!(got.players[0].health, 13);
-        assert_eq!(got.players[0].inventory.get(0), Some((STONE, 42)));
-        assert_eq!(got.players[0].inventory.get(1), Some((DIRT, 7)));
+        assert_eq!(got.players[0].inventory.get(0), Some((STONE, 42, 0)));
+        assert_eq!(got.players[0].inventory.get(1), Some((DIRT, 7, 0)));
     }
 
     #[test]
