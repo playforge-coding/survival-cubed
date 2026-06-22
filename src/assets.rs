@@ -62,7 +62,7 @@ blocks!(
 );
 
 sprites!(
-    "player" => [0, 1],
+    "player" => [0, 1, 2, 3, 4, 5],
     "slime" => [0, 1, 2, 3],
     "chicken" => [0, 1, 2, 3],
     "goat" => [0, 1, 2, 3],

@@ -267,8 +267,8 @@ mod tests {
         let reg = BlockRegistry::new();
         let atlas = Atlas::build(&reg);
 
-        // Texture is tall enough for the tallest sprite (the 32px player).
-        assert_eq!(atlas.height, sprite::PLAYER_SPRITE.frame_h);
+        // Texture is tall enough for the tallest sprite (the 19px zombie).
+        assert_eq!(atlas.height, sprite::ZOMBIE_SPRITE.frame_h);
         assert!(atlas.width > 0);
 
         // Animation frames are distinct regions, so the sprite actually animates.
@@ -276,9 +276,9 @@ mod tests {
         let f1 = atlas.sprite_frame("player", 1);
         assert_ne!(f0.min[0], f1.min[0]);
 
-        // A player frame spans the full height; a slime frame only part of it.
-        let player = atlas.sprite_frame("player", 0);
-        assert!((player.max[1] - 1.0).abs() < 1e-6);
+        // The tallest sprite spans the full height; a shorter one only part of it.
+        let zombie = atlas.sprite_frame("zombie", 0);
+        assert!((zombie.max[1] - 1.0).abs() < 1e-6);
         let slime = atlas.sprite_frame("slime", 0);
         assert!(slime.max[1] < 1.0);
 

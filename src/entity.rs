@@ -21,8 +21,10 @@ use crate::protocol::BlockId;
 /// used so it can double as "no entity".
 pub type EntityId = u32;
 
-/// Collision/draw size (width, height) in pixels of a player avatar.
-pub const PLAYER_SIZE: (f32, f32) = (16.0, 32.0);
+/// Collision/draw size (width, height) in pixels of a player avatar. Matches the
+/// sprite art's native proportions (~11x16) so it draws unstretched, about a tile
+/// tall and roughly zombie-sized.
+pub const PLAYER_SIZE: (f32, f32) = (11.0, 16.0);
 /// Collision/draw size (width, height) in pixels of a slime.
 pub const SLIME_SIZE: (f32, f32) = (12.0, 12.0);
 /// Collision/draw size (width, height) in pixels of a chicken.

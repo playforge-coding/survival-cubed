@@ -24,9 +24,9 @@ pub struct SpriteDef {
 /// Player avatar: a little humanoid whose legs stride as it walks.
 pub static PLAYER_SPRITE: SpriteDef = SpriteDef {
     name: "player",
-    frame_w: 16,
-    frame_h: 32,
-    frames: 2,
+    frame_w: 11,
+    frame_h: 16,
+    frames: 6,
     fps: 8.0,
 };
 
