@@ -25,7 +25,7 @@ use crate::daylight;
 use crate::entity::{Entities, Entity, EntityId, EntityKind, ITEM_SIZE, PLAYER_SIZE};
 use crate::inventory::Inventory;
 use crate::net::{VERSION_MISMATCH_CLOSE, fingerprint, read_msg, read_version, write_msg};
-use crate::protocol::{ALPN, BlockId, ClientMessage, PROTOCOL_VERSION, ServerMessage};
+use crate::protocol::{ALPN, BlockId, ClientMessage, PROTOCOL_VERSION, ServerMessage, Waypoint};
 use crate::save::{SavedPlayer, WorldMeta, WorldStore};
 use crate::world::{CHUNK_AREA, CHUNK_SIZE, ChunkCoord, TILE_SIZE, WORLD_HEIGHT, World};
 use crate::worldgen::{Biome, WorldGen, spawn_point};
@@ -340,6 +340,9 @@ struct Shared {
     /// one falls back to world spawn. Folded into [`SavedPlayer`] on disconnect so
     /// it survives reconnects.
     respawn_points: Mutex<HashMap<EntityId, (i32, i32)>>,
+    /// Personal map waypoints of every currently-connected player, keyed by
+    /// entity id. Folded into [`SavedPlayer`] on disconnect so they persist.
+    waypoints: Mutex<HashMap<EntityId, Vec<Waypoint>>>,
     /// Lit campfires, keyed by world cell, holding each one's remaining burn time
     /// in seconds. A cell is present only while its campfire is lit; the tick loop
     /// counts each down and extinguishes it (reverting the block) at zero.
@@ -406,6 +409,12 @@ impl Shared {
                             health: e.health,
                             inventory: invs.get(&e.id).cloned().unwrap_or_default(),
                             respawn: self.respawn_points.lock().get(&e.id).copied(),
+                            waypoints: self
+                                .waypoints
+                                .lock()
+                                .get(&e.id)
+                                .cloned()
+                                .unwrap_or_default(),
                         },
                     );
                 }
@@ -760,6 +769,44 @@ impl Shared {
         let px = cx as f32 * TILE_SIZE + (TILE_SIZE - crate::entity::PLAYER_SIZE.0) / 2.0;
         let py = cy as f32 * TILE_SIZE;
         (px, py)
+    }
+
+    /// Send player `id` the authoritative snapshot of their waypoints and current
+    /// home (respawn) point, so the client can redraw its markers.
+    fn send_waypoints(&self, id: EntityId) {
+        let list = self.waypoints.lock().get(&id).cloned().unwrap_or_default();
+        let home = self.respawn_target(id);
+        self.send_to(id, ServerMessage::Waypoints { list, home });
+    }
+
+    /// Record a personal waypoint for player `id`, then resync their list.
+    fn add_waypoint(&self, id: EntityId, wp: Waypoint) {
+        self.waypoints.lock().entry(id).or_default().push(wp);
+        self.send_waypoints(id);
+    }
+
+    /// Drop player `id`'s waypoint nearest to world pixel `(x, y)`, then resync.
+    /// No-op if they have none.
+    fn remove_waypoint(&self, id: EntityId, x: f32, y: f32) {
+        {
+            let mut all = self.waypoints.lock();
+            let Some(list) = all.get_mut(&id) else {
+                return;
+            };
+            let nearest = list
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| {
+                    let da = (a.x - x).powi(2) + (a.y - y).powi(2);
+                    let db = (b.x - x).powi(2) + (b.y - y).powi(2);
+                    da.total_cmp(&db)
+                })
+                .map(|(i, _)| i);
+            if let Some(i) = nearest {
+                list.remove(i);
+            }
+        }
+        self.send_waypoints(id);
     }
 
     /// Cook `COOK_RECIPES[recipe_idx]` up to `count` times for player `id` on the
@@ -1172,6 +1219,7 @@ fn build_endpoint(
         saved_players: Mutex::new(saved_players),
         inventories: Mutex::new(HashMap::new()),
         respawn_points: Mutex::new(HashMap::new()),
+        waypoints: Mutex::new(HashMap::new()),
         campfires: Mutex::new(campfires),
         placed_logs: Mutex::new(placed_logs),
         shutdown: AtomicBool::new(false),
@@ -1539,7 +1587,7 @@ async fn entity_tick_loop(shared: Arc<Shared>) {
             shared.broadcast_all(msg);
         }
         for (id, x, y) in respawns {
-            shared.send_to(id, ServerMessage::Respawn { x, y });
+            shared.send_to(id, ServerMessage::Respawn { x, y, died: true });
         }
         // Items were credited during the step; push each collector a fresh
         // inventory snapshot (deduplicating repeat collectors).
@@ -2499,8 +2547,15 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         // Restore their saved inventory and push it to them.
                         shared.inventories.lock().insert(id, sp.inventory.clone());
                         shared.send_inventory(id);
-                        // Teleport the owner's avatar and resync its health.
-                        let _ = tx.send(ServerMessage::Respawn { x: sp.x, y: sp.y });
+                        // Restore their personal waypoints.
+                        shared.waypoints.lock().insert(id, sp.waypoints.clone());
+                        // Teleport the owner's avatar and resync its health. This
+                        // is a reconnect, not a death, so no death marker is dropped.
+                        let _ = tx.send(ServerMessage::Respawn {
+                            x: sp.x,
+                            y: sp.y,
+                            died: false,
+                        });
                         shared.broadcast_all(ServerMessage::EntityHealth {
                             id,
                             health: sp.health,
@@ -2517,6 +2572,9 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             },
                         );
                     }
+                    // Sync waypoints + home now that any saved state is restored
+                    // (a fresh player just gets an empty list and the world spawn).
+                    shared.send_waypoints(id);
                 }
                 ClientMessage::RequestChunk { cx, cy } => {
                     let (blocks, fresh) = shared.world.lock().chunk_blocks(cx, cy);
@@ -2799,12 +2857,27 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         shared.broadcast_all(m);
                     }
                     if let Some((rid, rx, ry)) = respawn {
-                        shared.send_to(rid, ServerMessage::Respawn { x: rx, y: ry });
+                        shared.send_to(
+                            rid,
+                            ServerMessage::Respawn {
+                                x: rx,
+                                y: ry,
+                                died: true,
+                            },
+                        );
                     }
                     shared.send_inventory(id);
                 }
                 ClientMessage::SetRespawn { x, y } => {
                     shared.set_respawn(id, x, y);
+                    // The home waypoint follows the respawn point; resync it.
+                    shared.send_waypoints(id);
+                }
+                ClientMessage::AddWaypoint { x, y, color } => {
+                    shared.add_waypoint(id, Waypoint { x, y, color });
+                }
+                ClientMessage::RemoveWaypoint { x, y } => {
+                    shared.remove_waypoint(id, x, y);
                 }
                 ClientMessage::FuelCampfire { x, y, fuel } => {
                     shared.fuel_campfire(id, x, y, fuel);
@@ -2879,7 +2952,14 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             shared.broadcast_all(m);
                         }
                         if let Some((rid, rx, ry)) = respawn {
-                            shared.send_to(rid, ServerMessage::Respawn { x: rx, y: ry });
+                            shared.send_to(
+                                rid,
+                                ServerMessage::Respawn {
+                                    x: rx,
+                                    y: ry,
+                                    died: true,
+                                },
+                            );
                         }
                         // If that killed a creature (it's no longer in the world),
                         // drop whatever it carries — animals leave raw meat.
@@ -2915,7 +2995,14 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             shared.broadcast_all(m);
                         }
                         if let Some((rid, rx, ry)) = respawn {
-                            shared.send_to(rid, ServerMessage::Respawn { x: rx, y: ry });
+                            shared.send_to(
+                                rid,
+                                ServerMessage::Respawn {
+                                    x: rx,
+                                    y: ry,
+                                    died: true,
+                                },
+                            );
                         }
                     }
                 }
@@ -2982,6 +3069,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
     let removed = shared.entities.lock().remove(id);
     let inventory = shared.inventories.lock().remove(&id).unwrap_or_default();
     let respawn = shared.respawn_points.lock().remove(&id);
+    let waypoints = shared.waypoints.lock().remove(&id).unwrap_or_default();
     if let Some(Entity {
         kind: EntityKind::Player { name },
         x,
@@ -3000,6 +3088,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 health,
                 inventory,
                 respawn,
+                waypoints,
             },
         );
     }

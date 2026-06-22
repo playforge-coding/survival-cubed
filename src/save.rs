@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::entity::Entity;
 use crate::inventory::Inventory;
-use crate::protocol::BlockId;
+use crate::protocol::{BlockId, Waypoint};
 use crate::world::{CHUNK_AREA, Chunk, ChunkCoord};
 
 /// Name of the metadata file inside a world directory.
@@ -36,7 +36,7 @@ const CHUNKS_DIR: &str = "chunks";
 /// Magic prefix on `world.dat` ("SCWD" — Survival Cubed World Data).
 const MAGIC: u32 = 0x5343_5744;
 /// On-disk format version; bump on any incompatible layout change.
-const VERSION: u32 = 5;
+const VERSION: u32 = 6;
 /// Bytes per chunk file: one little-endian `u16` per cell.
 const CHUNK_BYTES: usize = CHUNK_AREA * 2;
 
@@ -55,6 +55,11 @@ pub struct SavedPlayer {
     /// player to their fire (provided it's still standing).
     #[serde(default)]
     pub respawn: Option<(i32, i32)>,
+    /// The player's personal map waypoints, so the markers they dropped survive
+    /// disconnects and restarts. Default markers (home, last death) are derived
+    /// at runtime and not stored here.
+    #[serde(default)]
+    pub waypoints: Vec<Waypoint>,
 }
 
 /// Top-level world metadata stored in `world.dat`.
@@ -287,6 +292,11 @@ mod tests {
                     inv
                 },
                 respawn: Some((3, -5)),
+                waypoints: vec![Waypoint {
+                    x: 100.0,
+                    y: 200.0,
+                    color: [0.5, 0.25, 0.75],
+                }],
             }],
             campfires: vec![(3, -5, 12.5), (-8, 2, 30.0)],
             placed_logs: vec![(1, 2), (-3, 4)],
@@ -307,6 +317,7 @@ mod tests {
         assert_eq!(got.players[0].inventory.get(0), Some((STONE, 42, 0)));
         assert_eq!(got.players[0].inventory.get(1), Some((DIRT, 7, 0)));
         assert_eq!(got.players[0].respawn, Some((3, -5)));
+        assert_eq!(got.players[0].waypoints, meta.players[0].waypoints);
         assert_eq!(got.campfires, meta.campfires);
         assert_eq!(got.placed_logs, meta.placed_logs);
     }

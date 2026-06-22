@@ -19,7 +19,7 @@ use rustls::{DigitallySignedStruct, SignatureScheme};
 use crate::entity::{Entity, EntityId, EntityKind};
 use crate::inventory::Slot;
 use crate::net::{KnownHosts, fingerprint, fingerprint_hex, read_msg, write_msg, write_version};
-use crate::protocol::{ALPN, BlockId, ClientMessage, ServerMessage};
+use crate::protocol::{ALPN, BlockId, ClientMessage, ServerMessage, Waypoint};
 
 /// Events flowing from the network thread to the UI.
 pub enum NetEvent {
@@ -77,6 +77,12 @@ pub enum NetEvent {
     Respawn {
         x: f32,
         y: f32,
+        died: bool,
+    },
+    /// Authoritative snapshot of this client's waypoints and home (respawn) point.
+    Waypoints {
+        list: Vec<Waypoint>,
+        home: (f32, f32),
     },
     /// Authoritative snapshot of this client's inventory slots.
     Inventory {
@@ -153,6 +159,17 @@ pub enum NetCommand {
     SetRespawn {
         x: i32,
         y: i32,
+    },
+    /// Drop a personal waypoint at world pixel `(x, y)` with `color`.
+    AddWaypoint {
+        x: f32,
+        y: f32,
+        color: [f32; 3],
+    },
+    /// Remove the personal waypoint nearest to world pixel `(x, y)`.
+    RemoveWaypoint {
+        x: f32,
+        y: f32,
     },
     PlayerMove {
         x: f32,
@@ -367,6 +384,8 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
             count,
         },
         NetCommand::SetRespawn { x, y } => ClientMessage::SetRespawn { x, y },
+        NetCommand::AddWaypoint { x, y, color } => ClientMessage::AddWaypoint { x, y, color },
+        NetCommand::RemoveWaypoint { x, y } => ClientMessage::RemoveWaypoint { x, y },
         NetCommand::FallDamage { amount } => ClientMessage::FallDamage { amount },
         NetCommand::SetTime { t } => ClientMessage::SetTime { t },
         NetCommand::SpawnEntity { kind, x, y } => ClientMessage::SpawnEntity { kind, x, y },
@@ -406,7 +425,8 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
         },
         ServerMessage::EntityHit { id, vx, vy } => NetEvent::EntityHit { id, vx, vy },
         ServerMessage::TimeOfDay { t } => NetEvent::TimeOfDay { t },
-        ServerMessage::Respawn { x, y } => NetEvent::Respawn { x, y },
+        ServerMessage::Respawn { x, y, died } => NetEvent::Respawn { x, y, died },
+        ServerMessage::Waypoints { list, home } => NetEvent::Waypoints { list, home },
         ServerMessage::Inventory { slots } => NetEvent::Inventory { slots },
         ServerMessage::Chat { from, text } => NetEvent::Chat { from, text },
     };

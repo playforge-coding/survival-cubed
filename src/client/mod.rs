@@ -21,7 +21,7 @@ use crate::daylight;
 use crate::discovery::{DiscoveredServer, LanBrowser};
 use crate::entity::{Entities, EntityId, EntityKind, PLAYER_MAX_HEALTH};
 use crate::inventory::{HOTBAR_SLOTS, Inventory, STORAGE_SLOTS, Slot};
-use crate::protocol::BlockId;
+use crate::protocol::{BlockId, Waypoint};
 use crate::server::{self, RunningServer};
 use crate::world::{CHUNK_SIZE, TILE_SIZE, WORLD_HEIGHT, World, to_chunk};
 
@@ -56,6 +56,8 @@ const HIT_FLASH_TIME: f32 = 0.25;
 /// Exponential decay rate (per second) of the player's horizontal knockback, so
 /// a shove fades over roughly a quarter second.
 const KNOCKBACK_DAMP: f32 = 9.0;
+/// How close (world px) the player must get to the death marker before it clears.
+const WAYPOINT_REACHED_DIST: f32 = 24.0;
 
 /// Validate a user-entered world name, returning the trimmed name if it is safe
 /// to use as a directory. Restricting to letters, numbers, spaces, '-' and '_'
@@ -182,6 +184,15 @@ struct GameState {
     chat_input: String,
     /// Set when chat opens so the input box grabs keyboard focus next frame.
     chat_focus: bool,
+    /// Personal waypoints this player has dropped, mirrored from the server (which
+    /// persists them). Each carries the stable random colour drawn for its dot.
+    waypoints: Vec<Waypoint>,
+    /// Home (respawn) waypoint in world pixels — the player's last campfire, or
+    /// world spawn before they've used one. Mirrored from the server.
+    home: Option<Vec2>,
+    /// Where the player last died, in world pixels. Shown as a death marker until
+    /// they walk back to it (then it clears). Derived locally from death respawns.
+    death: Option<Vec2>,
 }
 
 /// One received chat line: who said it and what they said.
@@ -228,6 +239,10 @@ impl GameState {
             chat_open: false,
             chat_input: String::new(),
             chat_focus: false,
+            waypoints: Vec::new(),
+            // Until the server's first sync arrives, treat world spawn as home.
+            home: Some(spawn),
+            death: None,
         }
     }
 }
@@ -615,13 +630,24 @@ impl App {
                     g.time_of_day = t;
                 }
             }
-            NetEvent::Respawn { x, y } => {
+            NetEvent::Respawn { x, y, died } => {
                 if let Some(g) = &mut self.game {
+                    // A death respawn drops a marker at the spot we fell, so we can
+                    // find our way back to whatever killed (or dropped) us.
+                    if died {
+                        g.death = Some(g.pos);
+                    }
                     g.pos = Vec2::new(x, y);
                     g.vel = Vec2::ZERO;
                     g.knockback_x = 0.0;
                     g.air_min_y = y;
                     g.last_sent = g.pos;
+                }
+            }
+            NetEvent::Waypoints { list, home } => {
+                if let Some(g) = &mut self.game {
+                    g.waypoints = list;
+                    g.home = Some(Vec2::new(home.0, home.1));
                 }
             }
             NetEvent::Inventory { slots } => {
@@ -680,6 +706,14 @@ impl App {
         }
         request_chunks(game, self.gfx.as_ref(), self.net.as_ref());
         handle_block_actions(game, reg, input, self.gfx.as_ref(), self.net.as_ref(), dt);
+
+        // The death marker is a one-shot: it clears once the player gets back to
+        // the spot they fell.
+        if let Some(d) = game.death
+            && game.pos.distance(d) < WAYPOINT_REACHED_DIST
+        {
+            game.death = None;
+        }
 
         // Throttle position updates to the server.
         game.move_send_timer -= dt;
@@ -741,6 +775,7 @@ impl App {
                 if self.game.is_none() {
                     return;
                 }
+                self.waypoint_overlay(ui);
                 self.chat_ui(ui);
                 if self.game.as_ref().is_some_and(|g| g.inventory_open) {
                     self.inventory_window(ui);
@@ -962,7 +997,7 @@ impl App {
                 ui.separator();
                 ui.label("Move: A/D · Jump/Climb: Space · Down: S · Mine: LMB · Place: RMB");
                 ui.separator();
-                ui.label("[1–9] Select · [E] Inventory · [F] Eat");
+                ui.label("[1–9] Select · [E] Inventory · [F] Eat · [M] Mark · [N] Unmark");
                 ui.separator();
                 ui.label(format!("Players online: {}", other_players + 1));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1011,6 +1046,95 @@ impl App {
             }
             if open_inventory {
                 g.inventory_open = true;
+            }
+        }
+    }
+
+    /// Draw the waypoint markers around the edge of the screen. Each marker points
+    /// at its world target: when the target is off-screen the marker is pinned to
+    /// the nearest screen edge (with a distance readout in tiles); when on-screen
+    /// it sits at the target. Default markers (home, last death) carry an icon;
+    /// personal waypoints are a dot in their stored colour.
+    fn waypoint_overlay(&self, ui: &mut egui::Ui) {
+        let Some(g) = &self.game else {
+            return;
+        };
+        let ctx = ui.ctx();
+        let screen = ctx.content_rect();
+        // Points per world pixel: the world is drawn at `ZOOM` physical pixels per
+        // world pixel, and egui works in points (physical / pixels_per_point).
+        let scale = ZOOM / ctx.pixels_per_point();
+        let player_center = g.pos + Vec2::new(PLAYER_W * 0.5, PLAYER_H * 0.5);
+        let center_pt = screen.center();
+        // Keep markers clear of the top HUD bar and the bottom hotbar.
+        let bounds = egui::Rect::from_min_max(
+            egui::pos2(screen.min.x + 16.0, screen.min.y + 34.0),
+            egui::pos2(screen.max.x - 16.0, screen.max.y - 56.0),
+        );
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("waypoint_overlay"),
+        ));
+
+        // Collect markers: (world top-left, disc colour, optional icon glyph).
+        let mut markers: Vec<(Vec2, egui::Color32, Option<&str>)> = Vec::new();
+        if let Some(h) = g.home {
+            markers.push((h, egui::Color32::from_rgb(80, 200, 120), Some("🏠")));
+        }
+        if let Some(d) = g.death {
+            markers.push((d, egui::Color32::from_rgb(210, 60, 60), Some("💀")));
+        }
+        for w in &g.waypoints {
+            let c = egui::Color32::from_rgb(
+                (w.color[0].clamp(0.0, 1.0) * 255.0) as u8,
+                (w.color[1].clamp(0.0, 1.0) * 255.0) as u8,
+                (w.color[2].clamp(0.0, 1.0) * 255.0) as u8,
+            );
+            markers.push((Vec2::new(w.x, w.y), c, None));
+        }
+
+        for (world_pos, color, icon) in markers {
+            let target_center = world_pos + Vec2::new(PLAYER_W * 0.5, PLAYER_H * 0.5);
+            let delta = target_center - player_center;
+            let want = center_pt + egui::vec2(delta.x * scale, delta.y * scale);
+            // Skip markers sitting on the player to avoid a dot under the avatar.
+            if delta.length() < 4.0 {
+                continue;
+            }
+            let on_screen = bounds.contains(want);
+            let pos = if on_screen {
+                want
+            } else {
+                clamp_to_rect_edge(bounds, want)
+            };
+            let r = 7.0;
+            painter.circle_filled(pos, r, color);
+            painter.circle_stroke(
+                pos,
+                r,
+                egui::Stroke::new(1.5, egui::Color32::from_black_alpha(160)),
+            );
+            if let Some(glyph) = icon {
+                painter.text(
+                    pos,
+                    egui::Align2::CENTER_CENTER,
+                    glyph,
+                    egui::FontId::proportional(11.0),
+                    egui::Color32::WHITE,
+                );
+            }
+            // Off-screen markers show how far away (in tiles) the target is, placed
+            // just inside the dot toward the screen centre.
+            if !on_screen {
+                let inward = (center_pt - pos).normalized();
+                let tiles = (delta.length() / TILE_SIZE).round() as i32;
+                painter.text(
+                    pos + inward * (r + 7.0),
+                    egui::Align2::CENTER_CENTER,
+                    format!("{tiles}"),
+                    egui::FontId::proportional(11.0),
+                    egui::Color32::from_white_alpha(200),
+                );
             }
         }
     }
@@ -1780,6 +1904,60 @@ impl App {
             tiles,
             CameraUniform::new([offset.x, offset.y], [vw, vh], ZOOM),
         )
+    }
+}
+
+/// Project the ray from `rect`'s centre toward `target` onto the rectangle's
+/// border, giving the point where an off-screen waypoint pins to the edge.
+fn clamp_to_rect_edge(rect: egui::Rect, target: egui::Pos2) -> egui::Pos2 {
+    let origin = rect.center();
+    let d = target - origin;
+    let half_x = (rect.width() * 0.5).max(1.0);
+    let half_y = (rect.height() * 0.5).max(1.0);
+    let tx = if d.x.abs() > 1e-3 {
+        half_x / d.x.abs()
+    } else {
+        f32::INFINITY
+    };
+    let ty = if d.y.abs() > 1e-3 {
+        half_y / d.y.abs()
+    } else {
+        f32::INFINITY
+    };
+    origin + d * tx.min(ty)
+}
+
+/// A vivid colour for a freshly-dropped waypoint, seeded from the wall clock so
+/// successive waypoints get visibly different hues. The colour rides along to the
+/// server and is stored with the waypoint, so it never changes afterwards.
+fn random_waypoint_color() -> [f32; 3] {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let mut h = nanos.wrapping_mul(2_654_435_761);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2c1b_3c6d);
+    h ^= h >> 13;
+    let hue = (h & 0xFFFF) as f32 / 65535.0;
+    hsv_to_rgb(hue, 0.65, 0.95)
+}
+
+/// Convert HSV (each component in `0..=1`) to RGB in `0..=1`.
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
+    let h6 = (h.fract() * 6.0).rem_euclid(6.0);
+    let i = h6.floor() as i32;
+    let f = h6 - i as f32;
+    let p = v * (1.0 - s);
+    let q = v * (1.0 - s * f);
+    let t = v * (1.0 - s * (1.0 - f));
+    match i {
+        0 => [v, t, p],
+        1 => [q, v, p],
+        2 => [p, v, t],
+        3 => [p, q, v],
+        4 => [t, p, v],
+        _ => [v, p, q],
     }
 }
 
@@ -2760,6 +2938,10 @@ impl App {
             KeyCode::KeyQ if pressed => self.drop_selected(),
             // F eats the food in the selected hotbar slot, if any.
             KeyCode::KeyF if pressed => self.eat_selected(),
+            // M drops a personal waypoint at the player's feet; N removes the one
+            // nearest to them.
+            KeyCode::KeyM if pressed => self.add_waypoint(),
+            KeyCode::KeyN if pressed => self.remove_nearest_waypoint(),
             // Enter or T opens the chat box (typing is then captured by egui).
             KeyCode::Enter | KeyCode::KeyT if pressed => self.open_chat(),
             // Escape closes an open menu (inventory, forge, or campfire) if any,
@@ -2854,6 +3036,56 @@ impl App {
                     slot: g.selected_slot as u8,
                 },
                 _ => return,
+            }
+        };
+        if let Some(net) = &self.net {
+            let _ = net.commands.send(cmd);
+        }
+    }
+
+    /// Drop a personal waypoint at the player's current position, drawn with a
+    /// fresh random colour. The server stores it and echoes the list back. No-op
+    /// while a menu is open (to keep the key from firing under a GUI).
+    fn add_waypoint(&mut self) {
+        let cmd = {
+            let Some(g) = self.game.as_ref() else {
+                return;
+            };
+            if g.inventory_open || g.forge_open || g.campfire_open {
+                return;
+            }
+            NetCommand::AddWaypoint {
+                x: g.pos.x,
+                y: g.pos.y,
+                color: random_waypoint_color(),
+            }
+        };
+        if let Some(net) = &self.net {
+            let _ = net.commands.send(cmd);
+        }
+    }
+
+    /// Remove the personal waypoint nearest the player. No-op while a menu is open
+    /// or the player has none. The server resyncs the list.
+    fn remove_nearest_waypoint(&mut self) {
+        let cmd = {
+            let Some(g) = self.game.as_ref() else {
+                return;
+            };
+            if g.inventory_open || g.forge_open || g.campfire_open {
+                return;
+            }
+            let nearest = g.waypoints.iter().min_by(|a, b| {
+                let da = g.pos.distance_squared(Vec2::new(a.x, a.y));
+                let db = g.pos.distance_squared(Vec2::new(b.x, b.y));
+                da.total_cmp(&db)
+            });
+            let Some(nearest) = nearest else {
+                return;
+            };
+            NetCommand::RemoveWaypoint {
+                x: nearest.x,
+                y: nearest.y,
             }
         };
         if let Some(net) = &self.net {

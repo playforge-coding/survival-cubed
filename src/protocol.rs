@@ -12,6 +12,18 @@ use crate::inventory::Slot;
 /// Identifier of a block type. `0` is always air. See [`crate::block`].
 pub type BlockId = u16;
 
+/// A player-placed map marker. Its world position is the player's top-left
+/// (matching [`crate::entity`] coordinates), and `color` is a stable RGB chosen
+/// when the waypoint is created, so the on-screen dot keeps the same hue for the
+/// life of the waypoint. Default markers (home, last death) are derived on the
+/// client and never travel as `Waypoint`s.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Waypoint {
+    pub x: f32,
+    pub y: f32,
+    pub color: [f32; 3],
+}
+
 /// Wire-protocol compatibility version. **Bump this on every incompatible change
 /// to anything that crosses the wire** — adding/removing/reordering a
 /// [`ClientMessage`] or [`ServerMessage`] variant, changing a variant's fields,
@@ -23,7 +35,7 @@ pub type BlockId = u16;
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -101,6 +113,13 @@ pub enum ClientMessage {
     /// the cell is a campfire before recording it. Sent when the player opens a
     /// campfire's GUI (i.e. interacts with it).
     SetRespawn { x: i32, y: i32 },
+    /// Add a personal waypoint at world pixel `(x, y)` (the player's current
+    /// position), drawn with `color`. The server stores it per-player and echoes
+    /// the full list back via [`ServerMessage::Waypoints`].
+    AddWaypoint { x: f32, y: f32, color: [f32; 3] },
+    /// Remove the personal waypoint nearest to world pixel `(x, y)`. The server
+    /// resyncs the list via [`ServerMessage::Waypoints`].
+    RemoveWaypoint { x: f32, y: f32 },
     /// Report the owning player entity's position (pixels, world space).
     PlayerMove { x: f32, y: f32 },
     /// Melee-attack another entity (e.g. a slime). The server validates range
@@ -180,8 +199,18 @@ pub enum ServerMessage {
     /// Broadcast periodically; clients advance it locally in between.
     TimeOfDay { t: f32 },
     /// Instruct the owning client to move its player avatar back to a spawn
-    /// point (after death). Health is restored via a separate `EntityHealth`.
-    Respawn { x: f32, y: f32 },
+    /// point. Health is restored via a separate `EntityHealth`. `died` is `true`
+    /// when this is a death respawn (the client drops a "last death" waypoint at
+    /// the spot it was standing) and `false` for a reconnect teleport to the
+    /// player's saved position.
+    Respawn { x: f32, y: f32, died: bool },
+    /// Authoritative snapshot of the owning player's personal waypoints plus the
+    /// current home (respawn) point in world pixels. Sent on join and after any
+    /// waypoint or respawn-point change. Only ever sent to the list's owner.
+    Waypoints {
+        list: Vec<Waypoint>,
+        home: (f32, f32),
+    },
     /// Authoritative snapshot of the owning player's inventory slots (hotbar
     /// first, then storage). Sent on join and after any change (pickup,
     /// placement, slot move). Only ever sent to the inventory's owner.
