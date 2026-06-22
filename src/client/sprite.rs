@@ -26,7 +26,7 @@ pub static PLAYER_SPRITE: SpriteDef = SpriteDef {
     name: "player",
     frame_w: 16,
     frame_h: 32,
-    frames: 4,
+    frames: 2,
     fps: 8.0,
 };
 

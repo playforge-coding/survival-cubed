@@ -22,23 +22,18 @@ macro_rules! blocks {
 }
 
 /// Generate [`sprite_png`]: a (name, frame) → embedded-PNG lookup over the files
-/// in `assets/textures/entities/<name>/<frame>.png`. Every entity sheet has four
-/// frames (`0.png`..`3.png`).
+/// in `assets/textures/entities/<name>/<frame>.png`. Each entity lists its own
+/// frames, so sheets can have any number of frames (`"player" => [0, 1]`).
 macro_rules! sprites {
-    ($($name:literal),* $(,)?) => {
+    ($($name:literal => [$($frame:literal),+ $(,)?]),* $(,)?) => {
         /// Raw PNG bytes for one frame of an entity sprite sheet (`None` if not embedded).
         pub fn sprite_png(name: &str, frame: u32) -> Option<&'static [u8]> {
             match (name, frame) {
-                $(
-                    ($name, 0) => Some(include_bytes!(
-                        concat!("../assets/textures/entities/", $name, "/0.png"))),
-                    ($name, 1) => Some(include_bytes!(
-                        concat!("../assets/textures/entities/", $name, "/1.png"))),
-                    ($name, 2) => Some(include_bytes!(
-                        concat!("../assets/textures/entities/", $name, "/2.png"))),
-                    ($name, 3) => Some(include_bytes!(
-                        concat!("../assets/textures/entities/", $name, "/3.png"))),
-                )*
+                $($(
+                    ($name, $frame) => Some(include_bytes!(concat!(
+                        "../assets/textures/entities/", $name, "/",
+                        stringify!($frame), ".png"))),
+                )+)*
                 _ => None,
             }
         }
@@ -64,10 +59,10 @@ blocks!(
 );
 
 sprites!(
-    "player",
-    "slime",
-    "chicken",
-    "goat",
-    "zombie",
-    "zombie/death"
+    "player" => [0, 1],
+    "slime" => [0, 1, 2, 3],
+    "chicken" => [0, 1, 2, 3],
+    "goat" => [0, 1, 2, 3],
+    "zombie" => [0, 1, 2, 3],
+    "zombie/death" => [0, 1, 2, 3],
 );
