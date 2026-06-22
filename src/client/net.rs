@@ -131,6 +131,24 @@ pub enum NetCommand {
     Repair {
         item: BlockId,
     },
+    /// Eat the food item in inventory `slot` (server adjusts health).
+    Eat {
+        slot: u8,
+    },
+    /// Feed one unit of `fuel` (wood or bark) to the campfire at cell `(x, y)`.
+    FuelCampfire {
+        x: i32,
+        y: i32,
+        fuel: BlockId,
+    },
+    /// Cook the campfire recipe at index `recipe` up to `count` times at the
+    /// (lit) campfire at cell `(x, y)`.
+    Cook {
+        x: i32,
+        y: i32,
+        recipe: u16,
+        count: u32,
+    },
     PlayerMove {
         x: f32,
         y: f32,
@@ -330,6 +348,19 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::RequestChunk { cx, cy } => ClientMessage::RequestChunk { cx, cy },
         NetCommand::Attack { target, held } => ClientMessage::Attack { target, held },
         NetCommand::Repair { item } => ClientMessage::Repair { item },
+        NetCommand::Eat { slot } => ClientMessage::Eat { slot },
+        NetCommand::FuelCampfire { x, y, fuel } => ClientMessage::FuelCampfire { x, y, fuel },
+        NetCommand::Cook {
+            x,
+            y,
+            recipe,
+            count,
+        } => ClientMessage::Cook {
+            x,
+            y,
+            recipe,
+            count,
+        },
         NetCommand::FallDamage { amount } => ClientMessage::FallDamage { amount },
         NetCommand::SetTime { t } => ClientMessage::SetTime { t },
         NetCommand::SpawnEntity { kind, x, y } => ClientMessage::SpawnEntity { kind, x, y },

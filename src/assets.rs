@@ -60,6 +60,11 @@ blocks!(
     "stone_sword",
     "iron_sword",
     "ladder",
+    "apple",
+    "raw_meat",
+    "cooked_meat",
+    "campfire",
+    "campfire_lit",
 );
 
 sprites!(

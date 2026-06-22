@@ -9,8 +9,8 @@
 //! A recipe is identified on the wire by its index in [`RECIPES`].
 
 use crate::block::{
-    BARK, FORGE, IRON_INGOT, IRON_PICKAXE, IRON_SWORD, LADDER, LOG, PICKAXE, RAW_IRON, STICK,
-    STONE, STONE_PICKAXE, STONE_SWORD, WOOD, WOOD_SWORD,
+    BARK, CAMPFIRE, COOKED_MEAT, FORGE, IRON_INGOT, IRON_PICKAXE, IRON_SWORD, LADDER, LOG, PICKAXE,
+    RAW_IRON, RAW_MEAT, STICK, STONE, STONE_PICKAXE, STONE_SWORD, WOOD, WOOD_SWORD,
 };
 use crate::inventory::Inventory;
 use crate::protocol::BlockId;
@@ -80,6 +80,24 @@ pub const RECIPES: &[Recipe] = &[
         name: "Ladder",
         inputs: &[(WOOD, 1), (STICK, 2)],
         outputs: &[(LADDER, 3)],
+    },
+    // A ring of stone cradling a pile of bark: a campfire to cook on.
+    Recipe {
+        name: "Campfire",
+        inputs: &[(STONE, 1), (BARK, 5)],
+        outputs: &[(CAMPFIRE, 1)],
+    },
+];
+
+/// Cooking recipes, available only at a lit [`CAMPFIRE`](crate::block::CAMPFIRE)
+/// (its GUI lists these). Unlike smelting, cooking burns no fuel of its own — the
+/// campfire simply has to be lit. A recipe's index here is its wire id.
+pub const COOK_RECIPES: &[Recipe] = &[
+    // Raw meat sizzles into a safe, hearty cooked meal.
+    Recipe {
+        name: "Cooked Meat",
+        inputs: &[(RAW_MEAT, 1)],
+        outputs: &[(COOKED_MEAT, 1)],
     },
 ];
 

@@ -59,6 +59,22 @@ pub const IRON_SWORD: BlockId = 18;
 /// A ladder. A placeable, non-solid block mounted on the side of a wall and
 /// climbed vertically with the jump/down inputs (see [`is_climbable`]).
 pub const LADDER: BlockId = 19;
+/// An apple. A food item occasionally shed by [`LEAVES`]; eaten to restore
+/// health (see [`food_heal`]).
+pub const APPLE: BlockId = 20;
+/// Raw animal meat, dropped by slain chickens and goats. A food item, but eating
+/// it raw makes you sick (it *costs* health); cook it on a [`CAMPFIRE`] first.
+pub const RAW_MEAT: BlockId = 21;
+/// Cooked meat, made by cooking [`RAW_MEAT`] on a lit [`CAMPFIRE`]. A food item
+/// that restores a hearty amount of health.
+pub const COOKED_MEAT: BlockId = 22;
+/// A campfire (unlit). A placeable block crafted from stone and bark; feed it
+/// wood or bark to light it ([`CAMPFIRE_LIT`]) and cook raw meat on it.
+pub const CAMPFIRE: BlockId = 23;
+/// A lit campfire. The burning state of a [`CAMPFIRE`]: never held as an item
+/// (you light a placed campfire by adding fuel), it reverts to [`CAMPFIRE`] when
+/// its fuel runs out. Raw meat can only be cooked while a campfire is lit.
+pub const CAMPFIRE_LIT: BlockId = 24;
 
 /// Definition of a single block type.
 pub struct BlockDef {
@@ -114,6 +130,15 @@ impl BlockRegistry {
         r.register("iron_sword", false, true, false, 0.0);
         // A ladder: a placeable but non-solid block you climb through.
         r.register("ladder", false, true, true, 0.4);
+        // Food: an apple (shed by leaves) and raw/cooked meat (dropped by
+        // animals, cooked on a campfire). All non-solid inventory items.
+        r.register("apple", false, true, false, 0.0);
+        r.register("raw_meat", false, true, false, 0.0);
+        r.register("cooked_meat", false, true, false, 0.0);
+        // A campfire and its lit state. Non-solid (you stand in it) placeable
+        // blocks; `campfire_lit` is never held, only the world-side burning form.
+        r.register("campfire", false, true, true, 0.6);
+        r.register("campfire_lit", false, true, false, 0.6);
         r
     }
 
@@ -319,12 +344,123 @@ pub fn attack_damage(item: BlockId) -> i32 {
 }
 
 /// The item a broken `block` drops (assuming [`drops_when_mined`]). Most blocks
-/// drop themselves; a few transform (leaves shed a stick, iron ore yields raw
-/// iron).
+/// drop themselves; a few transform (iron ore yields raw iron, a lit campfire
+/// drops the plain campfire it reverts to). Leaves are special-cased separately
+/// in [`mined_drop_rolled`] because their drop is randomized.
 pub fn mined_drop(block: BlockId) -> BlockId {
     match block {
-        LEAVES => STICK,
         IRON_ORE => RAW_IRON,
+        CAMPFIRE_LIT => CAMPFIRE,
         other => other,
+    }
+}
+
+/// The item a broken `block` drops given a random `roll` in `[0, 1)`, or `None`
+/// for no drop. Leaves usually shed a stick, occasionally an apple, and sometimes
+/// nothing; every other block drops deterministically (see [`mined_drop`]).
+pub fn mined_drop_rolled(block: BlockId, roll: f32) -> Option<BlockId> {
+    match block {
+        LEAVES => {
+            if roll < 0.70 {
+                Some(STICK) // sticks are the common drop
+            } else if roll < 0.85 {
+                Some(APPLE) // apples are rarer than sticks
+            } else {
+                None // and sometimes leaves yield nothing
+            }
+        }
+        other => Some(mined_drop(other)),
+    }
+}
+
+// --- Food & cooking ------------------------------------------------------
+
+/// Health restored by eating `item`, or `None` if it isn't food. A negative
+/// value *costs* health: eating [`RAW_MEAT`] makes you sick, so it must be
+/// cooked into [`COOKED_MEAT`] on a [`CAMPFIRE`] first.
+pub fn food_heal(item: BlockId) -> Option<i32> {
+    match item {
+        APPLE => Some(4),
+        COOKED_MEAT => Some(8),
+        RAW_MEAT => Some(-3),
+        _ => None,
+    }
+}
+
+/// Whether `item` can be eaten (has a [`food_heal`] effect).
+pub fn is_food(item: BlockId) -> bool {
+    food_heal(item).is_some()
+}
+
+/// Whether `block` is a campfire in either state (unlit or lit).
+pub fn is_campfire(block: BlockId) -> bool {
+    matches!(block, CAMPFIRE | CAMPFIRE_LIT)
+}
+
+/// Seconds of burn time one unit of `item` adds to a campfire when used as fuel,
+/// or `None` if it isn't fuel. Wood burns long; bark gives a smaller boost.
+pub fn fuel_seconds(item: BlockId) -> Option<f32> {
+    match item {
+        WOOD => Some(45.0),
+        BARK => Some(12.0),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn leaves_roll_stick_apple_or_nothing() {
+        // Sticks are the common drop, apples rarer, and the tail is empty.
+        assert_eq!(mined_drop_rolled(LEAVES, 0.0), Some(STICK));
+        assert_eq!(mined_drop_rolled(LEAVES, 0.69), Some(STICK));
+        assert_eq!(mined_drop_rolled(LEAVES, 0.70), Some(APPLE));
+        assert_eq!(mined_drop_rolled(LEAVES, 0.84), Some(APPLE));
+        assert_eq!(mined_drop_rolled(LEAVES, 0.85), None);
+        assert_eq!(mined_drop_rolled(LEAVES, 0.99), None);
+        // Apples must stay rarer than sticks (smaller probability band).
+        let stick_band = 0.70;
+        let apple_band = 0.85 - 0.70;
+        assert!(apple_band < stick_band);
+    }
+
+    #[test]
+    fn other_blocks_drop_deterministically_regardless_of_roll() {
+        for roll in [0.0, 0.5, 0.999] {
+            assert_eq!(mined_drop_rolled(STONE, roll), Some(STONE));
+            assert_eq!(mined_drop_rolled(IRON_ORE, roll), Some(RAW_IRON));
+            assert_eq!(mined_drop_rolled(CAMPFIRE_LIT, roll), Some(CAMPFIRE));
+        }
+    }
+
+    #[test]
+    fn food_heals_but_raw_meat_hurts() {
+        assert_eq!(food_heal(APPLE), Some(4));
+        assert_eq!(food_heal(COOKED_MEAT), Some(8));
+        // Raw meat is food, but eating it costs health.
+        assert_eq!(food_heal(RAW_MEAT), Some(-3));
+        assert!(is_food(RAW_MEAT));
+        // Cooking turns the harmful raw meat into a beneficial meal.
+        assert!(food_heal(RAW_MEAT).unwrap() < 0);
+        assert!(food_heal(COOKED_MEAT).unwrap() > 0);
+        // Non-food items can't be eaten.
+        assert_eq!(food_heal(STONE), None);
+        assert!(!is_food(STICK));
+    }
+
+    #[test]
+    fn only_wood_and_bark_are_fuel_and_wood_burns_longer() {
+        assert!(fuel_seconds(WOOD).unwrap() > fuel_seconds(BARK).unwrap());
+        assert_eq!(fuel_seconds(STONE), None);
+        assert_eq!(fuel_seconds(APPLE), None);
+    }
+
+    #[test]
+    fn campfire_states_are_recognized() {
+        assert!(is_campfire(CAMPFIRE));
+        assert!(is_campfire(CAMPFIRE_LIT));
+        assert!(!is_campfire(FORGE));
     }
 }

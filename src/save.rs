@@ -36,7 +36,7 @@ const CHUNKS_DIR: &str = "chunks";
 /// Magic prefix on `world.dat` ("SCWD" — Survival Cubed World Data).
 const MAGIC: u32 = 0x5343_5744;
 /// On-disk format version; bump on any incompatible layout change.
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 /// Bytes per chunk file: one little-endian `u16` per cell.
 const CHUNK_BYTES: usize = CHUNK_AREA * 2;
 
@@ -67,6 +67,10 @@ pub struct WorldMeta {
     pub entities: Vec<Entity>,
     /// Saved state of every player who has ever joined this world.
     pub players: Vec<SavedPlayer>,
+    /// Lit campfires as `(x, y, remaining_burn_secs)`, so fires keep burning
+    /// across a save/reload instead of staying lit forever or going dark.
+    #[serde(default)]
+    pub campfires: Vec<(i32, i32, f32)>,
 }
 
 /// Reads and writes a single world's files under `dir`.
@@ -274,6 +278,7 @@ mod tests {
                     inv
                 },
             }],
+            campfires: vec![(3, -5, 12.5), (-8, 2, 30.0)],
         };
         store.save_meta(&meta).unwrap();
 
@@ -290,6 +295,7 @@ mod tests {
         assert_eq!(got.players[0].health, 13);
         assert_eq!(got.players[0].inventory.get(0), Some((STONE, 42, 0)));
         assert_eq!(got.players[0].inventory.get(1), Some((DIRT, 7, 0)));
+        assert_eq!(got.campfires, meta.campfires);
     }
 
     #[test]

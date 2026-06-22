@@ -23,7 +23,7 @@ pub type BlockId = u16;
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -79,6 +79,23 @@ pub enum ClientMessage {
     /// durability (see [`crate::block::repair_step`]) in exchange for one unit of
     /// the tool's [`repair_material`](crate::block::repair_material).
     Repair { item: BlockId },
+    /// Eat the food item in inventory `slot`: the server consumes one and adjusts
+    /// the player's health by its [`food_heal`](crate::block::food_heal) amount
+    /// (raw meat *costs* health). No-op if the slot doesn't hold food.
+    Eat { slot: u8 },
+    /// Feed one unit of `fuel` (wood or bark) to the campfire at world cell
+    /// `(x, y)`, lighting it and extending its burn time. The server validates the
+    /// cell is a campfire and the player holds the fuel.
+    FuelCampfire { x: i32, y: i32, fuel: BlockId },
+    /// Cook [`COOK_RECIPES`](crate::recipe::COOK_RECIPES)`[recipe]` up to `count`
+    /// times on the campfire at world cell `(x, y)`. The server requires that
+    /// campfire to be lit and validates the inputs per repetition.
+    Cook {
+        x: i32,
+        y: i32,
+        recipe: u16,
+        count: u32,
+    },
     /// Report the owning player entity's position (pixels, world space).
     PlayerMove { x: f32, y: f32 },
     /// Melee-attack another entity (e.g. a slime). The server validates range

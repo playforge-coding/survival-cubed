@@ -326,6 +326,11 @@ struct Shared {
     /// Authoritative: placements consume from it and pickups add to it. Folded
     /// into [`SavedPlayer`] on disconnect so it persists.
     inventories: Mutex<HashMap<EntityId, Inventory>>,
+    /// Lit campfires, keyed by world cell, holding each one's remaining burn time
+    /// in seconds. A cell is present only while its campfire is lit; the tick loop
+    /// counts each down and extinguishes it (reverting the block) at zero.
+    /// Persisted in [`WorldMeta`] so fires survive a save/reload.
+    campfires: Mutex<HashMap<(i32, i32), f32>>,
     /// Set when the owning [`RunningServer`] is dropped, to stop the autosave
     /// loop.
     shutdown: AtomicBool,
@@ -339,6 +344,21 @@ impl Shared {
     /// Current normalized time of day in `[0, 1)`.
     fn time_of_day(&self) -> f32 {
         daylight::time_of_day(self.start.lock().elapsed().as_secs_f32())
+    }
+
+    /// A pseudo-random value in `[0, 1)`, mixed from the entity counter and the
+    /// sub-second clock so successive rolls (e.g. for randomized leaf drops) vary.
+    /// Not for anything that needs to be reproducible.
+    fn rand_unit(&self) -> f32 {
+        let a = self.next_id.load(Ordering::Relaxed);
+        let b = self.start.lock().elapsed().subsec_nanos();
+        let mut h = a
+            .wrapping_mul(2_654_435_761)
+            .wrapping_add(b.wrapping_mul(40_503));
+        h ^= h >> 15;
+        h = h.wrapping_mul(0x2c1b_3c6d);
+        h ^= h >> 13;
+        (h & 0x00FF_FFFF) as f32 / 16_777_216.0
     }
 
     /// Flush the whole world to disk: dirty chunks plus a fresh `world.dat`
@@ -374,6 +394,13 @@ impl Shared {
             }
         }
 
+        let campfires = self
+            .campfires
+            .lock()
+            .iter()
+            .map(|(&(x, y), &secs)| (x, y, secs))
+            .collect();
+
         let meta = WorldMeta {
             seed,
             elapsed_secs: self.start.lock().elapsed().as_secs_f32(),
@@ -381,6 +408,7 @@ impl Shared {
             spawn: self.spawn,
             entities: creatures,
             players: players.into_values().collect(),
+            campfires,
         };
         if let Err(e) = world.store.save_meta(&meta) {
             log::error!("failed to save world: {e:#}");
@@ -600,6 +628,151 @@ impl Shared {
             .unwrap_or_default();
         self.send_to(id, ServerMessage::Inventory { slots });
     }
+
+    /// Eat the food in player `id`'s inventory `slot`: consume one and adjust the
+    /// player's health by its [`food_heal`](crate::block::food_heal). A positive
+    /// amount heals (capped at the player's maximum); a negative one (raw meat)
+    /// damages and can even kill. Returns the health/hit messages to broadcast and
+    /// a respawn target if the bite proved fatal. No-op (empty) if the slot holds
+    /// no food.
+    fn eat(&self, id: EntityId, slot: usize) -> (Vec<ServerMessage>, Option<(EntityId, f32, f32)>) {
+        let Some(item) = self.peek_slot(id, slot) else {
+            return (Vec::new(), None);
+        };
+        let Some(delta) = crate::block::food_heal(item) else {
+            return (Vec::new(), None);
+        };
+        // Spend one serving before applying its effect.
+        {
+            let mut invs = self.inventories.lock();
+            let Some(inv) = invs.get_mut(&id) else {
+                return (Vec::new(), None);
+            };
+            if inv.take_one(slot).is_none() {
+                return (Vec::new(), None);
+            }
+        }
+        let mut entities = self.entities.lock();
+        if delta < 0 {
+            // Raw meat: route through the damage path so a fatal bite respawns.
+            apply_damage(&mut entities, id, -delta, (0.0, 0.0), self.spawn)
+        } else {
+            let Some(e) = entities.get_mut(id) else {
+                return (Vec::new(), None);
+            };
+            e.health = (e.health + delta).min(e.max_health);
+            (
+                vec![ServerMessage::EntityHealth {
+                    id,
+                    health: e.health,
+                    max_health: e.max_health,
+                }],
+                None,
+            )
+        }
+    }
+
+    /// Feed one unit of `fuel` to the campfire at cell `(x, y)` for player `id`:
+    /// light it (if unlit) and extend its burn time. No-op unless the cell is a
+    /// campfire, `fuel` is valid fuel, and the player holds some.
+    fn fuel_campfire(&self, id: EntityId, x: i32, y: i32, fuel: BlockId) {
+        let Some(secs) = crate::block::fuel_seconds(fuel) else {
+            return;
+        };
+        if !crate::block::is_campfire(self.world.lock().get(x, y)) {
+            return;
+        }
+        // Spend one unit of fuel.
+        {
+            let mut invs = self.inventories.lock();
+            let inv = invs.entry(id).or_default();
+            if inv.count(fuel) == 0 {
+                return;
+            }
+            inv.remove(fuel, 1);
+        }
+        // Stoke the fire (extending an already-burning one).
+        *self.campfires.lock().entry((x, y)).or_insert(0.0) += secs;
+        // Light it if it wasn't already, telling everyone its new lit look.
+        let lit = {
+            let mut world = self.world.lock();
+            world.get(x, y) == crate::block::CAMPFIRE && world.set(x, y, crate::block::CAMPFIRE_LIT)
+        };
+        if lit {
+            self.broadcast_all(ServerMessage::BlockUpdate {
+                x,
+                y,
+                block: crate::block::CAMPFIRE_LIT,
+            });
+        }
+        self.send_inventory(id);
+    }
+
+    /// Cook `COOK_RECIPES[recipe_idx]` up to `count` times for player `id` on the
+    /// campfire at cell `(x, y)`, stopping when the inputs run out. No-op unless
+    /// that campfire is lit.
+    fn cook(&self, id: EntityId, x: i32, y: i32, recipe_idx: usize, count: u32) {
+        if self.world.lock().get(x, y) != crate::block::CAMPFIRE_LIT {
+            return;
+        }
+        if let Some(recipe) = crate::recipe::COOK_RECIPES.get(recipe_idx) {
+            for _ in 0..count {
+                if !self.apply_recipe(id, recipe) {
+                    break;
+                }
+            }
+        }
+        self.send_inventory(id);
+    }
+
+    /// Advance every lit campfire by `dt`, dropping any whose underlying block is
+    /// gone and extinguishing any whose fuel has run out (reverting the cell to an
+    /// unlit campfire). Returns the resulting block updates to broadcast.
+    fn tick_campfires(&self, dt: f32) -> Vec<ServerMessage> {
+        let mut expired = Vec::new();
+        {
+            let mut world = self.world.lock();
+            let mut fires = self.campfires.lock();
+            fires.retain(|&(x, y), secs| {
+                if !crate::block::is_campfire(world.get(x, y)) {
+                    return false; // the campfire was mined or overwritten
+                }
+                *secs -= dt;
+                if *secs <= 0.0 {
+                    expired.push((x, y));
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        let mut msgs = Vec::new();
+        if !expired.is_empty() {
+            let mut world = self.world.lock();
+            for (x, y) in expired {
+                if world.get(x, y) == crate::block::CAMPFIRE_LIT
+                    && world.set(x, y, crate::block::CAMPFIRE)
+                {
+                    msgs.push(ServerMessage::BlockUpdate {
+                        x,
+                        y,
+                        block: crate::block::CAMPFIRE,
+                    });
+                }
+            }
+        }
+        msgs
+    }
+}
+
+/// Items a slain creature of `kind` drops, as `(item, count)` pairs. Animals
+/// (chickens, goats) drop raw meat; everything else drops nothing.
+fn creature_loot(kind: &EntityKind) -> &'static [(BlockId, u32)] {
+    match kind {
+        EntityKind::Chicken => &[(crate::block::RAW_MEAT, 1)],
+        EntityKind::Goat => &[(crate::block::RAW_MEAT, 2)],
+        _ => &[],
+    }
 }
 
 /// Start a server on a background thread. `bind` of port 0 picks an ephemeral
@@ -788,12 +961,16 @@ fn build_endpoint(
     // Restore saved creatures into the live world; players go to the saved set.
     let mut entities = Entities::new();
     let mut saved_players = HashMap::new();
+    let mut campfires = HashMap::new();
     if let Some(m) = &saved {
         for e in &m.entities {
             entities.insert(e.clone());
         }
         for p in &m.players {
             saved_players.insert(p.name.clone(), p.clone());
+        }
+        for &(x, y, secs) in &m.campfires {
+            campfires.insert((x, y), secs);
         }
     }
 
@@ -813,6 +990,7 @@ fn build_endpoint(
         dev_token,
         saved_players: Mutex::new(saved_players),
         inventories: Mutex::new(HashMap::new()),
+        campfires: Mutex::new(campfires),
         shutdown: AtomicBool::new(false),
     });
 
@@ -1186,6 +1364,11 @@ async fn entity_tick_loop(shared: Arc<Shared>) {
         pickups.dedup();
         for pid in pickups {
             shared.send_inventory(pid);
+        }
+
+        // Burn down lit campfires, extinguishing any that have run out of fuel.
+        for msg in shared.tick_campfires(TICK_DT) {
+            shared.broadcast_all(msg);
         }
 
         // After dark, periodically conjure zombies near the players.
@@ -1781,21 +1964,29 @@ fn move_x(world: &mut ServerWorld, x: f32, y: f32, w: f32, h: f32, dx: f32) -> (
     if dx == 0.0 {
         return (x, false);
     }
-    let new_x = x + dx;
     let y0 = (y / TILE_SIZE).floor() as i32;
     let y1 = ((y + h - EPS) / TILE_SIZE).floor() as i32;
-    if dx > 0.0 {
-        let tx = ((new_x + w - EPS) / TILE_SIZE).floor() as i32;
-        if (y0..=y1).any(|ty| world.solid(tx, ty)) {
-            return (tx as f32 * TILE_SIZE - w, true);
+    // Substep so a fast mover can't tunnel through a tile: each pass advances at
+    // most one tile and checks the column it lands in.
+    let steps = (dx.abs() / TILE_SIZE).ceil().max(1.0) as i32;
+    let step = dx / steps as f32;
+    let mut cx = x;
+    for _ in 0..steps {
+        let new_x = cx + step;
+        if step > 0.0 {
+            let tx = ((new_x + w - EPS) / TILE_SIZE).floor() as i32;
+            if (y0..=y1).any(|ty| world.solid(tx, ty)) {
+                return (tx as f32 * TILE_SIZE - w, true);
+            }
+        } else {
+            let tx = (new_x / TILE_SIZE).floor() as i32;
+            if (y0..=y1).any(|ty| world.solid(tx, ty)) {
+                return ((tx + 1) as f32 * TILE_SIZE, true);
+            }
         }
-    } else {
-        let tx = (new_x / TILE_SIZE).floor() as i32;
-        if (y0..=y1).any(|ty| world.solid(tx, ty)) {
-            return ((tx + 1) as f32 * TILE_SIZE, true);
-        }
+        cx = new_x;
     }
-    (new_x, false)
+    (cx, false)
 }
 
 /// Move an AABB vertically by `dy`, stopping at the first solid row. Returns the
@@ -1804,21 +1995,29 @@ fn move_y(world: &mut ServerWorld, x: f32, y: f32, w: f32, h: f32, dy: f32) -> (
     if dy == 0.0 {
         return (y, false);
     }
-    let new_y = y + dy;
     let x0 = (x / TILE_SIZE).floor() as i32;
     let x1 = ((x + w - EPS) / TILE_SIZE).floor() as i32;
-    if dy > 0.0 {
-        let ty = ((new_y + h - EPS) / TILE_SIZE).floor() as i32;
-        if (x0..=x1).any(|tx| world.solid(tx, ty)) {
-            return (ty as f32 * TILE_SIZE - h, true);
+    // Substep so a fast fall can't tunnel through a tile: each pass advances at
+    // most one tile and checks the row it lands in.
+    let steps = (dy.abs() / TILE_SIZE).ceil().max(1.0) as i32;
+    let step = dy / steps as f32;
+    let mut cy = y;
+    for _ in 0..steps {
+        let new_y = cy + step;
+        if step > 0.0 {
+            let ty = ((new_y + h - EPS) / TILE_SIZE).floor() as i32;
+            if (x0..=x1).any(|tx| world.solid(tx, ty)) {
+                return (ty as f32 * TILE_SIZE - h, true);
+            }
+        } else {
+            let ty = (new_y / TILE_SIZE).floor() as i32;
+            if (x0..=x1).any(|tx| world.solid(tx, ty)) {
+                return ((ty + 1) as f32 * TILE_SIZE, true);
+            }
         }
-    } else {
-        let ty = (new_y / TILE_SIZE).floor() as i32;
-        if (x0..=x1).any(|tx| world.solid(tx, ty)) {
-            return ((ty + 1) as f32 * TILE_SIZE, true);
-        }
+        cy = new_y;
     }
-    (new_y, false)
+    (cy, false)
 }
 
 /// Resolved motion of a ground-walking creature after one [`step_ground`] tick.
@@ -2195,11 +2394,20 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             y,
                             block: crate::block::AIR,
                         });
+                        // A mined campfire forgets its burn timer (it drops as a
+                        // plain unlit campfire via mined_drop).
+                        if crate::block::is_campfire(prev) {
+                            shared.campfires.lock().remove(&(x, y));
+                        }
                         // Tool-gated blocks (stone, iron ore) only yield a drop
                         // when mined with a strong enough pickaxe; broken with too
-                        // weak a tool they crumble to nothing.
-                        if crate::block::drops_when_mined(prev, held) {
-                            spawn_drop(&shared, x, y, crate::block::mined_drop(prev));
+                        // weak a tool they crumble to nothing. Leaves roll between
+                        // a stick, an apple, or nothing.
+                        if crate::block::drops_when_mined(prev, held)
+                            && let Some(drop) =
+                                crate::block::mined_drop_rolled(prev, shared.rand_unit())
+                        {
+                            spawn_drop(&shared, x, y, drop);
                         }
                         // Mining wears the held tool: a pickaxe's intended job
                         // costs little, a sword used to dig wears twice as fast.
@@ -2327,6 +2535,27 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     shared.repair(id, item);
                     shared.send_inventory(id);
                 }
+                ClientMessage::Eat { slot } => {
+                    let (msgs, respawn) = shared.eat(id, slot as usize);
+                    for m in msgs {
+                        shared.broadcast_all(m);
+                    }
+                    if let Some((rid, rx, ry)) = respawn {
+                        shared.send_to(rid, ServerMessage::Respawn { x: rx, y: ry });
+                    }
+                    shared.send_inventory(id);
+                }
+                ClientMessage::FuelCampfire { x, y, fuel } => {
+                    shared.fuel_campfire(id, x, y, fuel);
+                }
+                ClientMessage::Cook {
+                    x,
+                    y,
+                    recipe,
+                    count,
+                } => {
+                    shared.cook(id, x, y, recipe as usize, count);
+                }
                 ClientMessage::PlayerMove { x, y } => {
                     if let Some(e) = shared.entities.lock().get_mut(id) {
                         e.x = x;
@@ -2369,6 +2598,12 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         }
                     };
                     if let Some(kb) = knockback {
+                        // Snapshot the victim's kind and position before the hit,
+                        // so a fatal blow can spill its loot where it fell.
+                        let victim = {
+                            let entities = shared.entities.lock();
+                            entities.get(target).map(|e| (e.kind.clone(), e.x, e.y))
+                        };
                         let (msgs, respawn) = {
                             let mut entities = shared.entities.lock();
                             apply_damage(
@@ -2384,6 +2619,19 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         }
                         if let Some((rid, rx, ry)) = respawn {
                             shared.send_to(rid, ServerMessage::Respawn { x: rx, y: ry });
+                        }
+                        // If that killed a creature (it's no longer in the world),
+                        // drop whatever it carries — animals leave raw meat.
+                        if let Some((kind, vx, vy)) = victim
+                            && shared.entities.lock().get(target).is_none()
+                        {
+                            let cx = (vx / TILE_SIZE) as i32;
+                            let cy = (vy / TILE_SIZE) as i32;
+                            for &(item, n) in creature_loot(&kind) {
+                                for _ in 0..n {
+                                    spawn_drop(&shared, cx, cy, item);
+                                }
+                            }
                         }
                         // A landed swing wears the weapon: a sword's intended job
                         // costs little, a pickaxe swung as a weapon wears double.

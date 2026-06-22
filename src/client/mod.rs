@@ -138,6 +138,10 @@ struct GameState {
     /// to (opened by right-clicking a forge block).
     forge_open: bool,
     forge_cell: Option<(i32, i32)>,
+    /// Whether the campfire GUI is open, and which campfire cell it belongs to
+    /// (opened by right-clicking a campfire block).
+    campfire_open: bool,
+    campfire_cell: Option<(i32, i32)>,
     action_timer: f32,
     move_send_timer: f32,
     last_sent: Vec2,
@@ -204,6 +208,8 @@ impl GameState {
             move_from: None,
             forge_open: false,
             forge_cell: None,
+            campfire_open: false,
+            campfire_cell: None,
             action_timer: 0.0,
             move_send_timer: 0.0,
             last_sent: spawn,
@@ -729,12 +735,21 @@ impl App {
             }
             Screen::InGame => {
                 self.hud_ui(ui);
+                // The HUD's "Leave" button drops `self.game` mid-frame and sends
+                // us back to the menu; bail out instead of unwrapping a now-None
+                // game in the panels below (which would crash the client).
+                if self.game.is_none() {
+                    return;
+                }
                 self.chat_ui(ui);
                 if self.game.as_ref().is_some_and(|g| g.inventory_open) {
                     self.inventory_window(ui);
                 }
                 if self.game.as_ref().is_some_and(|g| g.forge_open) {
                     self.forge_window(ui);
+                }
+                if self.game.as_ref().is_some_and(|g| g.campfire_open) {
+                    self.campfire_window(ui);
                 }
                 if self.game.as_ref().is_some_and(|g| g.debug) {
                     self.debug_window(ui);
@@ -947,7 +962,7 @@ impl App {
                 ui.separator();
                 ui.label("Move: A/D · Jump/Climb: Space · Down: S · Mine: LMB · Place: RMB");
                 ui.separator();
-                ui.label("[1–9] Select · [E] Inventory");
+                ui.label("[1–9] Select · [E] Inventory · [F] Eat");
                 ui.separator();
                 ui.label(format!("Players online: {}", other_players + 1));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1358,6 +1373,128 @@ impl App {
         if close && let Some(g) = self.game.as_mut() {
             g.forge_open = false;
             g.forge_cell = None;
+        }
+    }
+
+    /// The campfire GUI, opened by right-clicking a campfire block. Lets the
+    /// player feed it fuel (wood or bark) to light it and keep it burning, and
+    /// cook raw meat on it while lit. Cooking and fueling are server-authoritative
+    /// (requests are sent and the resulting snapshots update the display).
+    fn campfire_window(&mut self, ui: &mut egui::Ui) {
+        // Close if the campfire this GUI belongs to is gone or out of reach.
+        let (valid, lit, cell) = {
+            let g = self.game.as_ref().unwrap();
+            match g.campfire_cell {
+                Some((x, y)) => {
+                    let block = g.world.get_block(x, y);
+                    (
+                        crate::block::is_campfire(block) && cell_in_reach(g, x, y),
+                        block == crate::block::CAMPFIRE_LIT,
+                        (x, y),
+                    )
+                }
+                None => (false, false, (0, 0)),
+            }
+        };
+        if !valid {
+            if let Some(g) = self.game.as_mut() {
+                g.campfire_open = false;
+                g.campfire_cell = None;
+            }
+            return;
+        }
+        let registry = self.registry.clone();
+        let inventory = self.game.as_ref().unwrap().inventory.clone();
+        let mut fuel: Option<BlockId> = None;
+        // (recipe index, how many times to cook)
+        let mut cook: Option<(u16, u32)> = None;
+        let mut close = false;
+
+        egui::Window::new("Campfire")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                if lit {
+                    ui.colored_label(egui::Color32::from_rgb(240, 160, 60), "🔥 Burning");
+                } else {
+                    ui.colored_label(egui::Color32::GRAY, "Unlit — add fuel to light it");
+                }
+                ui.separator();
+
+                // Fuel: wood burns long, bark gives a smaller boost.
+                ui.label("Add fuel to keep it burning:");
+                ui.horizontal(|ui| {
+                    let have_wood = inventory.count(crate::block::WOOD) > 0;
+                    if ui
+                        .add_enabled(have_wood, egui::Button::new("Add Wood"))
+                        .on_hover_text("Burns a long while")
+                        .clicked()
+                    {
+                        fuel = Some(crate::block::WOOD);
+                    }
+                    let have_bark = inventory.count(crate::block::BARK) > 0;
+                    if ui
+                        .add_enabled(have_bark, egui::Button::new("Add Bark"))
+                        .on_hover_text("A nice little fire boost")
+                        .clicked()
+                    {
+                        fuel = Some(crate::block::BARK);
+                    }
+                });
+                ui.weak(format!(
+                    "Wood: {}   ·   Bark: {}",
+                    inventory.count(crate::block::WOOD),
+                    inventory.count(crate::block::BARK),
+                ));
+
+                // Cooking: only while lit.
+                ui.separator();
+                ui.label("Cook (campfire must be lit):");
+                for (idx, recipe) in crate::recipe::COOK_RECIPES.iter().enumerate() {
+                    let one = lit && recipe.craftable(&inventory);
+                    let max = recipe.max_crafts(&inventory);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(one, egui::Button::new(recipe.name))
+                            .on_hover_text(recipe_tooltip(&registry, recipe))
+                            .clicked()
+                        {
+                            cook = Some((idx as u16, 1));
+                        }
+                        if ui
+                            .add_enabled(lit && max > 1, egui::Button::new(format!("All ({max})")))
+                            .clicked()
+                        {
+                            cook = Some((idx as u16, max));
+                        }
+                        ui.weak(recipe_summary(&registry, recipe));
+                    });
+                }
+
+                ui.add_space(4.0);
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+
+        let (x, y) = cell;
+        if let (Some(fuel), Some(net)) = (fuel, &self.net) {
+            let _ = net.commands.send(NetCommand::FuelCampfire { x, y, fuel });
+        }
+        if let (Some((recipe, count)), Some(net)) = (cook, &self.net)
+            && count > 0
+        {
+            let _ = net.commands.send(NetCommand::Cook {
+                x,
+                y,
+                recipe,
+                count,
+            });
+        }
+        if close && let Some(g) = self.game.as_mut() {
+            g.campfire_open = false;
+            g.campfire_cell = None;
         }
     }
 
@@ -2257,9 +2394,9 @@ fn handle_block_actions(
 ) {
     game.action_timer -= dt;
 
-    // Open menus (inventory, forge) capture the mouse for their own UI; don't
-    // mine or place in the world while one is open.
-    if game.inventory_open || game.forge_open {
+    // Open menus (inventory, forge, campfire) capture the mouse for their own UI;
+    // don't mine or place in the world while one is open.
+    if game.inventory_open || game.forge_open || game.campfire_open {
         game.break_target = None;
         game.break_progress = 0.0;
         return;
@@ -2309,6 +2446,19 @@ fn handle_block_actions(
     {
         game.forge_open = true;
         game.forge_cell = Some((tx, ty));
+        game.action_timer = ACTION_COOLDOWN;
+        return;
+    }
+
+    // Right-clicking a campfire (lit or not) opens its GUI, for fueling and
+    // cooking, instead of placing a block.
+    if input.placing
+        && game.action_timer <= 0.0
+        && crate::block::is_campfire(game.world.get_block(tx, ty))
+        && cell_in_reach(game, tx, ty)
+    {
+        game.campfire_open = true;
+        game.campfire_cell = Some((tx, ty));
         game.action_timer = ACTION_COOLDOWN;
         return;
     }
@@ -2604,21 +2754,25 @@ impl App {
             // it). Shift+Q would be a whole stack, but the inventory screen's
             // right-click handles bulk drops, so Q stays a single item.
             KeyCode::KeyQ if pressed => self.drop_selected(),
+            // F eats the food in the selected hotbar slot, if any.
+            KeyCode::KeyF if pressed => self.eat_selected(),
             // Enter or T opens the chat box (typing is then captured by egui).
             KeyCode::Enter | KeyCode::KeyT if pressed => self.open_chat(),
-            // Escape closes an open menu (inventory or forge) if any, otherwise
-            // leaves the world.
+            // Escape closes an open menu (inventory, forge, or campfire) if any,
+            // otherwise leaves the world.
             KeyCode::Escape if pressed => {
                 let menu_open = self
                     .game
                     .as_ref()
-                    .is_some_and(|g| g.inventory_open || g.forge_open);
+                    .is_some_and(|g| g.inventory_open || g.forge_open || g.campfire_open);
                 if menu_open {
                     if let Some(g) = &mut self.game {
                         g.inventory_open = false;
                         g.move_from = None;
                         g.forge_open = false;
                         g.forge_cell = None;
+                        g.campfire_open = false;
+                        g.campfire_cell = None;
                     }
                 } else {
                     self.leave();
@@ -2662,7 +2816,7 @@ impl App {
             let Some(g) = self.game.as_ref() else {
                 return;
             };
-            if g.inventory_open || g.forge_open {
+            if g.inventory_open || g.forge_open || g.campfire_open {
                 return;
             }
             if g.inventory.get(g.selected_slot).is_none() {
@@ -2673,6 +2827,29 @@ impl App {
                 slot: g.selected_slot as u8,
                 all: false,
                 dir,
+            }
+        };
+        if let Some(net) = &self.net {
+            let _ = net.commands.send(cmd);
+        }
+    }
+
+    /// Eat the food in the selected hotbar slot. No-op while a menu is open, or if
+    /// the slot is empty or doesn't hold food. The server applies the health
+    /// change and replies with a fresh inventory snapshot.
+    fn eat_selected(&mut self) {
+        let cmd = {
+            let Some(g) = self.game.as_ref() else {
+                return;
+            };
+            if g.inventory_open || g.forge_open || g.campfire_open {
+                return;
+            }
+            match g.inventory.get(g.selected_slot) {
+                Some((item, _, _)) if crate::block::is_food(item) => NetCommand::Eat {
+                    slot: g.selected_slot as u8,
+                },
+                _ => return,
             }
         };
         if let Some(net) = &self.net {
