@@ -103,6 +103,11 @@ pub enum NetEvent {
         from: String,
         text: String,
     },
+    /// Begin (`Some`) or end (`None`) spectating another player's entity. Only
+    /// received by an admin who issued `/spectate`.
+    Spectate {
+        target: Option<EntityId>,
+    },
     /// Connection closed (or never established). `reason` is human-readable.
     Disconnected {
         reason: String,
@@ -478,6 +483,7 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
         ServerMessage::Waypoints { list, home } => NetEvent::Waypoints { list, home },
         ServerMessage::Inventory { slots } => NetEvent::Inventory { slots },
         ServerMessage::Chat { from, text } => NetEvent::Chat { from, text },
+        ServerMessage::Spectate { target } => NetEvent::Spectate { target },
     };
     if ev_tx.send(ev).is_err() {
         std::ops::ControlFlow::Break(())

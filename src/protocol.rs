@@ -36,7 +36,7 @@ pub struct Waypoint {
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -251,5 +251,13 @@ pub enum ServerMessage {
     Inventory { slots: Vec<Slot> },
     /// A chat line to display, attributed to player `from`. Broadcast to every
     /// client (including the original sender, so they see their own message).
+    /// Admin command feedback and ban announcements arrive on this same channel,
+    /// attributed to a `Server` pseudo-sender.
     Chat { from: String, text: String },
+    /// Begin or end spectating another player. `Some(id)` locks the receiving
+    /// (admin) client's camera onto the entity with that id — which the server has
+    /// already moved the admin alongside so it streams in — and freezes the admin's
+    /// own avatar; `None` releases the camera back to the admin's avatar. Only ever
+    /// sent to an admin who issued `/spectate`. See [`crate::server`].
+    Spectate { target: Option<EntityId> },
 }

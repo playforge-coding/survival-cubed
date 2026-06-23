@@ -8,7 +8,7 @@
 //! a server in-process and auto-trusts that fingerprint.
 
 use std::collections::{HashMap, HashSet};
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -219,6 +219,21 @@ const ROPE_LADDER_MAX_DROP: i32 = 8;
 /// truncated so a peer can't flood others with a huge message.
 const MAX_CHAT_LEN: usize = 256;
 
+/// QUIC application close code the server uses to reject a banned peer (see
+/// [`Shared::banned_ips`]). Distinct from [`VERSION_MISMATCH_CLOSE`] so the two
+/// rejections can be told apart on the wire; the accompanying reason carries the
+/// human-readable explanation the client surfaces.
+const BANNED_CLOSE: u32 = 2;
+
+/// Pseudo-sender attributed to server-originated chat lines: admin command
+/// feedback and ban announcements. Distinct from any real player name.
+const SERVER_CHAT_FROM: &str = "Server";
+
+/// File under the world's save directory holding banned IP addresses, one per
+/// line (`#` comments and blanks ignored). Loaded on startup and rewritten
+/// whenever a ban is added or lifted, so bans survive restarts.
+const BANS_FILE: &str = "bans.txt";
+
 /// Handle to a server running on its own thread + tokio runtime.
 pub struct RunningServer {
     pub addr: SocketAddr,
@@ -266,10 +281,17 @@ impl Drop for RunningServer {
 type Ready = Result<(SocketAddr, [u8; 32], Endpoint, Arc<Shared>)>;
 
 /// One connected client, as seen by the server. The client's player avatar
-/// lives in [`Shared::entities`] under the same id; this just holds the channel
-/// used to push messages to it.
+/// lives in [`Shared::entities`] under the same id; this holds the channel used
+/// to push messages to it, plus the bookkeeping admin commands need: the peer's
+/// IP (to ban by) and a handle to its QUIC connection (to force-disconnect on a
+/// kick or ban).
 struct ClientHandle {
     tx: mpsc::UnboundedSender<ServerMessage>,
+    /// Remote IP this client connected from — what `/ban <name>` records.
+    addr: IpAddr,
+    /// Connection handle, kept so an admin's task can [`quinn::Connection::close`]
+    /// this client out (the closed stream ends its reader loop, running cleanup).
+    conn: quinn::Connection,
 }
 
 /// Server world: stored chunks, the generator that fills them on demand, a
@@ -457,6 +479,18 @@ struct Shared {
     /// Set when the owning [`RunningServer`] is dropped, to stop the autosave
     /// loop.
     shutdown: AtomicBool,
+    /// IP addresses barred from connecting. Checked at handshake time (a banned
+    /// peer is closed out before it joins) and added to by an admin's `/ban`.
+    /// Persisted to [`BANS_FILE`] under the save dir so bans outlive a restart.
+    banned_ips: Mutex<HashSet<IpAddr>>,
+    /// Path to the on-disk ban list, rewritten whenever [`Self::banned_ips`]
+    /// changes.
+    bans_path: PathBuf,
+    /// Where each spectating admin's avatar was (dimension + pixel position) when
+    /// it began spectating, keyed by admin entity id. Restored — and the entry
+    /// removed — when the admin stops spectating, so `/spectate` always returns
+    /// them whence they came. Empty for anyone not currently spectating.
+    spectate_return: Mutex<HashMap<EntityId, (Dimension, f32, f32)>>,
 }
 
 impl Shared {
@@ -614,6 +648,270 @@ impl Shared {
         if let Some(h) = self.clients.lock().get(&id) {
             let _ = h.tx.send(msg);
         }
+    }
+
+    /// Send a `Server`-attributed chat line to one client — used to give an admin
+    /// private feedback on a command (e.g. "Player not found").
+    fn notify(&self, id: EntityId, text: impl Into<String>) {
+        self.send_to(
+            id,
+            ServerMessage::Chat {
+                from: SERVER_CHAT_FROM.to_string(),
+                text: text.into(),
+            },
+        );
+    }
+
+    /// Broadcast a `Server`-attributed chat line to everyone — used to announce
+    /// moderation actions (e.g. "Bob was banned").
+    fn announce(&self, text: impl Into<String>) {
+        self.broadcast_all(ServerMessage::Chat {
+            from: SERVER_CHAT_FROM.to_string(),
+            text: text.into(),
+        });
+    }
+
+    /// Find the connected player whose name matches `name` (case-insensitively),
+    /// returning their entity id. Names live on the player's [`Entity`], so this
+    /// scans the live entities of every dimension.
+    fn find_player_by_name(&self, name: &str) -> Option<EntityId> {
+        for dim in Dimension::ALL {
+            for e in self.entities(dim).lock().values() {
+                if let EntityKind::Player { name: n } = &e.kind
+                    && n.eq_ignore_ascii_case(name)
+                {
+                    return Some(e.id);
+                }
+            }
+        }
+        None
+    }
+
+    /// The display name of connected player `id`, or `Player {id}` if it hasn't
+    /// identified yet (matching the chat attribution fallback).
+    fn player_name(&self, id: EntityId) -> String {
+        self.entities(self.dim_of(id))
+            .lock()
+            .get(id)
+            .and_then(|e| match &e.kind {
+                EntityKind::Player { name } if !name.is_empty() => Some(name.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| format!("Player {id}"))
+    }
+
+    /// The world position of player `id`, if it is a live entity.
+    fn player_pos(&self, id: EntityId) -> Option<(f32, f32)> {
+        self.entities(self.dim_of(id))
+            .lock()
+            .get(id)
+            .map(|e| (e.x, e.y))
+    }
+
+    /// Forcibly disconnect client `id` with `reason`: closing its QUIC connection
+    /// ends its reader loop, which runs the usual cleanup (saving and despawning
+    /// the player). A no-op if it has already gone.
+    fn kick(&self, id: EntityId, reason: &str) {
+        if let Some(h) = self.clients.lock().get(&id) {
+            h.conn.close(BANNED_CLOSE.into(), reason.as_bytes());
+        }
+    }
+
+    /// Persist the current ban set to [`Self::bans_path`]. Best-effort: a write
+    /// failure is logged but doesn't disturb the in-memory set (so the ban still
+    /// holds for this session even if it can't be saved for the next).
+    fn save_bans(&self) {
+        let mut out = String::from("# survival-cubed banned IP addresses (one per line)\n");
+        for ip in self.banned_ips.lock().iter() {
+            out.push_str(&ip.to_string());
+            out.push('\n');
+        }
+        if let Err(e) = std::fs::write(&self.bans_path, out) {
+            log::error!("failed to save ban list: {e:#}");
+        }
+    }
+
+    /// Handle a `/`-prefixed chat line from an admin (a dev-authorized
+    /// connection). Returns nothing; all outcomes are reported back to the admin
+    /// (or broadcast) as `Server` chat. Unknown commands get a hint.
+    fn handle_admin_command(&self, admin: EntityId, line: &str) {
+        let mut parts = line[1..].split_whitespace();
+        let Some(cmd) = parts.next() else {
+            return; // a bare "/" — ignore.
+        };
+        let arg = parts.next().map(str::to_string);
+        match cmd.to_ascii_lowercase().as_str() {
+            "ban" => self.cmd_ban(admin, arg),
+            "unban" => self.cmd_unban(admin, arg),
+            "banlist" | "bans" => self.cmd_banlist(admin),
+            "spectate" | "spec" => self.cmd_spectate(admin, arg),
+            "help" => self.notify(
+                admin,
+                "Admin commands: /ban <name|ip>, /unban <ip>, /banlist, /spectate <name>, /spectate (to stop)",
+            ),
+            other => self.notify(admin, format!("Unknown command '/{other}'. Try /help.")),
+        }
+    }
+
+    /// `/ban <name|ip>`: ban a connected player (resolved to their IP) or a raw
+    /// IP address. The IP is recorded persistently and any connected client on it
+    /// is kicked.
+    fn cmd_ban(&self, admin: EntityId, arg: Option<String>) {
+        let Some(arg) = arg else {
+            self.notify(admin, "Usage: /ban <player name or IP>");
+            return;
+        };
+
+        // Resolve the target IP: a literal address bans that address directly;
+        // otherwise treat the argument as a connected player's name.
+        let (ip, who) = if let Ok(ip) = arg.parse::<IpAddr>() {
+            (ip, arg.clone())
+        } else {
+            match self.find_player_by_name(&arg) {
+                Some(target) if target == admin => {
+                    self.notify(admin, "You can't ban yourself.");
+                    return;
+                }
+                Some(target) => {
+                    let ip = self.clients.lock().get(&target).map(|h| h.addr);
+                    match ip {
+                        Some(ip) => (ip, self.player_name(target)),
+                        None => {
+                            self.notify(admin, format!("'{arg}' is not connected."));
+                            return;
+                        }
+                    }
+                }
+                None => {
+                    self.notify(admin, format!("No connected player named '{arg}'."));
+                    return;
+                }
+            }
+        };
+
+        let newly = self.banned_ips.lock().insert(ip);
+        if !newly {
+            self.notify(admin, format!("{ip} is already banned."));
+            return;
+        }
+        self.save_bans();
+
+        // Kick everyone currently connected from that IP (an admin may ban an IP
+        // shared by several players, or one they typed directly).
+        let victims: Vec<EntityId> = self
+            .clients
+            .lock()
+            .iter()
+            .filter(|(_, h)| h.addr == ip)
+            .map(|(id, _)| *id)
+            .collect();
+        for v in victims {
+            self.kick(v, "You have been banned from this server.");
+        }
+        self.announce(format!("{who} ({ip}) was banned by an admin."));
+        log::info!("admin {admin} banned {who} ({ip})");
+    }
+
+    /// `/unban <ip>`: lift a ban on an IP address.
+    fn cmd_unban(&self, admin: EntityId, arg: Option<String>) {
+        let Some(arg) = arg else {
+            self.notify(admin, "Usage: /unban <IP>");
+            return;
+        };
+        let Ok(ip) = arg.parse::<IpAddr>() else {
+            self.notify(admin, format!("'{arg}' is not a valid IP address."));
+            return;
+        };
+        if self.banned_ips.lock().remove(&ip) {
+            self.save_bans();
+            self.notify(admin, format!("{ip} has been unbanned."));
+            log::info!("admin {admin} unbanned {ip}");
+        } else {
+            self.notify(admin, format!("{ip} is not banned."));
+        }
+    }
+
+    /// `/banlist`: privately list the banned IPs to the admin.
+    fn cmd_banlist(&self, admin: EntityId) {
+        let bans = self.banned_ips.lock();
+        if bans.is_empty() {
+            self.notify(admin, "No IPs are banned.");
+            return;
+        }
+        let list = bans
+            .iter()
+            .map(|ip| ip.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.notify(admin, format!("Banned IPs: {list}"));
+    }
+
+    /// `/spectate <name>` to view a player, or `/spectate` with no argument to
+    /// stop. Starting moves the admin alongside the target (across dimensions if
+    /// needed, after first remembering where the admin was) so the target streams
+    /// in; the [`ServerMessage::Spectate`] then locks the admin's camera onto it.
+    /// Stopping returns the admin to its remembered position.
+    fn cmd_spectate(&self, admin: EntityId, arg: Option<String>) {
+        match arg {
+            None => self.stop_spectating(admin),
+            Some(name) => {
+                let Some(target) = self.find_player_by_name(&name) else {
+                    self.notify(admin, format!("No connected player named '{name}'."));
+                    return;
+                };
+                if target == admin {
+                    self.notify(admin, "You can't spectate yourself.");
+                    return;
+                }
+                let target_dim = self.dim_of(target);
+                let Some((tx, ty)) = self.player_pos(target) else {
+                    self.notify(admin, "That player just left.");
+                    return;
+                };
+
+                // Remember where the admin was, the first time it starts
+                // spectating, so a later /spectate returns it exactly there.
+                if let Some((dim, x, y)) = self
+                    .player_pos(admin)
+                    .map(|(x, y)| (self.dim_of(admin), x, y))
+                {
+                    self.spectate_return
+                        .lock()
+                        .entry(admin)
+                        .or_insert((dim, x, y));
+                }
+
+                // Move the admin alongside the target so the target (and the world
+                // around it) streams to the admin. enter_dimension also handles the
+                // same-dimension case (it re-streams the local entities).
+                self.enter_dimension(admin, target_dim, tx, ty);
+                self.send_to(
+                    admin,
+                    ServerMessage::Spectate {
+                        target: Some(target),
+                    },
+                );
+                self.notify(
+                    admin,
+                    format!(
+                        "Now spectating {}. Type /spectate to stop.",
+                        self.player_name(target)
+                    ),
+                );
+            }
+        }
+    }
+
+    /// End spectating for `admin`: release its camera and return it to the
+    /// position it held before it began. A no-op if it wasn't spectating.
+    fn stop_spectating(&self, admin: EntityId) {
+        let Some((dim, x, y)) = self.spectate_return.lock().remove(&admin) else {
+            self.notify(admin, "You aren't spectating anyone.");
+            return;
+        };
+        self.enter_dimension(admin, dim, x, y);
+        self.send_to(admin, ServerMessage::Spectate { target: None });
+        self.notify(admin, "Stopped spectating.");
     }
 
     /// Add one `block` to player `id`'s inventory, stacking into existing stacks
@@ -1644,6 +1942,9 @@ fn build_endpoint(
 
     let endpoint = Endpoint::server(server_config, bind).context("binding server endpoint")?;
 
+    let bans_path = save_dir.join(BANS_FILE);
+    let banned_ips = load_bans(&bans_path);
+
     let store = WorldStore::new(save_dir.clone());
     // Resume a previous save if one exists, otherwise create a fresh world.
     let saved = match store.load_meta() {
@@ -1750,6 +2051,9 @@ fn build_endpoint(
         trail_fires: Mutex::new(HashMap::new()),
         fire_cd: Mutex::new(HashMap::new()),
         shutdown: AtomicBool::new(false),
+        banned_ips: Mutex::new(banned_ips),
+        bans_path,
+        spectate_return: Mutex::new(HashMap::new()),
     });
 
     // Only seed fresh creatures for a brand-new world; a loaded one keeps its own.
@@ -3437,10 +3741,21 @@ fn drop_ahead(world: &mut ServerWorld, x: f32, y: f32, w: f32, h: f32, vx: f32) 
 
 async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Result<()> {
     let connection = incoming.await.context("accepting connection")?;
+    let peer_ip = connection.remote_address().ip();
     let (mut send, mut recv) = connection
         .accept_bi()
         .await
         .context("accepting bidirectional stream")?;
+
+    // Banned IPs are turned away before they can join. Done here (rather than at
+    // the lower QUIC layer) so the client surfaces the human-readable reason via
+    // the connection's close_reason, the same path the version check below uses.
+    if shared.banned_ips.lock().contains(&peer_ip) {
+        let reason = "You are banned from this server.";
+        log::info!("rejecting banned peer {peer_ip}");
+        connection.close(BANNED_CLOSE.into(), reason.as_bytes());
+        return Ok(());
+    }
 
     // Before anything else, check the peer speaks our wire version. Rejecting a
     // skewed client here — with a clear reason — prevents the cryptic bincode
@@ -3509,10 +3824,14 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
         }
         entities.insert(player.clone());
     }
-    shared
-        .clients
-        .lock()
-        .insert(id, ClientHandle { tx: tx.clone() });
+    shared.clients.lock().insert(
+        id,
+        ClientHandle {
+            tx: tx.clone(),
+            addr: peer_ip,
+            conn: connection.clone(),
+        },
+    );
     shared.broadcast_dim_except(
         Dimension::Overworld,
         id,
@@ -4228,7 +4547,11 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     // to a generic label before they've identified via Hello), cap
                     // its length, and fan it out to everyone — sender included.
                     let trimmed = text.trim();
-                    if !trimmed.is_empty() {
+                    // A `/`-prefixed line from an admin (a dev-authorized connection)
+                    // is a moderation command, handled here instead of broadcast.
+                    if is_dev && trimmed.starts_with('/') {
+                        shared.handle_admin_command(id, trimmed);
+                    } else if !trimmed.is_empty() {
                         let text: String = trimmed.chars().take(MAX_CHAT_LEN).collect();
                         let from = shared
                             .entities(shared.dim_of(id))
@@ -4289,6 +4612,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
     shared.clients.lock().remove(&id);
     shared.client_dim.lock().remove(&id);
     shared.fire_cd.lock().remove(&id);
+    shared.spectate_return.lock().remove(&id);
     let removed = shared.entities(dim).lock().remove(id);
     let inventory = shared.inventories.lock().remove(&id).unwrap_or_default();
     let respawn = shared.respawn_points.lock().remove(&id);
@@ -4320,6 +4644,27 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
     writer.abort();
     log::info!("player {id} disconnected");
     read_result
+}
+
+/// Read the persisted ban list from `path`, returning an empty set if the file
+/// is absent or unreadable (a missing list simply means nobody is banned yet).
+/// Lines that don't parse as an IP address are skipped, so a hand-edited file
+/// with a stray comment or typo still loads the valid entries.
+fn load_bans(path: &Path) -> HashSet<IpAddr> {
+    let mut set = HashSet::new();
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return set;
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Ok(ip) = line.parse::<IpAddr>() {
+            set.insert(ip);
+        }
+    }
+    set
 }
 
 /// Default bind address for a publicly-hosted server.

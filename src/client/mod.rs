@@ -193,6 +193,11 @@ struct GameState {
     fly: bool,
     /// Dev mode: the block placed for free by infinite-block placement (RMB).
     debug_block: BlockId,
+    /// When spectating another player (admin `/spectate`), the id of the entity
+    /// being watched: the camera follows it and the local avatar is frozen until
+    /// it clears (a second `/spectate`, or the target leaving). `None` in normal
+    /// play. Set by [`ServerMessage::Spectate`](crate::protocol::ServerMessage).
+    spectating: Option<EntityId>,
     /// Received chat lines, oldest first, capped at [`MAX_CHAT_LOG`].
     chat_log: Vec<ChatLine>,
     /// Whether the chat input box is open (capturing keyboard input).
@@ -254,6 +259,7 @@ impl GameState {
             debug: false,
             fly: false,
             debug_block: STONE,
+            spectating: None,
             chat_log: Vec::new(),
             chat_open: false,
             chat_input: String::new(),
@@ -641,6 +647,15 @@ impl App {
                 if let Some(g) = &mut self.game {
                     g.entities.remove(id);
                     g.facing.remove(&id);
+                    // If the player we were spectating just left, drop back to our
+                    // own avatar rather than tracking a now-absent entity.
+                    if g.spectating == Some(id) {
+                        g.spectating = None;
+                        g.chat_log.push(ChatLine {
+                            from: "Server".to_string(),
+                            text: "Spectated player left.".to_string(),
+                        });
+                    }
                 }
             }
             NetEvent::EntityDying { id } => {
@@ -726,6 +741,11 @@ impl App {
                     }
                 }
             }
+            NetEvent::Spectate { target } => {
+                if let Some(g) = &mut self.game {
+                    g.spectating = target;
+                }
+            }
             NetEvent::Disconnected { reason } => {
                 self.status = format!("Disconnected: {reason}");
                 self.net = None;
@@ -759,6 +779,14 @@ impl App {
             if e.dying > 0.0 {
                 e.dying = (e.dying - dt).max(0.0);
             }
+        }
+
+        // While spectating, the camera follows the watched player and our own
+        // avatar is frozen: skip movement, world interaction and position updates,
+        // but keep streaming chunks around the spectated view.
+        if game.spectating.is_some() {
+            request_chunks(game, self.gfx.as_ref(), self.net.as_ref());
+            return;
         }
 
         let fall_damage = step_physics(game, reg, input, dt);
@@ -842,6 +870,7 @@ impl App {
                     return;
                 }
                 self.waypoint_overlay(ui);
+                self.spectate_overlay(ui);
                 self.chat_ui(ui);
                 if self.game.as_ref().is_some_and(|g| g.inventory_open) {
                     self.inventory_window(ui);
@@ -1250,6 +1279,37 @@ impl App {
     /// Chat overlay: a scrollback of recent lines pinned to the bottom-left, plus
     /// an input box that appears (and grabs focus) while chatting. Sender names
     /// and `:icon:` tokens in each line are drawn with their real sprites.
+    /// A banner across the top while spectating another player (admin
+    /// `/spectate`), naming the watched player and how to stop.
+    fn spectate_overlay(&mut self, ui: &mut egui::Ui) {
+        let Some(g) = self.game.as_ref() else { return };
+        let Some(tid) = g.spectating else { return };
+        let who = g
+            .entities
+            .get(tid)
+            .and_then(|e| match &e.kind {
+                EntityKind::Player { name } if !name.is_empty() => Some(name.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| format!("Player {tid}"));
+        egui::Area::new(egui::Id::new("spectate_banner"))
+            .anchor(egui::Align2::CENTER_TOP, [0.0, 12.0])
+            .show(ui.ctx(), |ui| {
+                egui::Frame::NONE
+                    .fill(egui::Color32::from_black_alpha(160))
+                    .inner_margin(egui::Margin::symmetric(10, 5))
+                    .corner_radius(egui::CornerRadius::same(4))
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "👁 Spectating {who}  —  /spectate to stop"
+                            ))
+                            .color(egui::Color32::WHITE),
+                        );
+                    });
+            });
+    }
+
     fn chat_ui(&mut self, ui: &mut egui::Ui) {
         // Only draw the panel when there's something to show or the box is open,
         // so an idle game has a clean screen.
@@ -1963,7 +2023,7 @@ impl App {
 
         let view_w = vw / ZOOM;
         let view_h = vh / ZOOM;
-        let center = g.pos + Vec2::new(PLAYER_W * 0.5, PLAYER_H * 0.5);
+        let center = view_center(g);
         let offset = center - Vec2::new(view_w * 0.5, view_h * 0.5);
 
         let mut tiles = Vec::new();
@@ -2770,13 +2830,26 @@ fn row_solid(game: &GameState, reg: &BlockRegistry, ty: i32, x0: i32, x1: i32) -
     (x0..=x1).any(|tx| reg.is_solid(game.world.get_block(tx, ty)))
 }
 
+/// World-pixel point the camera centers on and chunk streaming tracks: while
+/// spectating (admin `/spectate`) it is the watched player's center, so the view
+/// follows them; otherwise it is the local avatar's center. Falls back to the
+/// avatar if the spectated entity isn't currently mirrored.
+fn view_center(game: &GameState) -> Vec2 {
+    if let Some(tid) = game.spectating
+        && let Some(e) = game.entities.get(tid)
+    {
+        return Vec2::new(e.x, e.y) + Vec2::new(PLAYER_W * 0.5, PLAYER_H * 0.5);
+    }
+    game.pos + Vec2::new(PLAYER_W * 0.5, PLAYER_H * 0.5)
+}
+
 fn request_chunks(game: &mut GameState, gfx: Option<&Gfx>, net: Option<&NetHandle>) {
     let (Some(gfx), Some(net)) = (gfx, net) else {
         return;
     };
     let view_w = gfx.size.width.max(1) as f32 / ZOOM;
     let view_h = gfx.size.height.max(1) as f32 / ZOOM;
-    let center = game.pos + Vec2::new(PLAYER_W * 0.5, PLAYER_H * 0.5);
+    let center = view_center(game);
     let min = center - Vec2::new(view_w * 0.5, view_h * 0.5);
     let max = center + Vec2::new(view_w * 0.5, view_h * 0.5);
 
