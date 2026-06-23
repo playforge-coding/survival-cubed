@@ -20,8 +20,8 @@ egui-winit = "0.34"
 # Noise / world generation
 fastnoise-lite = "1.1"
 
-# Image loading (block textures)
-image = { version = "0.25", default-features = false, features = ["png"] }
+# Image loading (block textures) and screenshot encoding (PNG + web JPEG)
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 # Networking (QUIC)
 quinn = "0.11"

@@ -235,6 +235,16 @@ pub fn world_exists(name: &str) -> bool {
     world_dir(name).join(WORLD_FILE).exists()
 }
 
+/// Permanently delete a saved world, removing its directory and all chunks.
+/// Deleting a world that doesn't exist is treated as success.
+pub fn delete_world(name: &str) -> std::io::Result<()> {
+    let dir = world_dir(name);
+    if dir.exists() {
+        fs::remove_dir_all(&dir)?;
+    }
+    Ok(())
+}
+
 /// A saved world found on disk, summarised for the menu's world picker.
 pub struct WorldInfo {
     /// Directory name, which doubles as the world's identifier.

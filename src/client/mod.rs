@@ -3,6 +3,7 @@
 
 mod net;
 mod render;
+mod screenshot;
 mod sprite;
 
 use std::collections::{HashMap, HashSet};
@@ -26,7 +27,7 @@ use crate::server::{self, RunningServer};
 use crate::world::{CHUNK_SIZE, Dimension, TILE_SIZE, WORLD_HEIGHT, World, to_chunk};
 
 use net::{NetCommand, NetEvent, NetHandle, connect};
-use render::{Atlas, CameraUniform, EguiFrame, Gfx, TileInstance, UvRect};
+use render::{Atlas, CameraUniform, CapturedFrame, EguiFrame, Gfx, TileInstance, UvRect};
 
 // --- Tunables ------------------------------------------------------------
 
@@ -314,6 +315,9 @@ struct App {
     net: Option<NetHandle>,
     server: Option<RunningServer>,
     pending_tofu: Option<PendingTofu>,
+    /// Name of a saved world awaiting delete confirmation, set when the menu's
+    /// "Delete" button is clicked and cleared once confirmed or cancelled.
+    pending_delete: Option<String>,
     game: Option<GameState>,
     /// Background mDNS browser feeding the menu's LAN server list, if discovery
     /// could be started.
@@ -323,6 +327,9 @@ struct App {
     last_frame: Instant,
     /// Seconds elapsed, used to drive sprite animation.
     anim_time: f32,
+    /// Set when F2 is pressed; the next rendered frame is captured (without the
+    /// HUD) and saved, then this is cleared.
+    screenshot_requested: bool,
 }
 
 impl App {
@@ -351,6 +358,7 @@ impl App {
             net: None,
             server: None,
             pending_tofu: None,
+            pending_delete: None,
             game: None,
             lan: match crate::discovery::browse() {
                 Ok(b) => Some(b),
@@ -362,6 +370,7 @@ impl App {
             input: Input::default(),
             last_frame: Instant::now(),
             anim_time: 0.0,
+            screenshot_requested: false,
         }
     }
 
@@ -803,6 +812,11 @@ impl App {
             self.tofu_window(ui);
         }
 
+        // World delete confirmation, shown over the menu.
+        if self.pending_delete.is_some() {
+            self.delete_confirmation_window(ui);
+        }
+
         match self.screen {
             Screen::Menu => self.menu_ui(ui),
             Screen::Connecting => {
@@ -919,6 +933,9 @@ impl App {
                                 if ui.button(play_label).clicked() {
                                     self.launch_world(world.name.clone(), world.seed);
                                 }
+                                if ui.button("Delete").clicked() {
+                                    self.pending_delete = Some(world.name.clone());
+                                }
                                 ui.label(format!("{}  (seed {})", world.name, world.seed));
                             });
                         }
@@ -1014,6 +1031,45 @@ impl App {
             if !accept {
                 self.status = "Connection declined.".to_string();
             }
+        }
+    }
+
+    fn delete_confirmation_window(&mut self, ui: &mut egui::Ui) {
+        let Some(name) = self.pending_delete.clone() else {
+            return;
+        };
+        // None = no decision yet, Some(true) = delete, Some(false) = cancel.
+        let mut decision: Option<bool> = None;
+
+        egui::Window::new("Delete world")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                ui.label(format!("Permanently delete the world '{name}'?"));
+                ui.add_space(4.0);
+                ui.colored_label(egui::Color32::LIGHT_RED, "This cannot be undone.");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Delete").clicked() {
+                        decision = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        decision = Some(false);
+                    }
+                });
+            });
+
+        match decision {
+            Some(true) => {
+                self.pending_delete = None;
+                match crate::save::delete_world(&name) {
+                    Ok(()) => self.status = format!("Deleted world '{name}'."),
+                    Err(e) => self.status = format!("Failed to delete '{name}': {e}"),
+                }
+            }
+            Some(false) => self.pending_delete = None,
+            None => {}
         }
     }
 
@@ -1863,8 +1919,9 @@ impl App {
             None => [0.45, 0.62, 0.86, 1.0],
         };
 
+        let capture = std::mem::take(&mut self.screenshot_requested);
         if let Some(gfx) = self.gfx.as_mut() {
-            gfx.render(
+            let captured = gfx.render(
                 &tiles,
                 camera,
                 sky,
@@ -1873,8 +1930,27 @@ impl App {
                     textures_delta: full.textures_delta,
                     pixels_per_point: full.pixels_per_point,
                 },
+                capture,
             );
+            if let Some(frame) = captured {
+                self.save_screenshot(frame);
+            }
         }
+    }
+
+    /// Encode and write a captured frame to disk on a background thread (PNG +
+    /// compressed JPEG), reporting the result in the status line.
+    fn save_screenshot(&mut self, frame: CapturedFrame) {
+        let CapturedFrame {
+            width,
+            height,
+            rgba,
+        } = frame;
+        std::thread::spawn(move || match screenshot::save(rgba, width, height) {
+            Ok(path) => log::info!("saved screenshot to {}", path.display()),
+            Err(e) => log::warn!("failed to save screenshot: {e}"),
+        });
+        self.status = "Screenshot saved.".to_string();
     }
 
     fn build_scene(&self) -> (Vec<TileInstance>, CameraUniform) {
@@ -3139,6 +3215,9 @@ impl App {
             // nearest to them.
             KeyCode::KeyM if pressed => self.add_waypoint(),
             KeyCode::KeyN if pressed => self.remove_nearest_waypoint(),
+            // F2 captures a screenshot of the world (without the HUD) on the
+            // next rendered frame.
+            KeyCode::F2 if pressed => self.screenshot_requested = true,
             // Enter or T opens the chat box (typing is then captured by egui).
             KeyCode::Enter | KeyCode::KeyT if pressed => self.open_chat(),
             // Escape closes an open menu (inventory, forge, or campfire) if any,

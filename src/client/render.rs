@@ -295,6 +295,14 @@ pub struct EguiFrame {
     pub pixels_per_point: f32,
 }
 
+/// A captured frame's pixels: row-major RGBA8, `width`x`height`. Produced by
+/// [`Gfx::render`] when a screenshot is requested.
+pub struct CapturedFrame {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
 pub struct Gfx {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -575,13 +583,17 @@ impl Gfx {
         self.surface.configure(&self.device, &self.config);
     }
 
+    /// Render one frame. When `capture` is set, the world is also rendered into
+    /// an offscreen target (sky + tiles, but no egui HUD) and read back, so the
+    /// returned [`CapturedFrame`] is a clean screenshot of the scene only.
     pub fn render(
         &mut self,
         tiles: &[TileInstance],
         camera: CameraUniform,
         sky: [f32; 4],
         mut egui_frame: EguiFrame,
-    ) {
+        capture: bool,
+    ) -> Option<CapturedFrame> {
         // Grow the instance buffer if needed.
         if tiles.len() > self.instance_cap {
             self.instance_cap = (tiles.len() * 2).next_power_of_two();
@@ -598,6 +610,15 @@ impl Gfx {
         }
         self.queue
             .write_buffer(&self.camera_buf, 0, bytemuck::cast_slice(&[camera]));
+
+        // Read back the world (no HUD) for a screenshot before drawing the
+        // visible frame. Done up front so it succeeds even if the surface frame
+        // below is skipped (e.g. an outdated swapchain).
+        let captured = if capture {
+            self.capture_scene(tiles, sky)
+        } else {
+            None
+        };
 
         // Apply egui texture uploads BEFORE acquiring the surface texture.
         // egui emits each delta exactly once; if we drop this frame after
@@ -621,12 +642,12 @@ impl Gfx {
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.device, &self.config);
                 free_textures(&mut self.egui_renderer);
-                return;
+                return captured;
             }
             // Timeout / Occluded / Validation: skip this frame.
             _ => {
                 free_textures(&mut self.egui_renderer);
-                return;
+                return captured;
             }
         };
         let view = frame
@@ -698,5 +719,151 @@ impl Gfx {
         frame.present();
 
         free_textures(&mut self.egui_renderer);
+        captured
+    }
+
+    /// Render the world (sky + tiles, no HUD) into an offscreen texture at the
+    /// current surface size and read it back as RGBA8. Returns `None` if the
+    /// surface is zero-sized or the GPU read-back fails.
+    ///
+    /// The camera and instance buffers are assumed already populated for this
+    /// frame by [`Gfx::render`]; the queued writes are ordered before this
+    /// pass, so the offscreen image matches what the player sees.
+    fn capture_scene(&self, tiles: &[TileInstance], sky: [f32; 4]) -> Option<CapturedFrame> {
+        let (width, height) = (self.config.width, self.config.height);
+        if width == 0 || height == 0 {
+            return None;
+        }
+        const BPP: u32 = 4;
+
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("screenshot"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Buffer rows must be a multiple of COPY_BYTES_PER_ROW_ALIGNMENT, so the
+        // staging buffer is padded and rows are un-padded after read-back.
+        let unpadded = width * BPP;
+        let padded = unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("screenshot-readback"),
+            size: (padded * height) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("screenshot-encoder"),
+            });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("screenshot-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: sky[0] as f64,
+                            g: sky[1] as f64,
+                            b: sky[2] as f64,
+                            a: sky[3] as f64,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            if !tiles.is_empty() {
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &self.camera_bg, &[]);
+                pass.set_bind_group(1, &self.atlas_bg, &[]);
+                pass.set_vertex_buffer(0, self.quad_vbuf.slice(..));
+                pass.set_vertex_buffer(1, self.instance_buf.slice(..));
+                pass.set_index_buffer(self.quad_ibuf.slice(..), wgpu::IndexFormat::Uint16);
+                pass.draw_indexed(0..QUAD_INDICES.len() as u32, 0, 0..tiles.len() as u32);
+            }
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(height),
+                },
+            },
+            size,
+        );
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Map the staging buffer and block until the GPU is done.
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = tx.send(res);
+        });
+        if self.device.poll(wgpu::PollType::wait_indefinitely()).is_err() {
+            return None;
+        }
+        if !matches!(rx.recv(), Ok(Ok(()))) {
+            return None;
+        }
+
+        // Un-pad rows and, if the surface stores BGRA, swizzle to RGBA.
+        let data = slice.get_mapped_range();
+        let row_bytes = (width * BPP) as usize;
+        let bgra = matches!(
+            self.config.format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        );
+        let mut rgba = vec![0u8; row_bytes * height as usize];
+        for y in 0..height as usize {
+            let src = &data[y * padded as usize..y * padded as usize + row_bytes];
+            let dst = &mut rgba[y * row_bytes..(y + 1) * row_bytes];
+            if bgra {
+                for px in 0..width as usize {
+                    let i = px * 4;
+                    dst[i] = src[i + 2];
+                    dst[i + 1] = src[i + 1];
+                    dst[i + 2] = src[i];
+                    dst[i + 3] = src[i + 3];
+                }
+            } else {
+                dst.copy_from_slice(src);
+            }
+        }
+        drop(data);
+        buffer.unmap();
+
+        Some(CapturedFrame {
+            width,
+            height,
+            rgba,
+        })
     }
 }
