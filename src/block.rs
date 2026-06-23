@@ -95,6 +95,19 @@ pub const COAL_ORE: BlockId = 30;
 /// A lump of coal, dropped by [`COAL_ORE`]. An item used as fuel — it burns in a
 /// [`CAMPFIRE`] and powers a [`FORGE`] (see [`fuel_seconds`] / [`forge_fuel_units`]).
 pub const COAL: BlockId = 31;
+/// Water. A non-solid, non-placeable fluid that floods low-lying basins and
+/// valleys up to sea level (see [`crate::worldgen`]). The player swims through it
+/// rather than walking on it: it slows movement, lets them paddle up and down,
+/// and cushions any fall (see [`crate::client`]'s physics). Not minable by hand.
+pub const WATER: BlockId = 32;
+/// An empty bucket, forged from iron ingots. An item (not placeable): right-click
+/// a [`WATER`] cell with it to scoop the water up, turning it into a
+/// [`WATER_BUCKET`] (see [`crate::server`]'s bucket handling).
+pub const BUCKET: BlockId = 33;
+/// A bucket full of water. An item: right-click an empty cell with it to pour the
+/// water out, placing a [`WATER`] block and leaving the empty [`BUCKET`] behind.
+/// Stacks to one, since each bucket carries a single load.
+pub const WATER_BUCKET: BlockId = 34;
 
 /// Definition of a single block type.
 pub struct BlockDef {
@@ -171,6 +184,13 @@ impl BlockRegistry {
         // Coal: an ore block (minable with any pickaxe) and the fuel lump it drops.
         r.register("coal_ore", true, true, true, 1.5);
         r.register("coal", false, true, false, 0.0);
+        // Water: a non-solid fluid pooling in low terrain at sea level. Swum
+        // through, not walked on; neither minable nor placeable.
+        r.register("water", false, true, false, 0.0);
+        // Buckets: an iron-forged carrier and its water-filled form. Plain items
+        // (not placed as blocks); right-clicking a cell scoops or pours water.
+        r.register("bucket", false, true, false, 0.0);
+        r.register("water_bucket", false, true, false, 0.0);
         r
     }
 
@@ -231,6 +251,8 @@ pub fn max_stack(id: BlockId) -> u32 {
     match id {
         PICKAXE | STONE_PICKAXE | IRON_PICKAXE | WOOD_SWORD | STONE_SWORD | IRON_SWORD
         | WOOD_AXE | STONE_AXE | IRON_AXE => 1,
+        // A water bucket carries a single load, so it never stacks.
+        WATER_BUCKET => 1,
         _ => crate::inventory::STACK_MAX,
     }
 }
@@ -317,6 +339,18 @@ pub fn is_climbable(block: BlockId) -> bool {
 /// shaft on placement and may be anchored from a solid block above.
 pub fn is_rope_ladder(block: BlockId) -> bool {
     block == ROPE_LADDER
+}
+
+/// Whether `block` is water — the fluid the player swims through instead of
+/// walking on or mining.
+pub fn is_water(block: BlockId) -> bool {
+    block == WATER
+}
+
+/// Whether `item` is a bucket in either state (empty or water-filled) — the
+/// tool used to scoop and pour water.
+pub fn is_bucket(item: BlockId) -> bool {
+    matches!(item, BUCKET | WATER_BUCKET)
 }
 
 /// Whether `item` is a pickaxe (mining is its intended use).
@@ -541,6 +575,36 @@ mod tests {
         assert!(reg.is_placeable(ROPE_LADDER));
         assert!(!reg.is_solid(ROPE_LADDER));
         assert!(!reg.is_placeable(ROPE));
+    }
+
+    #[test]
+    fn water_is_a_nonsolid_unplaceable_fluid() {
+        let reg = BlockRegistry::new();
+        assert!(is_water(WATER));
+        assert!(!is_water(STONE));
+        // Swum through (non-solid) and neither placed nor (by hand) mined.
+        assert!(!reg.is_solid(WATER));
+        assert!(!reg.is_placeable(WATER));
+        // Visible so a body of water draws, but it carries no breaking delay.
+        assert!(reg.get(WATER).visible);
+        assert_eq!(reg.get(WATER).break_secs, 0.0);
+    }
+
+    #[test]
+    fn buckets_are_unplaceable_items_and_only_the_full_one_is_unique() {
+        let reg = BlockRegistry::new();
+        assert!(is_bucket(BUCKET));
+        assert!(is_bucket(WATER_BUCKET));
+        assert!(!is_bucket(IRON_INGOT));
+        // Buckets are plain items: visible (for the inventory icon) but never
+        // placed into the world as blocks.
+        for b in [BUCKET, WATER_BUCKET] {
+            assert!(reg.get(b).visible);
+            assert!(!reg.is_placeable(b));
+        }
+        // A water bucket carries one load (no stacking); an empty one stacks.
+        assert_eq!(max_stack(WATER_BUCKET), 1);
+        assert_eq!(max_stack(BUCKET), crate::inventory::STACK_MAX);
     }
 
     #[test]

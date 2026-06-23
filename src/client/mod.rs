@@ -37,6 +37,16 @@ const JUMP_VELOCITY: f32 = -440.0;
 const FLY_SPEED: f32 = 240.0;
 /// Vertical speed (px/s) of the player while climbing a ladder.
 const CLIMB_SPEED: f32 = 90.0;
+/// Vertical speed (px/s) of the player paddling up or diving down in water.
+const SWIM_SPEED: f32 = 80.0;
+/// Slow rate (px/s) at which an idle swimmer sinks: buoyancy nearly cancels
+/// gravity, so the player drifts gently down rather than plummeting.
+const WATER_SINK_SPEED: f32 = 36.0;
+/// Reduced gravity (px/s²) felt while submerged, easing the vertical speed toward
+/// a slow sink instead of a free fall.
+const WATER_GRAVITY: f32 = 320.0;
+/// Fraction of horizontal speed kept while swimming — water drags movement.
+const WATER_DRAG: f32 = 0.65;
 // The local player is just a (special) entity; reuse its shared size.
 const PLAYER_W: f32 = crate::entity::PLAYER_SIZE.0;
 const PLAYER_H: f32 = crate::entity::PLAYER_SIZE.1;
@@ -2460,6 +2470,30 @@ fn step_physics(game: &mut GameState, reg: &BlockRegistry, input: &Input, dt: f3
         return None;
     }
 
+    // Swimming: while the player's body overlaps water it floats instead of
+    // falling — buoyancy nearly cancels gravity, horizontal movement is dragged,
+    // and jump/down paddle up and down. Water also cushions any fall, so an
+    // entering plunge deals no fall damage. Overrides the jump/gravity arc below.
+    if player_in_water(game) {
+        game.vel.x *= WATER_DRAG;
+        if input.jump {
+            game.vel.y = -SWIM_SPEED;
+        } else if input.down {
+            game.vel.y = SWIM_SPEED;
+        } else {
+            // Buoyancy eases the vertical speed toward a slow, drifting sink.
+            game.vel.y = (game.vel.y + WATER_GRAVITY * dt).clamp(-SWIM_SPEED, WATER_SINK_SPEED);
+        }
+        move_x(game, reg, game.vel.x * dt);
+        let landed = move_y(game, reg, game.vel.y * dt);
+        // Resting on the sea floor still counts as grounded so stepping back out
+        // onto dry land walks normally.
+        game.on_ground = landed && game.vel.y >= 0.0;
+        // Water breaks the fall: never carry fall damage through it.
+        game.air_min_y = game.pos.y;
+        return None;
+    }
+
     // Jump (only when grounded).
     if input.jump && game.on_ground {
         game.vel.y = JUMP_VELOCITY;
@@ -2576,6 +2610,16 @@ fn player_on_ladder(game: &GameState) -> bool {
     let y0 = (game.pos.y / TILE_SIZE).floor() as i32;
     let y1 = ((game.pos.y + PLAYER_H - EPS) / TILE_SIZE).floor() as i32;
     (y0..=y1).any(|ty| (x0..=x1).any(|tx| crate::block::is_climbable(game.world.get_block(tx, ty))))
+}
+
+/// Whether the player's body currently overlaps any water cell — the condition
+/// for swimming instead of falling.
+fn player_in_water(game: &GameState) -> bool {
+    let x0 = (game.pos.x / TILE_SIZE).floor() as i32;
+    let x1 = ((game.pos.x + PLAYER_W - EPS) / TILE_SIZE).floor() as i32;
+    let y0 = (game.pos.y / TILE_SIZE).floor() as i32;
+    let y1 = ((game.pos.y + PLAYER_H - EPS) / TILE_SIZE).floor() as i32;
+    (y0..=y1).any(|ty| (x0..=x1).any(|tx| crate::block::is_water(game.world.get_block(tx, ty))))
 }
 
 fn column_solid(game: &GameState, reg: &BlockRegistry, tx: i32, y0: i32, y1: i32) -> bool {
@@ -2698,6 +2742,48 @@ fn handle_block_actions(
         return;
     }
 
+    // Right-clicking with a bucket scoops or pours water — a special use, not a
+    // normal block placement. An empty bucket fills from a water cell; a water
+    // bucket empties into an open cell. The server is authoritative over both the
+    // block and the inventory swap; we update optimistically and let it correct.
+    if input.placing && game.action_timer <= 0.0 && cell_in_reach(game, tx, ty) {
+        let slot = game.selected_slot;
+        if let Some((held, _, _)) = game
+            .inventory
+            .get(slot)
+            .filter(|(b, _, _)| crate::block::is_bucket(*b))
+        {
+            let cell = game.world.get_block(tx, ty);
+            let used = if held == crate::block::BUCKET && crate::block::is_water(cell) {
+                game.world.set_block(tx, ty, AIR);
+                true
+            } else if held == crate::block::WATER_BUCKET
+                && cell == AIR
+                && (0..WORLD_HEIGHT).contains(&ty)
+                && [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                    .iter()
+                    .any(|(dx, dy)| game.world.get_block(tx + dx, ty + dy) != AIR)
+            {
+                game.world.set_block(tx, ty, crate::block::WATER);
+                true
+            } else {
+                false
+            };
+            if used {
+                // Optimistically spend the held bucket; the server returns the
+                // swapped bucket via an authoritative Inventory snapshot.
+                game.inventory.take_one(slot);
+                let _ = net.commands.send(NetCommand::UseBucket {
+                    x: tx,
+                    y: ty,
+                    slot: slot as u8,
+                });
+                game.action_timer = ACTION_COOLDOWN;
+                return;
+            }
+        }
+    }
+
     // Dev mode: right button places the dev-selected block for free, with no
     // inventory cost or adjacency requirement (infinite blocks).
     if game.debug {
@@ -2757,8 +2843,9 @@ fn mine_block(
     } else {
         AIR
     };
-    // Can't mine air, or a cell beyond melee reach.
-    if current == AIR || !cell_in_reach(game, tx, ty) {
+    // Can't mine air or water (a fluid — scoop it with a bucket instead), or a
+    // cell beyond melee reach.
+    if current == AIR || crate::block::is_water(current) || !cell_in_reach(game, tx, ty) {
         game.break_target = None;
         game.break_progress = 0.0;
         return;

@@ -9,9 +9,9 @@
 //! A recipe is identified on the wire by its index in [`RECIPES`].
 
 use crate::block::{
-    BARK, CAMPFIRE, COOKED_MEAT, FORGE, IRON_AXE, IRON_INGOT, IRON_PICKAXE, IRON_SWORD, LADDER,
-    LOG, PICKAXE, RAW_IRON, RAW_MEAT, ROPE, ROPE_LADDER, STICK, STONE, STONE_AXE, STONE_PICKAXE,
-    STONE_SWORD, WOOD, WOOD_AXE, WOOD_SWORD,
+    BARK, BUCKET, CAMPFIRE, COOKED_MEAT, FORGE, IRON_AXE, IRON_INGOT, IRON_PICKAXE, IRON_SWORD,
+    LADDER, LOG, PICKAXE, RAW_IRON, RAW_MEAT, ROPE, ROPE_LADDER, STICK, STONE, STONE_AXE,
+    STONE_PICKAXE, STONE_SWORD, WOOD, WOOD_AXE, WOOD_SWORD,
 };
 use crate::inventory::Inventory;
 use crate::protocol::BlockId;
@@ -117,6 +117,12 @@ pub const RECIPES: &[Recipe] = &[
         name: "Rope Ladder",
         inputs: &[(ROPE, 3)],
         outputs: &[(ROPE_LADDER, 1)],
+    },
+    // Beaten iron ingots fold into a watertight bucket for carrying water.
+    Recipe {
+        name: "Bucket",
+        inputs: &[(IRON_INGOT, 3)],
+        outputs: &[(BUCKET, 1)],
     },
 ];
 

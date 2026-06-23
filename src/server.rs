@@ -153,6 +153,10 @@ const KNOCKBACK_X: f32 = 180.0;
 const KNOCKBACK_Y: f32 = 240.0;
 /// How often the server broadcasts the current time of day, in seconds.
 const TIME_BROADCAST_SECS: f32 = 2.0;
+/// How often spreading water flows one cell outward, in seconds. Slower than the
+/// entity tick so a poured bucket creeps out at a watery pace rather than
+/// snapping across the map in a single frame.
+const WATER_FLOW_SECS: f32 = 0.3;
 /// Upward velocity (px/s) given to a freshly mined block so it visibly pops out
 /// of the ground instead of being collected instantly.
 const ITEM_POP_VELOCITY: f32 = -120.0;
@@ -313,6 +317,19 @@ impl ServerWorld {
         changed
     }
 
+    /// Pour a water *source* at `(x, y)` (flow distance 0, so it spreads — see
+    /// [`World::place_water_source`]), generating the chunk if needed and marking
+    /// it dirty. Returns whether it was placed.
+    fn place_water(&mut self, x: i32, y: i32) -> bool {
+        let (cx, cy) = (x.div_euclid(CHUNK_SIZE), y.div_euclid(CHUNK_SIZE));
+        self.ensure(cx, cy);
+        let placed = self.world.place_water_source(x, y);
+        if placed {
+            self.dirty.insert((cx, cy));
+        }
+        placed
+    }
+
     /// Surface (grass) row for a world column, used to place ground-walking
     /// entities when they first spawn.
     fn surface(&self, world_x: i32) -> i32 {
@@ -323,6 +340,18 @@ impl ServerWorld {
     /// for the terrain a column sits in.
     fn biome(&self, world_x: i32) -> Biome {
         self.generator.biome_at(world_x)
+    }
+
+    /// Flow resident water one cell outward (see [`World::spread_water_once`]),
+    /// marking every newly filled cell's chunk dirty so the flood is saved, and
+    /// returning those cells for broadcast.
+    fn spread_water(&mut self) -> Vec<(i32, i32)> {
+        let filled = self.world.spread_water_once();
+        for &(x, y) in &filled {
+            self.dirty
+                .insert((x.div_euclid(CHUNK_SIZE), y.div_euclid(CHUNK_SIZE)));
+        }
+        filled
     }
 
     /// Whether the block at world cell `(tx, ty)` collides with entities,
@@ -792,6 +821,74 @@ impl Shared {
         self.send_inventory(id);
     }
 
+    /// Use the bucket in player `id`'s inventory `slot` on world cell `(x, y)`: an
+    /// empty [`BUCKET`](crate::block::BUCKET) scoops up a [`WATER`](crate::block::WATER)
+    /// cell (becoming a [`WATER_BUCKET`](crate::block::WATER_BUCKET)), and a water
+    /// bucket pours its load into an empty cell (becoming empty again). The held
+    /// item, the target cell, and inventory room are all validated; on any mismatch
+    /// the cell and inventory are resynced so a client's optimistic guess is undone.
+    fn use_bucket(&self, id: EntityId, x: i32, y: i32, slot: usize) {
+        let held = self.peek_slot(id, slot);
+        // Read the target cell and whether it has an orthogonal neighbour to rest
+        // against — the same support a normal block placement requires, so water
+        // can't be poured into open midair.
+        let (cell, supported) = {
+            let mut world = self.world.lock();
+            let cell = world.get(x, y);
+            let supported = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                .iter()
+                .any(|(dx, dy)| world.get(x + dx, y + dy) != crate::block::AIR);
+            (cell, supported)
+        };
+        let changed = match held {
+            // Scoop: an empty bucket fills from a water cell.
+            Some(crate::block::BUCKET) if crate::block::is_water(cell) => {
+                self.take_from_slot(id, slot);
+                self.world.lock().set(x, y, crate::block::AIR);
+                // Hand back a water bucket; if the inventory is somehow full, undo.
+                if self.add_item(id, crate::block::WATER_BUCKET) {
+                    Some(crate::block::AIR)
+                } else {
+                    self.world.lock().set(x, y, crate::block::WATER);
+                    self.add_item(id, crate::block::BUCKET);
+                    None
+                }
+            }
+            // Pour: a water bucket empties into an open, supported cell (never
+            // into midair, mirroring normal block placement).
+            Some(crate::block::WATER_BUCKET) if cell == crate::block::AIR && supported => {
+                self.take_from_slot(id, slot);
+                if self.world.lock().place_water(x, y) {
+                    // Return the now-empty bucket; if it can't fit, spill it.
+                    if !self.add_item(id, crate::block::BUCKET) {
+                        spawn_drop(self, x, y, crate::block::BUCKET);
+                    }
+                    Some(crate::block::WATER)
+                } else {
+                    self.add_item(id, crate::block::WATER_BUCKET); // refund
+                    None
+                }
+            }
+            _ => None,
+        };
+        match changed {
+            Some(block) => self.broadcast_all(ServerMessage::BlockUpdate { x, y, block }),
+            // Nothing happened: correct the client's optimistic cell guess.
+            None => {
+                let actual = self.world.lock().get(x, y);
+                self.send_to(
+                    id,
+                    ServerMessage::BlockUpdate {
+                        x,
+                        y,
+                        block: actual,
+                    },
+                );
+            }
+        }
+        self.send_inventory(id);
+    }
+
     /// Record the campfire at cell `(x, y)` as player `id`'s respawn point. No-op
     /// unless that cell really holds a campfire.
     fn set_respawn(&self, id: EntityId, x: i32, y: i32) {
@@ -871,6 +968,21 @@ impl Shared {
             }
         }
         self.send_inventory(id);
+    }
+
+    /// Flow spreading water one cell outward and return the resulting block
+    /// updates to broadcast. Each freshly flooded cell becomes a [`WATER`] block.
+    fn tick_water(&self) -> Vec<ServerMessage> {
+        self.world
+            .lock()
+            .spread_water()
+            .into_iter()
+            .map(|(x, y)| ServerMessage::BlockUpdate {
+                x,
+                y,
+                block: crate::block::WATER,
+            })
+            .collect()
     }
 
     /// Advance every lit campfire by `dt`, dropping any whose underlying block is
@@ -1622,6 +1734,7 @@ async fn entity_tick_loop(shared: Arc<Shared>) {
     let mut since_time_bcast = 0.0f32;
     let mut since_save = 0.0f32;
     let mut since_zombie_spawn = 0.0f32;
+    let mut since_water_flow = 0.0f32;
     // Evolving RNG state for scattering night-zombie spawns.
     let mut zombie_rng = 0x9E37_79B9u32;
     loop {
@@ -1655,6 +1768,15 @@ async fn entity_tick_loop(shared: Arc<Shared>) {
         // Burn down lit campfires, extinguishing any that have run out of fuel.
         for msg in shared.tick_campfires(TICK_DT) {
             shared.broadcast_all(msg);
+        }
+
+        // Creep spreading water one cell outward through loaded terrain.
+        since_water_flow += TICK_DT;
+        if since_water_flow >= WATER_FLOW_SECS {
+            since_water_flow = 0.0;
+            for msg in shared.tick_water() {
+                shared.broadcast_all(msg);
+            }
         }
 
         // After dark, periodically conjure zombies near the players.
@@ -2519,6 +2641,9 @@ fn step_ground(
 ) -> GroundMotion {
     let (x, y, w, h) = aabb;
     let grounded_before = grounded(world, x, y, w, h);
+    // A creature already standing in water has its water-avoidance suspended, so
+    // one that fell in can wade back out rather than turning back at every edge.
+    let in_water = body_in_water(world, x, y, w, h);
     let mut vx = dir * speed;
     let mut vy = (vy_in + GRAVITY * TICK_DT).min(MAX_FALL);
 
@@ -2536,10 +2661,13 @@ fn step_ground(
     }
 
     // Wandering creatures reverse at walls they couldn't hop (vy not launched
-    // upward) and at drops too deep to step down. Committed ones never turn.
+    // upward), at drops too deep to step down, and at the water's edge (which they
+    // prefer not to wade into). Committed ones never turn.
     if !committed
         && on_ground
-        && ((hit_wall && vy >= 0.0) || drop_ahead(world, nx, ny, w, h, vx) >= 2)
+        && ((hit_wall && vy >= 0.0)
+            || drop_ahead(world, nx, ny, w, h, vx) >= 2
+            || (!in_water && water_ahead(world, nx, ny, w, h, vx)))
     {
         vx = -vx;
     }
@@ -2571,6 +2699,7 @@ fn step_climber(
 ) -> GroundMotion {
     let (x, y, w, h) = aabb;
     let grounded_before = grounded(world, x, y, w, h);
+    let in_water = body_in_water(world, x, y, w, h);
     let mut vx = dir * speed;
     let mut vy = (vy_in + GRAVITY * TICK_DT).min(MAX_FALL);
 
@@ -2591,11 +2720,14 @@ fn step_climber(
         vy = 0.0;
     }
 
-    // A wandering spider reverses at a wall it didn't hop and at deep drops; a
-    // chasing one never turns (it climbs the wall or follows the player off ledges).
+    // A wandering spider reverses at a wall it didn't hop, at deep drops, and at
+    // the water's edge; a chasing one never turns (it climbs walls or follows the
+    // player off ledges and into water).
     if !committed
         && on_ground
-        && ((hit_wall && vy >= 0.0) || drop_ahead(world, nx, ny, w, h, vx) >= 2)
+        && ((hit_wall && vy >= 0.0)
+            || drop_ahead(world, nx, ny, w, h, vx) >= 2
+            || (!in_water && water_ahead(world, nx, ny, w, h, vx)))
     {
         vx = -vx;
     }
@@ -2633,6 +2765,30 @@ fn blocked_ahead(world: &mut ServerWorld, x: f32, y: f32, w: f32, h: f32, dir: f
     let y1 = ((y + h - EPS) / TILE_SIZE).floor() as i32;
     let wall = (y0..=y1).any(|ty| world.solid(tx, ty));
     wall && !can_step_up(world, x, y, w, h, dir)
+}
+
+/// Whether any cell overlapping an entity's AABB is water. Used to suspend a
+/// creature's water-avoidance once it is already submerged, so it can wade back
+/// out instead of jittering against the bank it can no longer escape past.
+fn body_in_water(world: &mut ServerWorld, x: f32, y: f32, w: f32, h: f32) -> bool {
+    let x0 = (x / TILE_SIZE).floor() as i32;
+    let x1 = ((x + w - EPS) / TILE_SIZE).floor() as i32;
+    let y0 = (y / TILE_SIZE).floor() as i32;
+    let y1 = ((y + h - EPS) / TILE_SIZE).floor() as i32;
+    (y0..=y1).any(|ty| (x0..=x1).any(|tx| crate::block::is_water(world.get(tx, ty))))
+}
+
+/// Whether water lies just ahead of a creature heading `dir`: pooled in the cell
+/// it would step into at body height, or in the cell directly below that step
+/// (so it won't wade off a bank into deeper water). Land creatures shy away from
+/// water, turning back at its edge much as they do at a wall or a cliff.
+fn water_ahead(world: &mut ServerWorld, x: f32, y: f32, w: f32, h: f32, dir: f32) -> bool {
+    let ahead = if dir > 0.0 { x + w + EPS } else { x - EPS };
+    let tx = (ahead / TILE_SIZE).floor() as i32;
+    let y0 = (y / TILE_SIZE).floor() as i32;
+    let foot = ((y + h - EPS) / TILE_SIZE).floor() as i32;
+    (y0..=foot).any(|ty| crate::block::is_water(world.get(tx, ty)))
+        || crate::block::is_water(world.get(tx, foot + 1))
 }
 
 /// Whether an entity's AABB is resting on solid ground (a solid cell directly
@@ -3067,6 +3223,42 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             );
                             shared.send_inventory(id);
                         }
+                    }
+                }
+                ClientMessage::UseBucket { x, y, slot } => {
+                    // Gated by the player's melee reach, the same limit governing
+                    // mining and placement.
+                    let in_reach = {
+                        let entities = shared.entities.lock();
+                        entities.get(id).is_some_and(|p| {
+                            let (pw, ph) = p.size();
+                            aabb_gap(
+                                p.x,
+                                p.y,
+                                pw,
+                                ph,
+                                x as f32 * TILE_SIZE,
+                                y as f32 * TILE_SIZE,
+                                TILE_SIZE,
+                                TILE_SIZE,
+                            ) <= PLAYER_ATTACK_REACH
+                        })
+                    };
+                    if in_reach {
+                        shared.use_bucket(id, x, y, slot as usize);
+                    } else {
+                        // Out of range: resync the cell and inventory to undo the
+                        // client's optimistic use.
+                        let actual = shared.world.lock().get(x, y);
+                        shared.send_to(
+                            id,
+                            ServerMessage::BlockUpdate {
+                                x,
+                                y,
+                                block: actual,
+                            },
+                        );
+                        shared.send_inventory(id);
                     }
                 }
                 ClientMessage::MoveItem { from, to } => {

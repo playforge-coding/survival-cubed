@@ -72,6 +72,9 @@ blocks!(
     "rope_ladder",
     "coal_ore",
     "coal",
+    "water",
+    "bucket",
+    "water_bucket",
 );
 
 sprites!(

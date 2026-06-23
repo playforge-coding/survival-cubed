@@ -112,6 +112,13 @@ pub enum NetCommand {
         y: i32,
         slot: u8,
     },
+    /// Use the bucket in hotbar `slot` on cell `(x, y)`: an empty bucket scoops
+    /// up water, a water bucket pours it out (server validates and resyncs).
+    UseBucket {
+        x: i32,
+        y: i32,
+        slot: u8,
+    },
     MoveItem {
         from: u8,
         to: u8,
@@ -364,6 +371,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
     match cmd {
         NetCommand::SetBlock { x, y, block, held } => ClientMessage::SetBlock { x, y, block, held },
         NetCommand::PlaceBlock { x, y, slot } => ClientMessage::PlaceBlock { x, y, slot },
+        NetCommand::UseBucket { x, y, slot } => ClientMessage::UseBucket { x, y, slot },
         NetCommand::MoveItem { from, to } => ClientMessage::MoveItem { from, to },
         NetCommand::DropItem { slot, all, dir } => ClientMessage::DropItem { slot, all, dir },
         NetCommand::Craft { recipe } => ClientMessage::Craft { recipe },

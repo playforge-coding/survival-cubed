@@ -8,12 +8,17 @@
 
 use fastnoise_lite::{FastNoiseLite, NoiseType};
 
-use crate::block::{AIR, COAL_ORE, DIRT, GRASS, IRON_ORE, LEAVES, LOG, STONE};
+use crate::block::{AIR, COAL_ORE, DIRT, GRASS, IRON_ORE, LEAVES, LOG, STONE, WATER};
 use crate::protocol::BlockId;
 use crate::world::{CHUNK_SIZE, Chunk, WORLD_HEIGHT, to_chunk};
 
 /// Average surface row (cells from the top of the world).
 const SURFACE_BASE: i32 = WORLD_HEIGHT / 2;
+/// Row of the water surface. Any column whose ground dips below this row is
+/// flooded with water from here down to the sea floor, forming ponds, lakes, and
+/// the occasional deep mountain-valley pool. Sits a touch below [`SURFACE_BASE`]
+/// so only genuine dips hold water and the rolling plains stay mostly dry.
+const SEA_LEVEL: i32 = SURFACE_BASE + 2;
 /// Number of dirt cells beneath the grass before stone begins (plains only).
 const DIRT_DEPTH: i32 = 4;
 
@@ -279,7 +284,13 @@ impl WorldGen {
             for ly in 0..CHUNK_SIZE {
                 let world_y = base_y + ly;
                 if world_y < surface {
-                    continue; // air above the ground
+                    // Above the ground: flood a submerged column with water from
+                    // the sea surface down to the sea floor, leaving everything
+                    // higher as open air.
+                    if world_y >= SEA_LEVEL {
+                        chunk.set(lx, ly, WATER);
+                    }
+                    continue;
                 }
                 // Caves are carved out of solid ground: leave the cell as air.
                 if self.is_cave(world_x, world_y, surface) {
@@ -299,7 +310,12 @@ impl WorldGen {
         // whose surface a cave has opened, so trees don't float over cave mouths.
         for world_x in (base_x - CANOPY_RADIUS)..(base_x + CHUNK_SIZE + CANOPY_RADIUS) {
             let surface = self.surface_height(world_x);
-            if self.tree_root_at(world_x) && !self.is_cave(world_x, surface, surface) {
+            // No trees on submerged ground: a flooded column would leave a trunk
+            // sprouting out of (or floating over) the water.
+            if self.tree_root_at(world_x)
+                && surface <= SEA_LEVEL
+                && !self.is_cave(world_x, surface, surface)
+            {
                 self.place_tree(&mut chunk, base_x, base_y, world_x);
             }
         }
@@ -404,7 +420,33 @@ pub fn spawn_point(generator: &WorldGen, world_x: i32) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::{AIR, IRON_ORE};
+    use crate::block::{AIR, IRON_ORE, WATER};
+
+    /// Low-lying basins flood with water, and that water only ever sits at or
+    /// below the sea surface — never spilling up onto open air above it.
+    #[test]
+    fn submerged_basins_flood_up_to_sea_level() {
+        let worldgen = WorldGen::new(0xC0FFEE);
+        let mut water = 0u32;
+        for cx in -8..8 {
+            for cy in 0..(WORLD_HEIGHT / CHUNK_SIZE) {
+                let chunk = worldgen.generate_chunk(cx, cy);
+                for lx in 0..CHUNK_SIZE {
+                    for ly in 0..CHUNK_SIZE {
+                        if chunk.get(lx, ly) == WATER {
+                            water += 1;
+                            let world_y = cy * CHUNK_SIZE + ly;
+                            assert!(
+                                world_y >= SEA_LEVEL,
+                                "water at row {world_y} sits above sea level {SEA_LEVEL}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(water > 0, "expected some basins to flood with water");
+    }
 
     /// Caves hollow out a meaningful amount of underground rock, but nowhere near
     /// all of it — the world stays mostly solid — and iron ore still survives the
