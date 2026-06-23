@@ -40,10 +40,12 @@ const MOUNTAIN_LIFT: i32 = 14;
 const MOUNTAIN_THRESHOLD: f32 = 0.30;
 /// Biome noise below this threshold is forest (flat, tree-dense grassland).
 const FOREST_THRESHOLD: f32 = -0.30;
-/// Biome noise between [`FOREST_THRESHOLD`] and this threshold is desert: flat,
-/// sandy, treeless grassland-height terrain. Sits clear of the mountain blend
-/// band (see [`mountain_weight`]) so deserts stay level rather than rising.
-const DESERT_THRESHOLD: f32 = -0.15;
+/// Value of the dedicated desert field (see [`WorldGen::desert_noise`]) above
+/// which a non-mountain column becomes desert: flat, sandy, treeless terrain at
+/// plains height. The field is low-frequency and independent of the main biome
+/// axis, so deserts form broad, contiguous swaths many chunks across rather than
+/// thin strips squeezed between forest and plains. Lower means larger deserts.
+const DESERT_THRESHOLD: f32 = 0.25;
 
 /// Per-mille chance that any individual plains column roots a tree — sparse,
 /// the odd lonely tree dotting the grassland.
@@ -147,6 +149,9 @@ pub struct WorldGen {
     seed: i32,
     height_noise: FastNoiseLite,
     biome_noise: FastNoiseLite,
+    /// A dedicated low-frequency field carving broad deserts out of the lower,
+    /// non-mountainous ground, independent of the plains/forest split.
+    desert_noise: FastNoiseLite,
     ore_noise: FastNoiseLite,
     /// A second vein field, on its own seed, driving coal-ore placement
     /// independently of the iron veins.
@@ -177,6 +182,12 @@ impl WorldGen {
         let mut biome_noise = FastNoiseLite::with_seed(seed.wrapping_add(0x5EED));
         biome_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
         biome_noise.set_frequency(Some(0.004));
+        // A second low-frequency field, on its own seed, laid over the biome map
+        // to carve broad deserts. Its frequency sets desert size — lower spreads
+        // them wider; this is tuned for swaths several chunks across.
+        let mut desert_noise = FastNoiseLite::with_seed(seed.wrapping_add(0xDE5E));
+        desert_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
+        desert_noise.set_frequency(Some(0.0045));
         // A higher-frequency field driving compact ore veins, on its own seed so
         // ore placement is independent of terrain and biome shape.
         let mut ore_noise = FastNoiseLite::with_seed(seed.wrapping_add(0x0A11));
@@ -217,6 +228,7 @@ impl WorldGen {
             seed,
             height_noise,
             biome_noise,
+            desert_noise,
             ore_noise,
             coal_noise,
             cave_noise,
@@ -251,12 +263,17 @@ impl WorldGen {
     /// still blends across the boundary via [`mountain_weight`].
     pub fn biome_at(&self, world_x: i32) -> Biome {
         let n = self.biome_noise.get_noise_2d(world_x as f32, 0.0); // -1..1
+        // Mountains win outright — no sand peaks.
         if n > MOUNTAIN_THRESHOLD {
-            Biome::Mountains
-        } else if n < FOREST_THRESHOLD {
+            return Biome::Mountains;
+        }
+        // A dedicated low-frequency field carves broad deserts out of the rest of
+        // the lower ground, independent of the plains/forest split.
+        if self.desert_noise.get_noise_2d(world_x as f32, 0.0) > DESERT_THRESHOLD {
+            return Biome::Desert;
+        }
+        if n < FOREST_THRESHOLD {
             Biome::Forest
-        } else if n < DESERT_THRESHOLD {
-            Biome::Desert
         } else {
             Biome::Plains
         }
