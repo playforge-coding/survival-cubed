@@ -36,7 +36,7 @@ pub struct Waypoint {
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -81,6 +81,12 @@ pub enum ClientMessage {
     /// [`water_bucket`](crate::block::WATER_BUCKET) pours its water into an empty
     /// cell (becoming empty again). Validated against the player's reach.
     UseBucket { x: i32, y: i32, slot: u8 },
+    /// Use the fire key held in hotbar `slot`: the server checks the slot really
+    /// holds a [`fire_key`](crate::block::FIRE_KEY) and, if so, warps the player to
+    /// the *other* dimension (overworld ↔ underworld), landing them at that
+    /// dimension's surface in their current column. The key is reusable and is not
+    /// consumed. A no-op (with a resync) if the slot no longer holds the key.
+    UseFireKey { slot: u8 },
     /// Swing the door touching world cell `(x, y)` open or shut. A door spans two
     /// cells; the server flips both halves between their closed
     /// ([`crate::block::DOOR`]/[`crate::block::DOOR_TOP`]) and open

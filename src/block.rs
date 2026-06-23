@@ -155,6 +155,11 @@ pub const SAND: BlockId = 47;
 /// Ash: the powdery surface block of the underworld's ash valleys. A solid,
 /// placeable block dug quickly by hand, like dirt.
 pub const ASH: BlockId = 48;
+/// The fire key: a dimension-crossing artifact crafted from a [`CHARRED_ROCK`]
+/// and a [`TUNGSTEN_INGOT`]. An item (not placeable); right-click while holding
+/// it to warp between the overworld and the underworld (see [`crate::server`]'s
+/// fire-key handling). Reusable — using it does not consume the key.
+pub const FIRE_KEY: BlockId = 49;
 
 /// Definition of a single block type.
 pub struct BlockDef {
@@ -264,6 +269,10 @@ impl BlockRegistry {
         // underworld's ash valleys. Both loose ground, dug quickly like dirt.
         r.register("sand", true, true, true, 0.5);
         r.register("ash", true, true, true, 0.5);
+        // The fire key: a non-placeable artifact item (visible only so its
+        // dropped sprite has an atlas tile). Right-clicking with it warps the
+        // player between dimensions.
+        r.register("fire_key", false, true, false, 0.0);
         r
     }
 
@@ -449,6 +458,12 @@ pub fn is_fire(block: BlockId) -> bool {
 /// tool used to scoop and pour water.
 pub fn is_bucket(item: BlockId) -> bool {
     matches!(item, BUCKET | WATER_BUCKET)
+}
+
+/// Whether `item` is the fire key — the artifact whose use warps the player
+/// between dimensions.
+pub fn is_fire_key(item: BlockId) -> bool {
+    item == FIRE_KEY
 }
 
 /// Whether `item` is a pickaxe (mining is its intended use).

@@ -9,10 +9,10 @@
 //! A recipe is identified on the wire by its index in [`RECIPES`].
 
 use crate::block::{
-    BARK, BUCKET, CAMPFIRE, COOKED_MEAT, DOOR, FORGE, IRON_AXE, IRON_INGOT, IRON_PICKAXE,
-    IRON_SWORD, LADDER, LOG, PICKAXE, RAW_IRON, RAW_MEAT, RAW_TUNGSTEN, ROPE, ROPE_LADDER, STICK,
-    STONE, STONE_AXE, STONE_PICKAXE, STONE_SWORD, TUNGSTEN_AXE, TUNGSTEN_INGOT, TUNGSTEN_PICKAXE,
-    TUNGSTEN_SWORD, WOOD, WOOD_AXE, WOOD_SWORD,
+    BARK, BUCKET, CAMPFIRE, CHARRED_ROCK, COOKED_MEAT, DOOR, FIRE_KEY, FORGE, IRON_AXE, IRON_INGOT,
+    IRON_PICKAXE, IRON_SWORD, LADDER, LOG, PICKAXE, RAW_IRON, RAW_MEAT, RAW_TUNGSTEN, ROPE,
+    ROPE_LADDER, STICK, STONE, STONE_AXE, STONE_PICKAXE, STONE_SWORD, TUNGSTEN_AXE, TUNGSTEN_INGOT,
+    TUNGSTEN_PICKAXE, TUNGSTEN_SWORD, WOOD, WOOD_AXE, WOOD_SWORD,
 };
 use crate::inventory::Inventory;
 use crate::protocol::BlockId;
@@ -148,6 +148,13 @@ pub const RECIPES: &[Recipe] = &[
         name: "Door",
         inputs: &[(WOOD, 6)],
         outputs: &[(DOOR, 1)],
+    },
+    // A shard of charred rock fused to a tungsten ingot forms the fire key, the
+    // artifact that warps its bearer between dimensions.
+    Recipe {
+        name: "Fire Key",
+        inputs: &[(CHARRED_ROCK, 1), (TUNGSTEN_INGOT, 1)],
+        outputs: &[(FIRE_KEY, 1)],
     },
 ];
 

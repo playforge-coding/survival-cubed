@@ -3029,6 +3029,24 @@ fn handle_block_actions(
         }
     }
 
+    // Right-clicking while holding the fire key warps the player between
+    // dimensions. It acts on the player, not a target cell, so it needs no reach
+    // check; the server picks the landing spot and re-streams the new dimension.
+    if input.placing && game.action_timer <= 0.0 {
+        let slot = game.selected_slot;
+        if game
+            .inventory
+            .get(slot)
+            .is_some_and(|(b, _, _)| crate::block::is_fire_key(b))
+        {
+            let _ = net
+                .commands
+                .send(NetCommand::UseFireKey { slot: slot as u8 });
+            game.action_timer = ACTION_COOLDOWN;
+            return;
+        }
+    }
+
     // Dev mode: right button places the dev-selected block for free, with no
     // inventory cost or adjacency requirement (infinite blocks).
     if game.debug {

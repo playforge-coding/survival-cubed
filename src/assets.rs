@@ -89,6 +89,7 @@ blocks!(
     "door_open_top",
     "sand",
     "ash",
+    "fire_key",
 );
 
 sprites!(

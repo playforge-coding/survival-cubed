@@ -134,6 +134,11 @@ pub enum NetCommand {
         y: i32,
         slot: u8,
     },
+    /// Use the fire key in hotbar `slot` to warp between dimensions (server
+    /// validates the slot, moves the player, and resyncs).
+    UseFireKey {
+        slot: u8,
+    },
     /// Swing the door touching cell `(x, y)` open or shut (server flips both
     /// halves and resyncs).
     ToggleDoor {
@@ -394,6 +399,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::SetBlock { x, y, block, held } => ClientMessage::SetBlock { x, y, block, held },
         NetCommand::PlaceBlock { x, y, slot } => ClientMessage::PlaceBlock { x, y, slot },
         NetCommand::UseBucket { x, y, slot } => ClientMessage::UseBucket { x, y, slot },
+        NetCommand::UseFireKey { slot } => ClientMessage::UseFireKey { slot },
         NetCommand::ToggleDoor { x, y } => ClientMessage::ToggleDoor { x, y },
         NetCommand::MoveItem { from, to } => ClientMessage::MoveItem { from, to },
         NetCommand::DropItem { slot, all, dir } => ClientMessage::DropItem { slot, all, dir },

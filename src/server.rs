@@ -1676,6 +1676,40 @@ impl Shared {
         self.send_inventory(id);
     }
 
+    /// Use the fire key in hotbar `slot`: if it really holds a
+    /// [`fire_key`](crate::block::FIRE_KEY), warp player `id` to the *other*
+    /// dimension, landing them at that dimension's surface in their current column.
+    /// The key is a reusable artifact — it is not consumed. A no-op (resyncing the
+    /// client's inventory) if the slot no longer holds the key, e.g. after an
+    /// inventory move raced with the use.
+    fn use_fire_key(&self, id: EntityId, slot: usize) {
+        if self.peek_slot(id, slot) != Some(crate::block::FIRE_KEY) {
+            self.send_inventory(id);
+            return;
+        }
+        let from = self.dim_of(id);
+        // The column the player is standing in, used to pick a sensible landing
+        // spot on the far side (the same logic as a natural dimension crossing).
+        let x = match self.entities(from).lock().get(id) {
+            Some(p) => p.x,
+            None => return,
+        };
+        let cell_x = (x / TILE_SIZE).floor() as i32;
+        match from {
+            // Overworld → underworld: drop onto the charred surface of this column.
+            Dimension::Overworld => {
+                let surface = self.world(Dimension::Underworld).lock().surface(cell_x);
+                let ny = ((surface - 3).max(0) as f32) * TILE_SIZE;
+                self.enter_dimension(id, Dimension::Underworld, x, ny);
+            }
+            // Underworld → overworld: carve a landing pocket at the overworld floor.
+            Dimension::Underworld => {
+                let (nx, ny) = self.carve_overworld_landing(cell_x);
+                self.enter_dimension(id, Dimension::Overworld, nx, ny);
+            }
+        }
+    }
+
     /// Enact a death respawn returned by [`apply_damage`]: a same-dimension respawn
     /// just teleports the avatar (already repositioned server-side) and drops a
     /// death marker; a cross-dimension one routes through [`enter_dimension`].
@@ -4328,6 +4362,9 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         );
                         shared.send_inventory(id);
                     }
+                }
+                ClientMessage::UseFireKey { slot } => {
+                    shared.use_fire_key(id, slot as usize);
                 }
                 ClientMessage::ToggleDoor { x, y } => {
                     let dim = shared.dim_of(id);
