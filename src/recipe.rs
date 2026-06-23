@@ -133,13 +133,15 @@ pub const COOK_RECIPES: &[Recipe] = &[
 ];
 
 /// Smelting recipes, available only at a [`FORGE`](crate::block::FORGE) (its GUI
-/// lists these; the plain crafting panel lists [`RECIPES`]). Each consumes some
-/// fuel alongside its raw input. A recipe's index here is its wire id.
+/// lists these; the plain crafting panel lists [`RECIPES`]). Each lists only its
+/// raw input and output; the forge burns a separately-chosen fuel on top of these
+/// (see [`forge_fuel_units`](crate::block::forge_fuel_units)). A recipe's index
+/// here is its wire id.
 pub const SMELT_RECIPES: &[Recipe] = &[
-    // Raw iron smelts into a refined ingot, burning a piece of wood as fuel.
+    // Raw iron smelts into a refined ingot (one charge of fuel per smelt).
     Recipe {
         name: "Iron Ingot",
-        inputs: &[(RAW_IRON, 1), (WOOD, 1)],
+        inputs: &[(RAW_IRON, 1)],
         outputs: &[(IRON_INGOT, 1)],
     },
 ];

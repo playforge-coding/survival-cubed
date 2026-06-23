@@ -558,13 +558,29 @@ impl Shared {
     /// feet. Returns whether the recipe was applied (false if materials were
     /// insufficient).
     fn apply_recipe(&self, id: EntityId, recipe: &crate::recipe::Recipe) -> bool {
+        self.apply_recipe_with(id, recipe, &[])
+    }
+
+    /// As [`apply_recipe`](Self::apply_recipe), but requires and consumes `extra`
+    /// inputs (as `(item, count)` pairs) on top of the recipe's own — used by the
+    /// forge to burn a separately-chosen fuel alongside the smelt. The recipe is
+    /// applied only if the player holds both the recipe inputs and every `extra`.
+    fn apply_recipe_with(
+        &self,
+        id: EntityId,
+        recipe: &crate::recipe::Recipe,
+        extra: &[(BlockId, u32)],
+    ) -> bool {
         let overflow = {
             let mut invs = self.inventories.lock();
             let inv = invs.entry(id).or_default();
-            if !recipe.craftable(inv) {
+            if !recipe.craftable(inv) || extra.iter().any(|(item, n)| inv.count(*item) < *n) {
                 return false;
             }
             for (item, n) in recipe.inputs {
+                inv.remove(*item, *n);
+            }
+            for (item, n) in extra {
                 inv.remove(*item, *n);
             }
             let mut overflow = Vec::new();
@@ -603,14 +619,19 @@ impl Shared {
     }
 
     /// Smelt `SMELT_RECIPES[recipe_idx]` up to `count` times for player `id`,
-    /// stopping as soon as the raw material or fuel runs out. No-op for an
-    /// unknown recipe.
-    fn smelt(&self, id: EntityId, recipe_idx: usize, count: u32) {
-        if let Some(recipe) = crate::recipe::SMELT_RECIPES.get(recipe_idx) {
-            for _ in 0..count {
-                if !self.apply_recipe(id, recipe) {
-                    break;
-                }
+    /// burning `fuel` (a [`forge_fuel_units`](crate::block::forge_fuel_units) charge
+    /// per smelt) and stopping as soon as the raw material or fuel runs out. No-op
+    /// for an unknown recipe or an item that can't fuel a forge.
+    fn smelt(&self, id: EntityId, recipe_idx: usize, count: u32, fuel: BlockId) {
+        let Some(recipe) = crate::recipe::SMELT_RECIPES.get(recipe_idx) else {
+            return;
+        };
+        let Some(units) = crate::block::forge_fuel_units(fuel) else {
+            return;
+        };
+        for _ in 0..count {
+            if !self.apply_recipe_with(id, recipe, &[(fuel, units)]) {
+                break;
             }
         }
     }
@@ -2843,8 +2864,12 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     shared.craft(id, recipe as usize);
                     shared.send_inventory(id);
                 }
-                ClientMessage::Smelt { recipe, count } => {
-                    shared.smelt(id, recipe as usize, count);
+                ClientMessage::Smelt {
+                    recipe,
+                    count,
+                    fuel,
+                } => {
+                    shared.smelt(id, recipe as usize, count, fuel);
                     shared.send_inventory(id);
                 }
                 ClientMessage::Repair { item } => {

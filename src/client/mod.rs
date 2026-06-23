@@ -140,6 +140,8 @@ struct GameState {
     /// to (opened by right-clicking a forge block).
     forge_open: bool,
     forge_cell: Option<(i32, i32)>,
+    /// Which fuel the forge GUI currently burns per smelt (wood, coal, or bark).
+    forge_fuel: BlockId,
     /// Whether the campfire GUI is open, and which campfire cell it belongs to
     /// (opened by right-clicking a campfire block).
     campfire_open: bool,
@@ -219,6 +221,7 @@ impl GameState {
             move_from: None,
             forge_open: false,
             forge_cell: None,
+            forge_fuel: crate::block::WOOD,
             campfire_open: false,
             campfire_cell: None,
             action_timer: 0.0,
@@ -1396,6 +1399,11 @@ impl App {
         }
         let registry = self.registry.clone();
         let inventory = self.game.as_ref().unwrap().inventory.clone();
+        // The fuel the player has selected to burn, and how many units one smelt
+        // spends of it. Mutated by the fuel picker below and written back at the end.
+        let mut fuel = self.game.as_ref().unwrap().forge_fuel;
+        let fuel_units = crate::block::forge_fuel_units(fuel).unwrap_or(1);
+        let fuel_stock = inventory.count(fuel);
         // (recipe index, how many times to smelt)
         let mut smelt: Option<(u16, u32)> = None;
         // Tool to repair, if its button is clicked this frame.
@@ -1423,9 +1431,32 @@ impl App {
             .show(ui.ctx(), |ui| {
                 ui.label("Smelt raw materials into refined goods (consumes fuel).");
                 ui.separator();
+
+                // Fuel picker: pick which fuel to burn. Each smelt spends one
+                // charge — a charge being one wood/coal or four bark.
+                ui.label("Fuel:");
+                ui.horizontal(|ui| {
+                    for &item in crate::block::FORGE_FUELS {
+                        let units = crate::block::forge_fuel_units(item).unwrap_or(1);
+                        let name = item_display_name(registry.get(item).name);
+                        let label = if units > 1 {
+                            format!("{name} ×{units}")
+                        } else {
+                            name
+                        };
+                        let have = inventory.count(item) > 0;
+                        ui.add_enabled_ui(have, |ui| {
+                            ui.selectable_value(&mut fuel, item, label);
+                        });
+                    }
+                });
+                ui.separator();
+
+                // How many charges of the chosen fuel the player can afford.
+                let fuel_crafts = fuel_stock / fuel_units;
                 for (idx, recipe) in crate::recipe::SMELT_RECIPES.iter().enumerate() {
-                    let one = recipe.craftable(&inventory);
-                    let max = recipe.max_crafts(&inventory);
+                    let one = recipe.craftable(&inventory) && fuel_crafts >= 1;
+                    let max = recipe.max_crafts(&inventory).min(fuel_crafts);
                     ui.horizontal(|ui| {
                         if ui
                             .add_enabled(one, egui::Button::new(recipe.name))
@@ -1445,9 +1476,11 @@ impl App {
                 }
                 ui.add_space(8.0);
                 ui.weak(format!(
-                    "Raw iron: {}   ·   Wood (fuel): {}   ·   Iron ingots: {}",
+                    "Raw iron: {}   ·   Wood: {}   ·   Coal: {}   ·   Bark: {}   ·   Iron ingots: {}",
                     inventory.count(crate::block::RAW_IRON),
                     inventory.count(crate::block::WOOD),
+                    inventory.count(crate::block::COAL),
+                    inventory.count(crate::block::BARK),
                     inventory.count(crate::block::IRON_INGOT),
                 ));
 
@@ -1482,12 +1515,20 @@ impl App {
                 }
             });
 
+        // Remember the chosen fuel for next time the GUI opens.
+        if let Some(g) = self.game.as_mut() {
+            g.forge_fuel = fuel;
+        }
         // Smelting is server-authoritative: send the request and let the
         // resulting Inventory snapshot update the display.
         if let (Some((recipe, count)), Some(net)) = (smelt, &self.net)
             && count > 0
         {
-            let _ = net.commands.send(NetCommand::Smelt { recipe, count });
+            let _ = net.commands.send(NetCommand::Smelt {
+                recipe,
+                count,
+                fuel,
+            });
         }
         // Repairing is server-authoritative too: it consumes the material and
         // replies with an updated inventory snapshot.
@@ -1501,7 +1542,7 @@ impl App {
     }
 
     /// The campfire GUI, opened by right-clicking a campfire block. Lets the
-    /// player feed it fuel (wood or bark) to light it and keep it burning, and
+    /// player feed it fuel (wood, coal, or bark) to light it and keep it burning, and
     /// cook raw meat on it while lit. Cooking and fueling are server-authoritative
     /// (requests are sent and the resulting snapshots update the display).
     fn campfire_window(&mut self, ui: &mut egui::Ui) {
@@ -1565,11 +1606,20 @@ impl App {
                     {
                         fuel = Some(crate::block::BARK);
                     }
+                    let have_coal = inventory.count(crate::block::COAL) > 0;
+                    if ui
+                        .add_enabled(have_coal, egui::Button::new("Add Coal"))
+                        .on_hover_text("Burns the longest")
+                        .clicked()
+                    {
+                        fuel = Some(crate::block::COAL);
+                    }
                 });
                 ui.weak(format!(
-                    "Wood: {}   ·   Bark: {}",
+                    "Wood: {}   ·   Bark: {}   ·   Coal: {}",
                     inventory.count(crate::block::WOOD),
                     inventory.count(crate::block::BARK),
+                    inventory.count(crate::block::COAL),
                 ));
 
                 // Cooking: only while lit.

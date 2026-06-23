@@ -128,10 +128,12 @@ pub enum NetCommand {
     Craft {
         recipe: u16,
     },
-    /// Smelt the forge recipe at index `recipe` up to `count` times.
+    /// Smelt the forge recipe at index `recipe` up to `count` times, burning
+    /// `fuel` (wood, coal, or bark).
     Smelt {
         recipe: u16,
         count: u32,
+        fuel: BlockId,
     },
     /// Repair one worn tool of type `item` at a forge (consumes its material).
     Repair {
@@ -141,7 +143,7 @@ pub enum NetCommand {
     Eat {
         slot: u8,
     },
-    /// Feed one unit of `fuel` (wood or bark) to the campfire at cell `(x, y)`.
+    /// Feed one unit of `fuel` (wood, coal, or bark) to the campfire at cell `(x, y)`.
     FuelCampfire {
         x: i32,
         y: i32,
@@ -365,7 +367,15 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::MoveItem { from, to } => ClientMessage::MoveItem { from, to },
         NetCommand::DropItem { slot, all, dir } => ClientMessage::DropItem { slot, all, dir },
         NetCommand::Craft { recipe } => ClientMessage::Craft { recipe },
-        NetCommand::Smelt { recipe, count } => ClientMessage::Smelt { recipe, count },
+        NetCommand::Smelt {
+            recipe,
+            count,
+            fuel,
+        } => ClientMessage::Smelt {
+            recipe,
+            count,
+            fuel,
+        },
         NetCommand::PlayerMove { x, y } => ClientMessage::PlayerMove { x, y },
         NetCommand::RequestChunk { cx, cy } => ClientMessage::RequestChunk { cx, cy },
         NetCommand::Attack { target, held } => ClientMessage::Attack { target, held },

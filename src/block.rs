@@ -89,6 +89,12 @@ pub const ROPE: BlockId = 28;
 /// reaches its length limit (see [`crate::server`]). Drop another onto the bottom
 /// of a spent run to continue the descent. Crafted from [`ROPE`].
 pub const ROPE_LADDER: BlockId = 29;
+/// Coal ore, generated underground like [`IRON_ORE`] but more abundant and minable
+/// with any pickaxe. A block; mined, it drops [`COAL`].
+pub const COAL_ORE: BlockId = 30;
+/// A lump of coal, dropped by [`COAL_ORE`]. An item used as fuel — it burns in a
+/// [`CAMPFIRE`] and powers a [`FORGE`] (see [`fuel_seconds`] / [`forge_fuel_units`]).
+pub const COAL: BlockId = 31;
 
 /// Definition of a single block type.
 pub struct BlockDef {
@@ -162,6 +168,9 @@ impl BlockRegistry {
         // climbable block that unrolls down a cave shaft when placed.
         r.register("rope", false, true, false, 0.0);
         r.register("rope_ladder", false, true, true, 0.4);
+        // Coal: an ore block (minable with any pickaxe) and the fuel lump it drops.
+        r.register("coal_ore", true, true, true, 1.5);
+        r.register("coal", false, true, false, 0.0);
         r
     }
 
@@ -246,6 +255,7 @@ pub fn pickaxe_tier(item: BlockId) -> u8 {
 pub fn required_tier(block: BlockId) -> u8 {
     match block {
         STONE => 1,    // any pickaxe
+        COAL_ORE => 1, // any pickaxe
         IRON_ORE => 2, // stone or iron pickaxe only
         _ => 0,
     }
@@ -395,6 +405,7 @@ pub fn attack_damage(item: BlockId) -> i32 {
 pub fn mined_drop(block: BlockId) -> BlockId {
     match block {
         IRON_ORE => RAW_IRON,
+        COAL_ORE => COAL,
         CAMPFIRE_LIT => CAMPFIRE,
         other => other,
     }
@@ -443,11 +454,28 @@ pub fn is_campfire(block: BlockId) -> bool {
 }
 
 /// Seconds of burn time one unit of `item` adds to a campfire when used as fuel,
-/// or `None` if it isn't fuel. Wood burns long; bark gives a smaller boost.
+/// or `None` if it isn't fuel. Coal burns longest, wood burns long, and bark
+/// gives a smaller boost.
 pub fn fuel_seconds(item: BlockId) -> Option<f32> {
     match item {
+        COAL => Some(90.0),
         WOOD => Some(45.0),
         BARK => Some(12.0),
+        _ => None,
+    }
+}
+
+/// The fuels a [`FORGE`] accepts, in the order its GUI offers them. Every entry
+/// has a [`forge_fuel_units`] charge cost.
+pub const FORGE_FUELS: &[BlockId] = &[WOOD, COAL, BARK];
+
+/// How many units of `item` one smelt at a [`FORGE`] consumes when `item` is used
+/// as its fuel, or `None` if `item` can't fuel a forge. Coal and wood each spend a
+/// single unit; bark is weaker, so it takes four to fire one smelt.
+pub fn forge_fuel_units(item: BlockId) -> Option<u32> {
+    match item {
+        COAL | WOOD => Some(1),
+        BARK => Some(4),
         _ => None,
     }
 }
@@ -531,10 +559,27 @@ mod tests {
     }
 
     #[test]
-    fn only_wood_and_bark_are_fuel_and_wood_burns_longer() {
+    fn coal_wood_and_bark_are_fuel_and_coal_burns_longest() {
+        assert!(fuel_seconds(COAL).unwrap() > fuel_seconds(WOOD).unwrap());
         assert!(fuel_seconds(WOOD).unwrap() > fuel_seconds(BARK).unwrap());
         assert_eq!(fuel_seconds(STONE), None);
         assert_eq!(fuel_seconds(APPLE), None);
+    }
+
+    #[test]
+    fn forge_burns_wood_coal_or_bark_with_bark_the_priciest() {
+        // Wood and coal each fire a smelt for one unit; weak bark takes four.
+        assert_eq!(forge_fuel_units(WOOD), Some(1));
+        assert_eq!(forge_fuel_units(COAL), Some(1));
+        assert_eq!(forge_fuel_units(BARK), Some(4));
+        assert_eq!(forge_fuel_units(STONE), None);
+        // Every offered fuel must actually be a fuel.
+        assert!(FORGE_FUELS.iter().all(|f| forge_fuel_units(*f).is_some()));
+    }
+
+    #[test]
+    fn coal_ore_drops_coal_when_mined() {
+        assert_eq!(mined_drop(COAL_ORE), COAL);
     }
 
     #[test]

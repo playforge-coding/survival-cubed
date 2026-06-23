@@ -8,7 +8,7 @@
 
 use fastnoise_lite::{FastNoiseLite, NoiseType};
 
-use crate::block::{AIR, DIRT, GRASS, IRON_ORE, LEAVES, LOG, STONE};
+use crate::block::{AIR, COAL_ORE, DIRT, GRASS, IRON_ORE, LEAVES, LOG, STONE};
 use crate::protocol::BlockId;
 use crate::world::{CHUNK_SIZE, Chunk, WORLD_HEIGHT, to_chunk};
 
@@ -55,6 +55,13 @@ const ORE_THRESHOLD: f32 = 0.55;
 /// Lower (more generous) threshold inside mountains, which are iron-rich.
 const MOUNTAIN_ORE_THRESHOLD: f32 = 0.40;
 
+/// Coal ore sits shallower than iron, breaking into the dirt/stone boundary, so it
+/// is the first fuel a fresh player can dig up.
+const COAL_ORE_MIN_DEPTH: i32 = 3;
+/// Coal-noise value above which a stone cell becomes coal ore. Lower (more
+/// generous) than [`ORE_THRESHOLD`], making coal the more common ore.
+const COAL_ORE_THRESHOLD: f32 = 0.45;
+
 /// Half-width (in noise units) of the band around a cave-noise zero-contour that
 /// gets carved into a winding tunnel. Larger means wider tunnels (paired with the
 /// field's low frequency, this maps to a passage several cells across — wide
@@ -86,6 +93,9 @@ pub struct WorldGen {
     height_noise: FastNoiseLite,
     biome_noise: FastNoiseLite,
     ore_noise: FastNoiseLite,
+    /// A second vein field, on its own seed, driving coal-ore placement
+    /// independently of the iron veins.
+    coal_noise: FastNoiseLite,
     /// Field whose zero-contour is carved into winding tunnels (see
     /// [`is_cave`](WorldGen::is_cave)).
     cave_noise: FastNoiseLite,
@@ -108,6 +118,11 @@ impl WorldGen {
         let mut ore_noise = FastNoiseLite::with_seed(seed.wrapping_add(0x0A11));
         ore_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
         ore_noise.set_frequency(Some(0.09));
+        // Coal veins: a sibling of the iron field on its own seed, so coal and
+        // iron deposits don't track one another.
+        let mut coal_noise = FastNoiseLite::with_seed(seed.wrapping_add(0xC0A1));
+        coal_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
+        coal_noise.set_frequency(Some(0.09));
         // A low-frequency field for winding tunnels, carved as a band around its
         // zero contour. Low frequency keeps the gradient gentle, so the band maps
         // to several connected cells (a real passage, not a dotted line) and the
@@ -124,6 +139,7 @@ impl WorldGen {
             height_noise,
             biome_noise,
             ore_noise,
+            coal_noise,
             cave_noise,
             cavern_noise,
         }
@@ -194,23 +210,35 @@ impl WorldGen {
         }
     }
 
-    /// Whether a stone cell at `(world_x, world_y)` should be iron ore instead.
-    /// Ore forms compact veins (driven by [`ore_noise`](WorldGen::ore_noise))
-    /// deep underground everywhere, and more abundantly inside mountains. Only
-    /// ever called for cells that would otherwise be stone.
+    /// Which ore (if any) a stone cell at `(world_x, world_y)` should become. Ore
+    /// forms compact veins (driven by [`ore_noise`](WorldGen::ore_noise) and
+    /// [`coal_noise`](WorldGen::coal_noise)) underground; iron sits deep and is
+    /// richer inside mountains, while coal runs shallower and more abundantly
+    /// everywhere. Iron wins where the two veins overlap. Only ever called for
+    /// cells that would otherwise be stone.
     fn ore_at(&self, world_x: i32, world_y: i32, surface: i32, biome: Biome) -> BlockId {
-        if world_y - surface < ORE_MIN_DEPTH {
-            return STONE;
+        if world_y - surface >= ORE_MIN_DEPTH {
+            let v = self
+                .ore_noise
+                .get_noise_3d(world_x as f32, world_y as f32, 0.0); // -1..1
+            let threshold = if biome == Biome::Mountains {
+                MOUNTAIN_ORE_THRESHOLD
+            } else {
+                ORE_THRESHOLD
+            };
+            if v > threshold {
+                return IRON_ORE;
+            }
         }
-        let v = self
-            .ore_noise
-            .get_noise_3d(world_x as f32, world_y as f32, 0.0); // -1..1
-        let threshold = if biome == Biome::Mountains {
-            MOUNTAIN_ORE_THRESHOLD
-        } else {
-            ORE_THRESHOLD
-        };
-        if v > threshold { IRON_ORE } else { STONE }
+        if world_y - surface >= COAL_ORE_MIN_DEPTH {
+            let v = self
+                .coal_noise
+                .get_noise_3d(world_x as f32, world_y as f32, 0.0); // -1..1
+            if v > COAL_ORE_THRESHOLD {
+                return COAL_ORE;
+            }
+        }
+        STONE
     }
 
     /// Whether the ground cell at `(world_x, world_y)` should be hollowed out as

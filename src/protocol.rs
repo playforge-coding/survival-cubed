@@ -84,9 +84,15 @@ pub enum ClientMessage {
     /// checks the player holds all inputs, consumes them, and grants the outputs.
     Craft { recipe: u16 },
     /// Smelt [`SMELT_RECIPES`](crate::recipe::SMELT_RECIPES)`[recipe]` up to
-    /// `count` times at a forge. The server validates inputs (raw material plus
-    /// fuel) per repetition and stops early when they run out.
-    Smelt { recipe: u16, count: u32 },
+    /// `count` times at a forge, burning `fuel` (wood, coal, or bark — see
+    /// [`forge_fuel_units`](crate::block::forge_fuel_units)). The server validates
+    /// the raw material plus a charge of that fuel per repetition and stops early
+    /// when either runs out.
+    Smelt {
+        recipe: u16,
+        count: u32,
+        fuel: BlockId,
+    },
     /// Repair one worn tool of type `item` at a forge: the server restores some
     /// durability (see [`crate::block::repair_step`]) in exchange for one unit of
     /// the tool's [`repair_material`](crate::block::repair_material).
@@ -95,7 +101,7 @@ pub enum ClientMessage {
     /// the player's health by its [`food_heal`](crate::block::food_heal) amount
     /// (raw meat *costs* health). No-op if the slot doesn't hold food.
     Eat { slot: u8 },
-    /// Feed one unit of `fuel` (wood or bark) to the campfire at world cell
+    /// Feed one unit of `fuel` (wood, coal, or bark) to the campfire at world cell
     /// `(x, y)`, lighting it and extending its burn time. The server validates the
     /// cell is a campfire and the player holds the fuel.
     FuelCampfire { x: i32, y: i32, fuel: BlockId },

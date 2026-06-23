@@ -70,6 +70,8 @@ blocks!(
     "iron_axe",
     "rope",
     "rope_ladder",
+    "coal_ore",
+    "coal",
 );
 
 sprites!(
