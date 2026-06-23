@@ -9,8 +9,8 @@
 use fastnoise_lite::{FastNoiseLite, NoiseType};
 
 use crate::block::{
-    AIR, CHARRED_ROCK, COAL_ORE, DIRT, FIRE, GRASS, IRON_ORE, LEAVES, LOG, STONE, TUNGSTEN_ORE,
-    WATER,
+    AIR, ASH, CHARRED_ROCK, COAL_ORE, DIRT, FIRE, GRASS, IRON_ORE, LEAVES, LOG, SAND, STONE,
+    TUNGSTEN_ORE, WATER,
 };
 use crate::protocol::BlockId;
 use crate::world::{CHUNK_SIZE, Chunk, Dimension, WORLD_HEIGHT, to_chunk};
@@ -24,6 +24,8 @@ const SURFACE_BASE: i32 = WORLD_HEIGHT / 2;
 const SEA_LEVEL: i32 = SURFACE_BASE + 2;
 /// Number of dirt cells beneath the grass before stone begins (plains only).
 const DIRT_DEPTH: i32 = 4;
+/// Number of sand cells from the surface down before stone begins (desert only).
+const SAND_DEPTH: i32 = 4;
 
 /// Surface deviation amplitude (cells) for the gently rolling plains.
 const PLAINS_AMP: f32 = 6.0;
@@ -38,6 +40,10 @@ const MOUNTAIN_LIFT: i32 = 14;
 const MOUNTAIN_THRESHOLD: f32 = 0.30;
 /// Biome noise below this threshold is forest (flat, tree-dense grassland).
 const FOREST_THRESHOLD: f32 = -0.30;
+/// Biome noise between [`FOREST_THRESHOLD`] and this threshold is desert: flat,
+/// sandy, treeless grassland-height terrain. Sits clear of the mountain blend
+/// band (see [`mountain_weight`]) so deserts stay level rather than rising.
+const DESERT_THRESHOLD: f32 = -0.15;
 
 /// Per-mille chance that any individual plains column roots a tree — sparse,
 /// the odd lonely tree dotting the grassland.
@@ -104,6 +110,15 @@ const TUNGSTEN_ORE_MIN_DEPTH: i32 = 6;
 /// High, so the strongest material stays a rare reward for delving the underworld.
 const TUNGSTEN_ORE_THRESHOLD: f32 = 0.6;
 
+/// Underworld biome noise below this threshold is an ash valley: its surface band
+/// is loose ash over the usual charred rock. Elsewhere the underworld is its
+/// default charred expanse. Reuses the overworld [`WorldGen::biome_noise`] field,
+/// independent across dimensions.
+const ASH_VALLEY_THRESHOLD: f32 = -0.15;
+/// Number of ash cells from the underworld ceiling down before charred rock
+/// begins (ash valleys only).
+const ASH_DEPTH: i32 = 4;
+
 /// A region of the world with its own terrain shape, block palette, and
 /// creatures. Selected per column by a low-frequency noise field.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -114,6 +129,18 @@ pub enum Biome {
     Forest,
     /// Rugged high ground built entirely of stone.
     Mountains,
+    /// Flat, treeless dunes: sand over stone.
+    Desert,
+}
+
+/// A region of the *underworld*, the charred layer beneath the overworld.
+/// Selected per column like an overworld [`Biome`], but with its own palette.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum UnderworldBiome {
+    /// The default expanse: charred rock from the ceiling down.
+    Charred,
+    /// An ashen basin: a band of loose ash blankets the charred rock surface.
+    AshValley,
 }
 
 pub struct WorldGen {
@@ -228,6 +255,8 @@ impl WorldGen {
             Biome::Mountains
         } else if n < FOREST_THRESHOLD {
             Biome::Forest
+        } else if n < DESERT_THRESHOLD {
+            Biome::Desert
         } else {
             Biome::Plains
         }
@@ -251,6 +280,14 @@ impl WorldGen {
         match biome {
             // Mountains are bare stone from the surface down.
             Biome::Mountains => STONE,
+            // The desert is a band of sand over stone — no grass, no dirt.
+            Biome::Desert => {
+                if world_y <= surface + SAND_DEPTH {
+                    SAND
+                } else {
+                    STONE
+                }
+            }
             // Plains and forest share the classic grass / dirt band / stone
             // layering; they differ only in how many trees grow on top.
             Biome::Plains | Biome::Forest => {
@@ -418,9 +455,29 @@ impl WorldGen {
         world_y >= surface && !self.is_underworld_cave(world_x, world_y)
     }
 
-    /// Which block a solid underworld cell becomes: charred rock, or a vein of
+    /// Which underworld biome the given world column belongs to. Picks an ash
+    /// valley where the (shared) biome-noise field dips low, leaving the rest as
+    /// the default charred expanse.
+    pub fn underworld_biome_at(&self, world_x: i32) -> UnderworldBiome {
+        let n = self.biome_noise.get_noise_2d(world_x as f32, 0.0); // -1..1
+        if n < ASH_VALLEY_THRESHOLD {
+            UnderworldBiome::AshValley
+        } else {
+            UnderworldBiome::Charred
+        }
+    }
+
+    /// Which block a solid underworld cell becomes: a band of [`ASH`] over the
+    /// surface of an ash valley, otherwise charred rock — or a vein of
     /// [`TUNGSTEN_ORE`] where the tungsten field peaks well below the ceiling.
     fn underworld_block(&self, world_x: i32, world_y: i32, surface: i32) -> BlockId {
+        // Ash valleys blanket their charred-rock surface in a band of loose ash,
+        // shallower than tungsten ever sits, so the two never conflict.
+        if world_y - surface < ASH_DEPTH
+            && self.underworld_biome_at(world_x) == UnderworldBiome::AshValley
+        {
+            return ASH;
+        }
         if world_y - surface >= TUNGSTEN_ORE_MIN_DEPTH {
             let v = self
                 .tungsten_noise
@@ -492,7 +549,8 @@ impl WorldGen {
         let chance = match self.biome_at(world_x) {
             Biome::Forest => FOREST_TREE_CHANCE,
             Biome::Plains => PLAINS_TREE_CHANCE,
-            Biome::Mountains => 0,
+            // Bare stone mountains and barren sand deserts grow no trees.
+            Biome::Mountains | Biome::Desert => 0,
         };
         self.col_hash(world_x, 0) % 1000 < chance
     }
@@ -691,7 +749,8 @@ mod tests {
     fn underworld_is_charred_rock_with_fire_and_a_floor() {
         use crate::world::Dimension;
         let worldgen = WorldGen::new(0xC0FFEE);
-        let (mut charred, mut fire, mut air, mut tungsten) = (0u32, 0u32, 0u32, 0u32);
+        let (mut charred, mut fire, mut air, mut tungsten, mut ash) =
+            (0u32, 0u32, 0u32, 0u32, 0u32);
         for cx in -4..4 {
             for cy in 0..(WORLD_HEIGHT / CHUNK_SIZE) {
                 let chunk = worldgen.generate(Dimension::Underworld, cx, cy);
@@ -702,6 +761,7 @@ mod tests {
                             FIRE => fire += 1,
                             AIR => air += 1,
                             TUNGSTEN_ORE => tungsten += 1,
+                            ASH => ash += 1,
                             other => panic!("unexpected underworld block {other}"),
                         }
                     }
@@ -709,6 +769,8 @@ mod tests {
             }
         }
         assert!(charred > 0, "expected charred rock to fill the underworld");
+        // Ash valleys blanket part of the underworld surface in loose ash.
+        assert!(ash > 0, "expected ash valleys to lay down some ash");
         assert!(fire > 0, "expected some natural fire in the underworld");
         assert!(air > 0, "expected open air (caves and the ceiling sky)");
         // Tungsten ore is the underworld's reward: present, but rarer than its rock.

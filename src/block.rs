@@ -149,6 +149,12 @@ pub const DOOR_OPEN: BlockId = 45;
 /// The upper half of an open door. World-only and non-solid, paired with a
 /// [`DOOR_OPEN`] below.
 pub const DOOR_OPEN_TOP: BlockId = 46;
+/// Sand: the loose surface block of the overworld's desert biome. A solid,
+/// placeable block dug quickly by hand, like dirt.
+pub const SAND: BlockId = 47;
+/// Ash: the powdery surface block of the underworld's ash valleys. A solid,
+/// placeable block dug quickly by hand, like dirt.
+pub const ASH: BlockId = 48;
 
 /// Definition of a single block type.
 pub struct BlockDef {
@@ -254,6 +260,10 @@ impl BlockRegistry {
         r.register("door_top", true, true, false, 0.6);
         r.register("door_open", false, true, false, 0.6);
         r.register("door_open_top", false, true, false, 0.6);
+        // Biome surface blocks: sand for the overworld desert, ash for the
+        // underworld's ash valleys. Both loose ground, dug quickly like dirt.
+        r.register("sand", true, true, true, 0.5);
+        r.register("ash", true, true, true, 0.5);
         r
     }
 
