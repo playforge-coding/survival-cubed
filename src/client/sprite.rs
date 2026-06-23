@@ -95,6 +95,16 @@ pub static SKELETON_SPRITE: SpriteDef = SpriteDef {
     fps: 8.0,
 };
 
+/// Charred skeleton: a scorched undead that charges along on the same lanky build
+/// as the surface skeleton, trailing fire as it hunts.
+pub static CHARRED_SKELETON_SPRITE: SpriteDef = SpriteDef {
+    name: "charred_skeleton",
+    frame_w: 11,
+    frame_h: 16,
+    frames: 6,
+    fps: 8.0,
+};
+
 /// Bone: a small thrown projectile that tumbles end over end as it flies.
 pub static BONE_SPRITE: SpriteDef = SpriteDef {
     name: "bone",
@@ -105,7 +115,7 @@ pub static BONE_SPRITE: SpriteDef = SpriteDef {
 };
 
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 9] {
+pub fn all() -> [&'static SpriteDef; 10] {
     [
         &PLAYER_SPRITE,
         &SLIME_SPRITE,
@@ -115,6 +125,7 @@ pub fn all() -> [&'static SpriteDef; 9] {
         &ZOMBIE_DEATH_SPRITE,
         &SPIDER_SPRITE,
         &SKELETON_SPRITE,
+        &CHARRED_SKELETON_SPRITE,
         &BONE_SPRITE,
     ]
 }
@@ -129,6 +140,7 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         EntityKind::Zombie => &ZOMBIE_SPRITE,
         EntityKind::Spider => &SPIDER_SPRITE,
         EntityKind::Skeleton => &SKELETON_SPRITE,
+        EntityKind::CharredSkeleton => &CHARRED_SKELETON_SPRITE,
         EntityKind::Bone => &BONE_SPRITE,
         // Dropped items are drawn from their block texture, not an animation
         // sheet (see the client's scene builder), so this is never queried for

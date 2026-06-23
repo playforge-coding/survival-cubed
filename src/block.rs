@@ -108,6 +108,15 @@ pub const BUCKET: BlockId = 33;
 /// water out, placing a [`WATER`] block and leaving the empty [`BUCKET`] behind.
 /// Stacks to one, since each bucket carries a single load.
 pub const WATER_BUCKET: BlockId = 34;
+/// Charred rock: the terrain block of the underworld, the fire-scorched stone the
+/// whole layer beneath the overworld is built from. A solid, placeable block mined
+/// with any pickaxe like ordinary stone.
+pub const CHARRED_ROCK: BlockId = 35;
+/// Fire: a non-solid, non-placeable hazard block. It dots the underworld and is
+/// laid down in a trail by a [`crate::entity::EntityKind::CharredSkeleton`] chasing
+/// its prey. Standing in it burns the player (see [`is_fire`] and the server's fire
+/// tick). Walked through, not mined: it carries no breaking delay and drops nothing.
+pub const FIRE: BlockId = 36;
 
 /// Definition of a single block type.
 pub struct BlockDef {
@@ -191,6 +200,11 @@ impl BlockRegistry {
         // (not placed as blocks); right-clicking a cell scoops or pours water.
         r.register("bucket", false, true, false, 0.0);
         r.register("water_bucket", false, true, false, 0.0);
+        // Charred rock: the underworld's terrain, a solid placeable block dug like
+        // stone. Fire: a non-solid, non-placeable hazard (walked through, not built
+        // with), so it is registered unplaceable with no breaking delay.
+        r.register("charred_rock", true, true, true, 1.3);
+        r.register("fire", false, true, false, 0.0);
         r
     }
 
@@ -276,9 +290,10 @@ pub fn pickaxe_tier(item: BlockId) -> u8 {
 /// with too weak a tool, but only very slowly and without yielding a drop.
 pub fn required_tier(block: BlockId) -> u8 {
     match block {
-        STONE => 1,    // any pickaxe
-        COAL_ORE => 1, // any pickaxe
-        IRON_ORE => 2, // stone or iron pickaxe only
+        STONE => 1,        // any pickaxe
+        CHARRED_ROCK => 1, // any pickaxe — the underworld's stone
+        COAL_ORE => 1,     // any pickaxe
+        IRON_ORE => 2,     // stone or iron pickaxe only
         _ => 0,
     }
 }
@@ -345,6 +360,13 @@ pub fn is_rope_ladder(block: BlockId) -> bool {
 /// walking on or mining.
 pub fn is_water(block: BlockId) -> bool {
     block == WATER
+}
+
+/// Whether `block` is fire — the underworld hazard that burns anything standing
+/// in it. Non-solid, so the player (and creatures) walk through it and take damage
+/// rather than being blocked.
+pub fn is_fire(block: BlockId) -> bool {
+    block == FIRE
 }
 
 /// Whether `item` is a bucket in either state (empty or water-filled) — the
@@ -459,6 +481,8 @@ pub fn mined_drop_rolled(block: BlockId, roll: f32) -> Option<BlockId> {
                 None // and sometimes leaves yield nothing
             }
         }
+        // Fire isn't a material: breaking it just snuffs it out, dropping nothing.
+        FIRE => None,
         other => Some(mined_drop(other)),
     }
 }

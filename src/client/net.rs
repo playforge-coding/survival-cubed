@@ -20,6 +20,7 @@ use crate::entity::{Entity, EntityId, EntityKind};
 use crate::inventory::Slot;
 use crate::net::{KnownHosts, fingerprint, fingerprint_hex, read_msg, write_msg, write_version};
 use crate::protocol::{ALPN, BlockId, ClientMessage, ServerMessage, Waypoint};
+use crate::world::Dimension;
 
 /// Events flowing from the network thread to the UI.
 pub enum NetEvent {
@@ -36,14 +37,23 @@ pub enum NetEvent {
         spawn_y: f32,
     },
     Chunk {
+        dim: Dimension,
         cx: i32,
         cy: i32,
         blocks: Vec<BlockId>,
     },
     BlockUpdate {
+        dim: Dimension,
         x: i32,
         y: i32,
         block: BlockId,
+    },
+    /// Move into a new dimension at world pixel `(x, y)`: the client clears its
+    /// world and entities and re-streams the new dimension.
+    EnterDimension {
+        dim: Dimension,
+        x: f32,
+        y: f32,
     },
     EntitySpawn {
         entity: Entity,
@@ -185,6 +195,7 @@ pub enum NetCommand {
         y: f32,
     },
     RequestChunk {
+        dim: Dimension,
         cx: i32,
         cy: i32,
     },
@@ -385,7 +396,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
             fuel,
         },
         NetCommand::PlayerMove { x, y } => ClientMessage::PlayerMove { x, y },
-        NetCommand::RequestChunk { cx, cy } => ClientMessage::RequestChunk { cx, cy },
+        NetCommand::RequestChunk { dim, cx, cy } => ClientMessage::RequestChunk { dim, cx, cy },
         NetCommand::Attack { target, held } => ClientMessage::Attack { target, held },
         NetCommand::Repair { item } => ClientMessage::Repair { item },
         NetCommand::Eat { slot } => ClientMessage::Eat { slot },
@@ -424,8 +435,21 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
             spawn_x,
             spawn_y,
         },
-        ServerMessage::Chunk { cx, cy, blocks } => NetEvent::Chunk { cx, cy, blocks },
-        ServerMessage::BlockUpdate { x, y, block } => NetEvent::BlockUpdate { x, y, block },
+        ServerMessage::Chunk {
+            dim,
+            cx,
+            cy,
+            blocks,
+        } => NetEvent::Chunk {
+            dim,
+            cx,
+            cy,
+            blocks,
+        },
+        ServerMessage::BlockUpdate { dim, x, y, block } => {
+            NetEvent::BlockUpdate { dim, x, y, block }
+        }
+        ServerMessage::EnterDimension { dim, x, y } => NetEvent::EnterDimension { dim, x, y },
         ServerMessage::EntitySpawn { entity } => NetEvent::EntitySpawn { entity },
         ServerMessage::EntityMoved { id, x, y, vx, vy } => {
             NetEvent::EntityMoved { id, x, y, vx, vy }

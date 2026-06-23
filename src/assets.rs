@@ -75,6 +75,8 @@ blocks!(
     "water",
     "bucket",
     "water_bucket",
+    "charred_rock",
+    "fire",
 );
 
 sprites!(
@@ -86,5 +88,6 @@ sprites!(
     "zombie/death" => [0, 1, 2, 3],
     "spider" => [0, 1, 2, 3],
     "skeleton" => [0, 1, 2, 3, 4, 5],
+    "charred_skeleton" => [0, 1, 2, 3, 4, 5],
     "bone" => [0, 1, 2, 3],
 );

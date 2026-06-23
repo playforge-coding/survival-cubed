@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::entity::{Entity, EntityId, EntityKind};
 use crate::inventory::Slot;
+use crate::world::Dimension;
 
 /// Identifier of a block type. `0` is always air. See [`crate::block`].
 pub type BlockId = u16;
@@ -35,7 +36,7 @@ pub struct Waypoint {
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -56,8 +57,10 @@ pub enum ClientMessage {
         name: String,
         dev_token: Option<u64>,
     },
-    /// Ask the server for the contents of a chunk.
-    RequestChunk { cx: i32, cy: i32 },
+    /// Ask the server for the contents of a chunk in dimension `dim`. The server
+    /// answers from whichever dimension the player currently occupies; `dim` lets a
+    /// late reply that arrives after a dimension change be discarded by the client.
+    RequestChunk { dim: Dimension, cx: i32, cy: i32 },
     /// Break the block at a world cell (it drops on the ground to be collected).
     /// `held` is the item the player is wielding ([`crate::block::AIR`] for bare
     /// hands); the server uses it to decide whether the broken block drops (e.g.
@@ -167,14 +170,27 @@ pub enum ServerMessage {
         spawn_x: f32,
         spawn_y: f32,
     },
-    /// Full contents of a chunk (row-major, `CHUNK_AREA` entries).
+    /// Full contents of a chunk (row-major, `CHUNK_AREA` entries) in dimension
+    /// `dim`. The client ignores chunks for a dimension it is no longer in.
     Chunk {
+        dim: Dimension,
         cx: i32,
         cy: i32,
         blocks: Vec<BlockId>,
     },
-    /// A single block changed somewhere in the world.
-    BlockUpdate { x: i32, y: i32, block: BlockId },
+    /// A single block changed somewhere in dimension `dim`. The client ignores
+    /// updates for a dimension it is not currently in.
+    BlockUpdate {
+        dim: Dimension,
+        x: i32,
+        y: i32,
+        block: BlockId,
+    },
+    /// Move the owning client into dimension `dim` at world pixel `(x, y)`: it
+    /// clears its mirrored world and entities, switches dimension, and repositions
+    /// its avatar. Sent when the player falls into the underworld or climbs back to
+    /// the overworld (see [`crate::server`]'s dimension transitions).
+    EnterDimension { dim: Dimension, x: f32, y: f32 },
     /// An entity appeared (or its full description is being (re)sent). The
     /// client never receives a spawn for its own player entity.
     EntitySpawn { entity: Entity },

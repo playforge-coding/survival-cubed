@@ -7,8 +7,41 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::block::{AIR, WATER};
 use crate::protocol::BlockId;
+
+/// A self-contained world layer with its own chunks, terrain, and creatures, all
+/// living in the same save. The player digs to the bottom of the [`Overworld`]
+/// (the surface) and falls through into the [`Underworld`], a fiery expanse of
+/// charred rock; digging back up to its ceiling returns them to the surface.
+///
+/// Each dimension is generated and stored independently (see [`crate::worldgen`]
+/// and [`crate::save`]); a connection only ever interacts with the dimension it
+/// is currently in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum Dimension {
+    /// The surface world: grass, forests, mountains, caves.
+    #[default]
+    Overworld,
+    /// The world beneath the overworld: charred rock, fire, and charred skeletons.
+    Underworld,
+}
+
+impl Dimension {
+    /// Every dimension, in id order. Used to iterate per-dimension state.
+    pub const ALL: [Dimension; 2] = [Dimension::Overworld, Dimension::Underworld];
+
+    /// Stable index in `[0, NUM_DIMENSIONS)`, for arrays keyed by dimension.
+    #[inline]
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// Number of distinct [`Dimension`]s.
+pub const NUM_DIMENSIONS: usize = Dimension::ALL.len();
 
 /// Cells per chunk side.
 pub const CHUNK_SIZE: i32 = 16;

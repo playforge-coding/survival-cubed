@@ -8,9 +8,11 @@
 
 use fastnoise_lite::{FastNoiseLite, NoiseType};
 
-use crate::block::{AIR, COAL_ORE, DIRT, GRASS, IRON_ORE, LEAVES, LOG, STONE, WATER};
+use crate::block::{
+    AIR, CHARRED_ROCK, COAL_ORE, DIRT, FIRE, GRASS, IRON_ORE, LEAVES, LOG, STONE, WATER,
+};
 use crate::protocol::BlockId;
-use crate::world::{CHUNK_SIZE, Chunk, WORLD_HEIGHT, to_chunk};
+use crate::world::{CHUNK_SIZE, Chunk, Dimension, WORLD_HEIGHT, to_chunk};
 
 /// Average surface row (cells from the top of the world).
 const SURFACE_BASE: i32 = WORLD_HEIGHT / 2;
@@ -81,6 +83,20 @@ const CAVERN_MIN_DEPTH: i32 = 30;
 /// caves and caverns can't open into the empty void beneath the world.
 const BEDROCK_FLOOR: i32 = 4;
 
+// --- Underworld ----------------------------------------------------------
+
+/// Average ceiling row of the underworld: the topmost solid charred rock in a
+/// column. Sits high up so a player falling in from the overworld drops only a
+/// short way onto the charred surface, and the open rows above it form the
+/// underworld's "sky" — the gap a player climbs back up through to leave.
+const UNDERWORLD_SURFACE_BASE: i32 = 12;
+/// Surface deviation amplitude (cells) of the gently uneven charred-rock ceiling.
+const UNDERWORLD_SURFACE_AMP: f32 = 4.0;
+/// Per-mille chance that an exposed charred-rock floor cell (open above, solid
+/// below) sprouts a tongue of natural fire. Sparse, so the underworld glows with
+/// scattered flames rather than being a wall of fire.
+const UNDERWORLD_FIRE_CHANCE: u32 = 70;
+
 /// A region of the world with its own terrain shape, block palette, and
 /// creatures. Selected per column by a low-frequency noise field.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -106,6 +122,12 @@ pub struct WorldGen {
     cave_noise: FastNoiseLite,
     /// Low-frequency field carving large open caverns deep underground.
     cavern_noise: FastNoiseLite,
+    /// Field shaping the underworld's charred-rock ceiling height.
+    uw_height_noise: FastNoiseLite,
+    /// Field whose zero-contour is carved into the underworld's caverns and
+    /// tunnels, hollowing the otherwise solid charred rock into something
+    /// explorable.
+    uw_cave_noise: FastNoiseLite,
 }
 
 impl WorldGen {
@@ -139,6 +161,16 @@ impl WorldGen {
         let mut cavern_noise = FastNoiseLite::with_seed(seed.wrapping_add(0xCA77));
         cavern_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
         cavern_noise.set_frequency(Some(0.022));
+        // Underworld fields, on their own seeds so the charred layer's shape is
+        // independent of the surface above it. The ceiling rolls slowly; the cave
+        // field is wider and more abundant than the overworld's, so the underworld
+        // reads as a riddled, cavernous expanse.
+        let mut uw_height_noise = FastNoiseLite::with_seed(seed.wrapping_add(0x4DEE));
+        uw_height_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
+        uw_height_noise.set_frequency(Some(0.02));
+        let mut uw_cave_noise = FastNoiseLite::with_seed(seed.wrapping_add(0x4CA7));
+        uw_cave_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
+        uw_cave_noise.set_frequency(Some(0.05));
         WorldGen {
             seed,
             height_noise,
@@ -147,6 +179,8 @@ impl WorldGen {
             coal_noise,
             cave_noise,
             cavern_noise,
+            uw_height_noise,
+            uw_cave_noise,
         }
     }
 
@@ -320,6 +354,94 @@ impl WorldGen {
             }
         }
         chunk
+    }
+
+    /// Generate a chunk for the given [`Dimension`]. The overworld uses
+    /// [`generate_chunk`](Self::generate_chunk); the underworld is built from
+    /// charred rock by [`generate_underworld_chunk`](Self::generate_underworld_chunk).
+    pub fn generate(&self, dim: Dimension, cx: i32, cy: i32) -> Chunk {
+        match dim {
+            Dimension::Overworld => self.generate_chunk(cx, cy),
+            Dimension::Underworld => self.generate_underworld_chunk(cx, cy),
+        }
+    }
+
+    /// Ceiling row (topmost solid charred rock) of the underworld for a world
+    /// column. Open air sits above it — the gap the player climbs to escape.
+    pub fn underworld_surface(&self, world_x: i32) -> i32 {
+        let n = self.uw_height_noise.get_noise_2d(world_x as f32, 0.0); // -1..1
+        (UNDERWORLD_SURFACE_BASE as f32 + n * UNDERWORLD_SURFACE_AMP).round() as i32
+    }
+
+    /// Surface row for `dim`'s spawn/landing helpers: the overworld grass line or
+    /// the underworld's charred ceiling.
+    pub fn surface_for(&self, dim: Dimension, world_x: i32) -> i32 {
+        match dim {
+            Dimension::Overworld => self.surface_height(world_x),
+            Dimension::Underworld => self.underworld_surface(world_x),
+        }
+    }
+
+    /// Whether the underworld cell at `(world_x, world_y)` is hollowed into a cave.
+    /// One winding/cavern field is carved as a band around its zero contour, wide
+    /// and frequent so the charred rock is riddled with connected pockets. The
+    /// bottom-most rows are spared so nothing opens into the void below the world.
+    fn is_underworld_cave(&self, world_x: i32, world_y: i32) -> bool {
+        if world_y >= WORLD_HEIGHT - BEDROCK_FLOOR {
+            return false;
+        }
+        self.uw_cave_noise
+            .get_noise_2d(world_x as f32, world_y as f32)
+            .abs()
+            < 0.14
+    }
+
+    /// Whether the underworld cell at `(world_x, world_y)` is solid charred rock:
+    /// at or below the ceiling and not carved out as a cave.
+    fn underworld_solid(&self, world_x: i32, world_y: i32, surface: i32) -> bool {
+        world_y >= surface && !self.is_underworld_cave(world_x, world_y)
+    }
+
+    /// Generate one charred-rock chunk of the underworld. Charred rock fills every
+    /// column from its ceiling down to the bedrock floor, riddled with caves, and a
+    /// scattering of natural fire flickers on exposed floors (and along the ceiling
+    /// surface). Everything above the ceiling is open air — the underworld's sky.
+    fn generate_underworld_chunk(&self, cx: i32, cy: i32) -> Chunk {
+        let mut chunk = Chunk::empty();
+        let base_x = cx * CHUNK_SIZE;
+        let base_y = cy * CHUNK_SIZE;
+        for lx in 0..CHUNK_SIZE {
+            let world_x = base_x + lx;
+            let surface = self.underworld_surface(world_x);
+            for ly in 0..CHUNK_SIZE {
+                let world_y = base_y + ly;
+                if self.underworld_solid(world_x, world_y, surface) {
+                    chunk.set(lx, ly, CHARRED_ROCK);
+                    continue;
+                }
+                // Open cell (cave or sky): kindle a flame on any floor it exposes —
+                // a charred-rock cell directly beneath it — by a sparse roll.
+                if self.underworld_solid(world_x, world_y + 1, surface)
+                    && self.cell_hash(world_x, world_y, 0xF12E) % 1000 < UNDERWORLD_FIRE_CHANCE
+                {
+                    chunk.set(lx, ly, FIRE);
+                }
+            }
+        }
+        chunk
+    }
+
+    /// Deterministic pseudo-random value for a single cell, mixed with `salt` so
+    /// independent decisions can be drawn from one cell. Seeded so a cell always
+    /// decides the same way regardless of who generates it.
+    fn cell_hash(&self, world_x: i32, world_y: i32, salt: u32) -> u32 {
+        let mut h = (self.seed as u32)
+            .wrapping_mul(374_761_393)
+            .wrapping_add((world_x as u32).wrapping_mul(668_265_263))
+            .wrapping_add((world_y as u32).wrapping_mul(2_246_822_519));
+        h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
+        h = h.wrapping_add(salt.wrapping_mul(0x9E37_79B9));
+        h ^ (h >> 16)
     }
 
     /// Deterministic pseudo-random value for a world column, mixed with `salt`
@@ -529,6 +651,48 @@ mod tests {
                         "bottom row carved open at chunk {cx}, cell ({lx}, {ly})"
                     );
                 }
+            }
+        }
+    }
+
+    /// The underworld is built from charred rock — riddled with caves and dotted
+    /// with fire — beneath an open ceiling, with a solid floor at the very bottom.
+    #[test]
+    fn underworld_is_charred_rock_with_fire_and_a_floor() {
+        use crate::world::Dimension;
+        let worldgen = WorldGen::new(0xC0FFEE);
+        let (mut charred, mut fire, mut air) = (0u32, 0u32, 0u32);
+        for cx in -4..4 {
+            for cy in 0..(WORLD_HEIGHT / CHUNK_SIZE) {
+                let chunk = worldgen.generate(Dimension::Underworld, cx, cy);
+                for lx in 0..CHUNK_SIZE {
+                    for ly in 0..CHUNK_SIZE {
+                        match chunk.get(lx, ly) {
+                            CHARRED_ROCK => charred += 1,
+                            FIRE => fire += 1,
+                            AIR => air += 1,
+                            other => panic!("unexpected underworld block {other}"),
+                        }
+                    }
+                }
+            }
+        }
+        assert!(charred > 0, "expected charred rock to fill the underworld");
+        assert!(fire > 0, "expected some natural fire in the underworld");
+        assert!(air > 0, "expected open air (caves and the ceiling sky)");
+        // Charred rock dominates: the underworld is mostly solid stone.
+        assert!(charred > air, "underworld carved too hollow");
+
+        // The bottom rows are a solid charred floor — nothing opens into the void.
+        let bottom_cy = WORLD_HEIGHT / CHUNK_SIZE - 1;
+        for cx in -4..4 {
+            let chunk = worldgen.generate(Dimension::Underworld, cx, bottom_cy);
+            for lx in 0..CHUNK_SIZE {
+                assert_eq!(
+                    chunk.get(lx, CHUNK_SIZE - 1),
+                    CHARRED_ROCK,
+                    "underworld floor carved open at chunk {cx}, column {lx}"
+                );
             }
         }
     }

@@ -16,14 +16,14 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-use crate::block::{AIR, BlockRegistry, DIRT, GRASS, LEAVES, LOG, STONE};
+use crate::block::{AIR, BlockRegistry, CHARRED_ROCK, DIRT, FIRE, GRASS, LEAVES, LOG, STONE};
 use crate::daylight;
 use crate::discovery::{DiscoveredServer, LanBrowser};
 use crate::entity::{Entities, EntityId, EntityKind, PLAYER_MAX_HEALTH};
 use crate::inventory::{HOTBAR_SLOTS, Inventory, STORAGE_SLOTS, Slot};
 use crate::protocol::{BlockId, Waypoint};
 use crate::server::{self, RunningServer};
-use crate::world::{CHUNK_SIZE, TILE_SIZE, WORLD_HEIGHT, World, to_chunk};
+use crate::world::{CHUNK_SIZE, Dimension, TILE_SIZE, WORLD_HEIGHT, World, to_chunk};
 
 use net::{NetCommand, NetEvent, NetHandle, connect};
 use render::{Atlas, CameraUniform, EguiFrame, Gfx, TileInstance, UvRect};
@@ -127,6 +127,10 @@ struct GameState {
     pos: Vec2,
     vel: Vec2,
     on_ground: bool,
+    /// Which dimension the player is currently in. Chosen by the server (which
+    /// owns transitions); the client mirrors it so it requests and ignores chunks
+    /// and block updates for the right dimension, and tints the underworld dark.
+    dim: Dimension,
     world: World,
     /// All other entities (remote players and server creatures), mirrored from
     /// the server.
@@ -220,6 +224,7 @@ impl GameState {
             pos: spawn,
             vel: Vec2::ZERO,
             on_ground: false,
+            dim: Dimension::Overworld,
             world: World::new(),
             entities: Entities::new(),
             facing: HashMap::new(),
@@ -555,15 +560,49 @@ impl App {
                 self.screen = Screen::InGame;
                 self.status.clear();
             }
-            NetEvent::Chunk { cx, cy, blocks } => {
+            NetEvent::Chunk {
+                dim,
+                cx,
+                cy,
+                blocks,
+            } => {
                 if let Some(g) = &mut self.game {
-                    g.world
-                        .insert_chunk((cx, cy), crate::world::Chunk::from_vec(blocks));
+                    // Drop chunks for a dimension we've since left (a reply that
+                    // raced a transition).
+                    if dim == g.dim {
+                        g.world
+                            .insert_chunk((cx, cy), crate::world::Chunk::from_vec(blocks));
+                    }
                 }
             }
-            NetEvent::BlockUpdate { x, y, block } => {
+            NetEvent::BlockUpdate { dim, x, y, block } => {
                 if let Some(g) = &mut self.game {
-                    g.world.set_block(x, y, block);
+                    if dim == g.dim {
+                        g.world.set_block(x, y, block);
+                    }
+                }
+            }
+            NetEvent::EnterDimension { dim, x, y } => {
+                if let Some(g) = &mut self.game {
+                    // Switch dimensions: drop the old world and entities and start
+                    // streaming the new one, then reposition the avatar.
+                    g.dim = dim;
+                    g.world = World::new();
+                    g.entities = Entities::new();
+                    g.facing.clear();
+                    g.requested.clear();
+                    g.break_target = None;
+                    g.break_progress = 0.0;
+                    // Close any block GUIs tied to a cell in the world we just left.
+                    g.forge_open = false;
+                    g.forge_cell = None;
+                    g.campfire_open = false;
+                    g.campfire_cell = None;
+                    g.pos = Vec2::new(x, y);
+                    g.vel = Vec2::ZERO;
+                    g.knockback_x = 0.0;
+                    g.air_min_y = y;
+                    g.last_sent = g.pos;
                 }
             }
             NetEvent::EntitySpawn { entity } => {
@@ -1752,12 +1791,15 @@ impl App {
                     if ui.button("Skeleton").clicked() {
                         spawn = Some(EntityKind::Skeleton);
                     }
+                    if ui.button("Charred Skeleton").clicked() {
+                        spawn = Some(EntityKind::CharredSkeleton);
+                    }
                 });
 
                 ui.separator();
                 ui.label("Infinite block (RMB places)");
                 ui.horizontal(|ui| {
-                    for block in [STONE, DIRT, GRASS, LOG, LEAVES] {
+                    for block in [STONE, DIRT, GRASS, LOG, LEAVES, CHARRED_ROCK, FIRE] {
                         let name = registry.get(block).name;
                         if ui.selectable_label(debug_block == block, name).clicked() {
                             debug_block = block;
@@ -1809,11 +1851,12 @@ impl App {
         let jobs = ctx.tessellate(full.shapes, full.pixels_per_point);
 
         let (tiles, camera) = self.build_scene();
-        let sky = self
-            .game
-            .as_ref()
-            .map(|g| daylight::sky_color(g.time_of_day))
-            .unwrap_or([0.45, 0.62, 0.86, 1.0]);
+        let sky = match self.game.as_ref() {
+            // The underworld's sky is a smouldering near-black, not the day sky.
+            Some(g) if g.dim == Dimension::Underworld => [0.08, 0.02, 0.02, 1.0],
+            Some(g) => daylight::sky_color(g.time_of_day),
+            None => [0.45, 0.62, 0.86, 1.0],
+        };
 
         if let Some(gfx) = self.gfx.as_mut() {
             gfx.render(
@@ -1844,9 +1887,14 @@ impl App {
 
         let mut tiles = Vec::new();
 
-        // Daylight tint: everything in the world dims toward night.
-        let b = daylight::brightness(g.time_of_day);
-        let tint = [b, b, b, 1.0];
+        // Daylight tint: everything in the world dims toward night. The underworld
+        // knows no day or night — it sits in a permanent dim, faintly warm gloom.
+        let tint = if g.dim == Dimension::Underworld {
+            [0.5, 0.34, 0.30, 1.0]
+        } else {
+            let b = daylight::brightness(g.time_of_day);
+            [b, b, b, 1.0]
+        };
 
         let left = (offset.x / TILE_SIZE).floor() as i32 - CHUNK_MARGIN;
         let right = ((offset.x + view_w) / TILE_SIZE).ceil() as i32 + CHUNK_MARGIN;
@@ -2655,7 +2703,11 @@ fn request_chunks(game: &mut GameState, gfx: Option<&Gfx>, net: Option<&NetHandl
                 continue;
             }
             if game.requested.insert((cx, cy)) {
-                let _ = net.commands.send(NetCommand::RequestChunk { cx, cy });
+                let _ = net.commands.send(NetCommand::RequestChunk {
+                    dim: game.dim,
+                    cx,
+                    cy,
+                });
             }
         }
     }

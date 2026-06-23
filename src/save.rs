@@ -6,7 +6,9 @@
 //! <world>/
 //!   world.dat            metadata: seed, clock, id counter, spawn, entities, players
 //!   chunks/
-//!     <cx>_<cy>.dat      one file per generated-and-modified chunk
+//!     <cx>_<cy>.dat      one file per generated-and-modified overworld chunk
+//!   chunks_underworld/
+//!     <cx>_<cy>.dat      the same, for the underworld dimension
 //! ```
 //!
 //! Everything is binary (not text): `world.dat` is a small magic/version header
@@ -27,16 +29,26 @@ use serde::{Deserialize, Serialize};
 use crate::entity::Entity;
 use crate::inventory::Inventory;
 use crate::protocol::{BlockId, Waypoint};
-use crate::world::{CHUNK_AREA, Chunk, ChunkCoord};
+use crate::world::{CHUNK_AREA, Chunk, ChunkCoord, Dimension};
 
 /// Name of the metadata file inside a world directory.
 const WORLD_FILE: &str = "world.dat";
-/// Subdirectory holding per-chunk block data.
+/// Subdirectory holding per-chunk block data for the overworld.
 const CHUNKS_DIR: &str = "chunks";
+/// Subdirectory holding per-chunk block data for the underworld.
+const UNDERWORLD_CHUNKS_DIR: &str = "chunks_underworld";
 /// Magic prefix on `world.dat` ("SCWD" — Survival Cubed World Data).
 const MAGIC: u32 = 0x5343_5744;
 /// On-disk format version; bump on any incompatible layout change.
-const VERSION: u32 = 6;
+const VERSION: u32 = 7;
+
+/// Subdirectory name holding a dimension's chunks.
+fn chunks_dir_name(dim: Dimension) -> &'static str {
+    match dim {
+        Dimension::Overworld => CHUNKS_DIR,
+        Dimension::Underworld => UNDERWORLD_CHUNKS_DIR,
+    }
+}
 /// Bytes per chunk file: one little-endian `u16` per cell.
 const CHUNK_BYTES: usize = CHUNK_AREA * 2;
 
@@ -50,11 +62,15 @@ pub struct SavedPlayer {
     /// The player's slot inventory, so collected blocks (and how they're
     /// arranged) survive disconnects and restarts.
     pub inventory: Inventory,
-    /// Cell of the last campfire the player interacted with, or `None` to fall back
-    /// to world spawn. Persisted so a death after a reconnect still returns the
-    /// player to their fire (provided it's still standing).
+    /// The dimension the player was last in, so a reconnecting player resumes in
+    /// the overworld or underworld they left.
     #[serde(default)]
-    pub respawn: Option<(i32, i32)>,
+    pub dim: Dimension,
+    /// The last campfire the player interacted with as `(dimension, x, y)`, or
+    /// `None` to fall back to world spawn. Persisted so a death after a reconnect
+    /// still returns the player to their fire (provided it's still standing).
+    #[serde(default)]
+    pub respawn: Option<(Dimension, i32, i32)>,
     /// The player's personal map waypoints, so the markers they dropped survive
     /// disconnects and restarts. Default markers (home, last death) are derived
     /// at runtime and not stored here.
@@ -71,20 +87,24 @@ pub struct WorldMeta {
     pub elapsed_secs: f32,
     /// Next entity id to allocate, so loaded ids never collide with new ones.
     pub next_id: u32,
-    /// Player spawn point in world pixels.
+    /// Player spawn point in the overworld, in world pixels.
     pub spawn: (f32, f32),
-    /// Server-simulated creatures (slimes, …). Players are stored separately.
+    /// Server-simulated overworld creatures (slimes, …). Players are stored
+    /// separately.
     pub entities: Vec<Entity>,
+    /// Server-simulated underworld creatures (charred skeletons, …).
+    #[serde(default)]
+    pub underworld_entities: Vec<Entity>,
     /// Saved state of every player who has ever joined this world.
     pub players: Vec<SavedPlayer>,
-    /// Lit campfires as `(x, y, remaining_burn_secs)`, so fires keep burning
-    /// across a save/reload instead of staying lit forever or going dark.
+    /// Lit campfires as `(dimension, x, y, remaining_burn_secs)`, so fires keep
+    /// burning across a save/reload instead of staying lit forever or going dark.
     #[serde(default)]
-    pub campfires: Vec<(i32, i32, f32)>,
-    /// Cells holding a player-placed log, as `(x, y)`. Tracked so an axe's
-    /// tree-felling spares logs the player built with (see [`crate::server`]).
+    pub campfires: Vec<(Dimension, i32, i32, f32)>,
+    /// Cells holding a player-placed log, as `(dimension, x, y)`. Tracked so an
+    /// axe's tree-felling spares logs the player built with (see [`crate::server`]).
     #[serde(default)]
-    pub placed_logs: Vec<(i32, i32)>,
+    pub placed_logs: Vec<(Dimension, i32, i32)>,
 }
 
 /// Reads and writes a single world's files under `dir`.
@@ -101,12 +121,12 @@ impl WorldStore {
         self.dir.join(WORLD_FILE)
     }
 
-    fn chunks_dir(&self) -> PathBuf {
-        self.dir.join(CHUNKS_DIR)
+    fn chunks_dir(&self, dim: Dimension) -> PathBuf {
+        self.dir.join(chunks_dir_name(dim))
     }
 
-    fn chunk_path(&self, (cx, cy): ChunkCoord) -> PathBuf {
-        self.chunks_dir().join(format!("{cx}_{cy}.dat"))
+    fn chunk_path(&self, dim: Dimension, (cx, cy): ChunkCoord) -> PathBuf {
+        self.chunks_dir(dim).join(format!("{cx}_{cy}.dat"))
     }
 
     /// Load world metadata, or `None` if this world has never been saved.
@@ -147,9 +167,10 @@ impl WorldStore {
         write_atomic(&self.meta_path(), &out)
     }
 
-    /// Load a previously-saved chunk, or `None` if it has never been written.
-    pub fn load_chunk(&self, coord: ChunkCoord) -> Result<Option<Chunk>> {
-        let path = self.chunk_path(coord);
+    /// Load a previously-saved chunk of `dim`, or `None` if it has never been
+    /// written.
+    pub fn load_chunk(&self, dim: Dimension, coord: ChunkCoord) -> Result<Option<Chunk>> {
+        let path = self.chunk_path(dim, coord);
         let bytes = match fs::read(&path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -169,15 +190,16 @@ impl WorldStore {
         Ok(Some(Chunk::from_vec(blocks)))
     }
 
-    /// Write a chunk's blocks as a fixed-size little-endian grid.
-    pub fn save_chunk(&self, coord: ChunkCoord, chunk: &Chunk) -> Result<()> {
-        let dir = self.chunks_dir();
+    /// Write a chunk's blocks as a fixed-size little-endian grid into `dim`'s
+    /// chunk directory.
+    pub fn save_chunk(&self, dim: Dimension, coord: ChunkCoord, chunk: &Chunk) -> Result<()> {
+        let dir = self.chunks_dir(dim);
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         let mut bytes = Vec::with_capacity(CHUNK_BYTES);
         for b in chunk.blocks.iter() {
             bytes.extend_from_slice(&b.to_le_bytes());
         }
-        write_atomic(&self.chunk_path(coord), &bytes)
+        write_atomic(&self.chunk_path(dim, coord), &bytes)
     }
 }
 
@@ -280,6 +302,7 @@ mod tests {
             next_id: 99,
             spawn: (16.0, -32.0),
             entities: vec![Entity::new(7, EntityKind::Slime, 1.5, 2.5)],
+            underworld_entities: vec![Entity::new(8, EntityKind::CharredSkeleton, 4.0, 5.0)],
             players: vec![SavedPlayer {
                 name: "ada".into(),
                 x: 10.0,
@@ -291,15 +314,19 @@ mod tests {
                     inv.add(DIRT, 7);
                     inv
                 },
-                respawn: Some((3, -5)),
+                dim: Dimension::Underworld,
+                respawn: Some((Dimension::Underworld, 3, -5)),
                 waypoints: vec![Waypoint {
                     x: 100.0,
                     y: 200.0,
                     color: [0.5, 0.25, 0.75],
                 }],
             }],
-            campfires: vec![(3, -5, 12.5), (-8, 2, 30.0)],
-            placed_logs: vec![(1, 2), (-3, 4)],
+            campfires: vec![
+                (Dimension::Overworld, 3, -5, 12.5),
+                (Dimension::Underworld, -8, 2, 30.0),
+            ],
+            placed_logs: vec![(Dimension::Overworld, 1, 2), (Dimension::Underworld, -3, 4)],
         };
         store.save_meta(&meta).unwrap();
 
@@ -316,8 +343,11 @@ mod tests {
         assert_eq!(got.players[0].health, 13);
         assert_eq!(got.players[0].inventory.get(0), Some((STONE, 42, 0)));
         assert_eq!(got.players[0].inventory.get(1), Some((DIRT, 7, 0)));
-        assert_eq!(got.players[0].respawn, Some((3, -5)));
+        assert_eq!(got.players[0].dim, Dimension::Underworld);
+        assert_eq!(got.players[0].respawn, Some((Dimension::Underworld, 3, -5)));
         assert_eq!(got.players[0].waypoints, meta.players[0].waypoints);
+        assert_eq!(got.underworld_entities.len(), 1);
+        assert_eq!(got.underworld_entities[0].id, 8);
         assert_eq!(got.campfires, meta.campfires);
         assert_eq!(got.placed_logs, meta.placed_logs);
     }
@@ -326,7 +356,12 @@ mod tests {
     fn chunk_round_trips_every_cell() {
         let tmp = TempDir::new("chunk");
         let store = WorldStore::new(tmp.0.clone());
-        assert!(store.load_chunk((3, -4)).unwrap().is_none());
+        assert!(
+            store
+                .load_chunk(Dimension::Overworld, (3, -4))
+                .unwrap()
+                .is_none()
+        );
 
         // Fill every cell with a distinct, recognizable pattern.
         let palette = [crate::block::AIR, STONE, DIRT, GRASS];
@@ -335,11 +370,23 @@ mod tests {
             *b = palette[i % palette.len()];
         }
         let chunk = Chunk::from_vec(blocks.clone());
-        store.save_chunk((3, -4), &chunk).unwrap();
+        store
+            .save_chunk(Dimension::Overworld, (3, -4), &chunk)
+            .unwrap();
 
-        let got = store.load_chunk((3, -4)).unwrap().expect("chunk exists");
+        let got = store
+            .load_chunk(Dimension::Overworld, (3, -4))
+            .unwrap()
+            .expect("chunk exists");
         for (i, expected) in blocks.iter().enumerate() {
             assert_eq!(got.blocks[i], *expected, "cell {i} differs");
         }
+        // The same coordinate in the underworld is a separate file: still empty.
+        assert!(
+            store
+                .load_chunk(Dimension::Underworld, (3, -4))
+                .unwrap()
+                .is_none()
+        );
     }
 }

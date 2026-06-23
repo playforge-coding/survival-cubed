@@ -38,6 +38,9 @@ pub const SPIDER_SIZE: (f32, f32) = (14.0, 10.0);
 /// Collision/draw size (width, height) in pixels of a skeleton — a lanky
 /// humanoid, the same build as the player.
 pub const SKELETON_SIZE: (f32, f32) = (11.0, 16.0);
+/// Collision/draw size (width, height) in pixels of a charred skeleton — the
+/// same lanky build as the ordinary skeleton, scorched black.
+pub const CHARRED_SKELETON_SIZE: (f32, f32) = (11.0, 16.0);
 /// Collision/draw size (width, height) in pixels of a thrown bone — a small
 /// tumbling projectile.
 pub const BONE_SIZE: (f32, f32) = (12.0, 12.0);
@@ -67,6 +70,10 @@ pub const SPIDER_MAX_HEALTH: i32 = 12;
 /// frailer than a zombie — it survives by keeping its distance and pelting the
 /// player with bones rather than soaking up blows.
 pub const SKELETON_MAX_HEALTH: i32 = 24;
+/// Maximum health of a charred skeleton, in hit points. Sturdier than the surface
+/// skeleton — a relentless underworld brawler that closes for melee and soaks up
+/// blows on the way in.
+pub const CHARRED_SKELETON_MAX_HEALTH: i32 = 36;
 
 /// What an entity *is*. Adding a new creature/object means adding a variant
 /// here plus (for server-simulated kinds) a branch in the server tick loop.
@@ -110,6 +117,11 @@ pub enum EntityKind {
     /// until it strikes a player or a wall (or its short life runs out). Its
     /// [`Entity::vx`]/[`Entity::vy`] carry its flight velocity. Server-simulated.
     Bone,
+    /// A charred skeleton: the underworld's signature undead. Unlike the surface
+    /// skeleton it doesn't throw bones — it charges into melee, hitting harder than
+    /// a zombie, and lays down a trail of [`crate::block::FIRE`] behind it while it
+    /// is closing on a target. Roams the underworld at all hours. Server-simulated.
+    CharredSkeleton,
 }
 
 impl EntityKind {
@@ -123,6 +135,7 @@ impl EntityKind {
             EntityKind::Zombie => ZOMBIE_SIZE,
             EntityKind::Spider => SPIDER_SIZE,
             EntityKind::Skeleton => SKELETON_SIZE,
+            EntityKind::CharredSkeleton => CHARRED_SKELETON_SIZE,
             EntityKind::Bone => BONE_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
@@ -151,6 +164,7 @@ impl EntityKind {
             EntityKind::Zombie => ZOMBIE_MAX_HEALTH,
             EntityKind::Spider => SPIDER_MAX_HEALTH,
             EntityKind::Skeleton => SKELETON_MAX_HEALTH,
+            EntityKind::CharredSkeleton => CHARRED_SKELETON_MAX_HEALTH,
             // A bone is an inert projectile; 1 keeps health == max_health so no
             // health bar shows and a stray melee swing can't meaningfully "kill" it.
             EntityKind::Bone => 1,

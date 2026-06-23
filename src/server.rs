@@ -27,7 +27,9 @@ use crate::inventory::Inventory;
 use crate::net::{VERSION_MISMATCH_CLOSE, fingerprint, read_msg, read_version, write_msg};
 use crate::protocol::{ALPN, BlockId, ClientMessage, PROTOCOL_VERSION, ServerMessage, Waypoint};
 use crate::save::{SavedPlayer, WorldMeta, WorldStore};
-use crate::world::{CHUNK_AREA, CHUNK_SIZE, ChunkCoord, TILE_SIZE, WORLD_HEIGHT, World};
+use crate::world::{
+    CHUNK_AREA, CHUNK_SIZE, ChunkCoord, Dimension, NUM_DIMENSIONS, TILE_SIZE, WORLD_HEIGHT, World,
+};
 use crate::worldgen::{Biome, WorldGen, spawn_point};
 
 /// How often the server simulates non-player entities, in seconds.
@@ -112,6 +114,33 @@ const BONE_LIFETIME: f32 = 3.0;
 /// Maximum gap (px between AABBs) at which an in-flight bone counts as striking a
 /// player.
 const BONE_HIT_RANGE: f32 = 2.0;
+/// Charging speed of a charred skeleton, in pixels/second — quicker than a zombie,
+/// since it commits hard to running its prey down.
+const CHARRED_SKELETON_SPEED: f32 = 26.0;
+/// How far (px) a charred skeleton notices a player and gives chase.
+const CHARRED_SKELETON_AGGRO: f32 = 220.0;
+/// Maximum gap (px between AABBs) at which a charred skeleton lands a melee blow.
+const CHARRED_SKELETON_ATTACK_RANGE: f32 = 4.0;
+/// Damage a charred skeleton deals per hit — heavier than a zombie's blow, making
+/// it the underworld's most dangerous brawler.
+const CHARRED_SKELETON_DAMAGE: i32 = 10;
+/// Seconds a charred skeleton waits between blows.
+const CHARRED_SKELETON_ATTACK_INTERVAL: f32 = 1.0;
+/// Seconds between a chasing charred skeleton laying down each tongue of fire, so
+/// it leaves a broken trail of flame rather than a solid wall.
+const CHARRED_SKELETON_FIRE_INTERVAL: f32 = 0.35;
+/// Percent chance that a fresh underworld chunk seeds charred skeletons.
+const CHARRED_SKELETON_CHUNK_CHANCE: u32 = 45;
+/// Most charred skeletons a single fresh underworld chunk seeds at once.
+const CHARRED_SKELETON_CHUNK_MAX: u32 = 2;
+/// Seconds a tongue of charred-skeleton trail fire burns before guttering out.
+/// Naturally generated fire (part of the terrain) is permanent and untracked.
+const TRAIL_FIRE_LIFETIME: f32 = 4.0;
+/// Damage a burning cell deals to a player standing in it, applied each time the
+/// fire-damage cooldown elapses.
+const FIRE_DAMAGE: i32 = 2;
+/// Seconds between successive ticks of fire damage to a player standing in flame.
+const FIRE_DAMAGE_INTERVAL: f32 = 0.5;
 /// Distance (px) from the nearest player beyond which any non-player entity is
 /// culled, so creatures and dropped items don't pile up in terrain no one is
 /// near. Set comfortably past the screen edge and every spawn distance, so an
@@ -247,6 +276,9 @@ struct ClientHandle {
 /// block registry for solidity queries during entity collision, and the disk
 /// store chunks are loaded from and saved to.
 struct ServerWorld {
+    /// Which dimension's terrain this holds — selects the generator path and the
+    /// chunk subdirectory on disk.
+    dim: Dimension,
     world: World,
     generator: WorldGen,
     registry: BlockRegistry,
@@ -265,12 +297,12 @@ impl ServerWorld {
         if self.world.has_chunk((cx, cy)) {
             return false;
         }
-        let (chunk, fresh) = match self.store.load_chunk((cx, cy)) {
+        let (chunk, fresh) = match self.store.load_chunk(self.dim, (cx, cy)) {
             Ok(Some(chunk)) => (chunk, false),
-            Ok(None) => (self.generator.generate_chunk(cx, cy), true),
+            Ok(None) => (self.generator.generate(self.dim, cx, cy), true),
             Err(e) => {
                 log::error!("failed to load chunk ({cx}, {cy}); regenerating: {e:#}");
-                (self.generator.generate_chunk(cx, cy), true)
+                (self.generator.generate(self.dim, cx, cy), true)
             }
         };
         self.world.insert_chunk((cx, cy), chunk);
@@ -281,7 +313,7 @@ impl ServerWorld {
     fn flush_chunks(&mut self) {
         for coord in self.dirty.drain() {
             if let Some(chunk) = self.world.get_chunk(coord)
-                && let Err(e) = self.store.save_chunk(coord, chunk)
+                && let Err(e) = self.store.save_chunk(self.dim, coord, chunk)
             {
                 log::error!("failed to save chunk {coord:?}: {e:#}");
             }
@@ -330,10 +362,11 @@ impl ServerWorld {
         placed
     }
 
-    /// Surface (grass) row for a world column, used to place ground-walking
-    /// entities when they first spawn.
+    /// Surface row for a world column in this dimension (the overworld grass line
+    /// or the underworld's charred ceiling), used to place ground-walking entities
+    /// when they first spawn.
     fn surface(&self, world_x: i32) -> i32 {
-        self.generator.surface_height(world_x)
+        self.generator.surface_for(self.dim, world_x)
     }
 
     /// Which biome a world column belongs to, used to spawn the right creatures
@@ -365,11 +398,16 @@ impl ServerWorld {
 
 /// State shared across all connection tasks and the entity tick loop.
 struct Shared {
-    world: Mutex<ServerWorld>,
+    /// One terrain world per [`Dimension`], indexed by [`Dimension::index`].
+    worlds_by_dim: [Mutex<ServerWorld>; NUM_DIMENSIONS],
     clients: Mutex<HashMap<u32, ClientHandle>>,
-    /// Every live entity (players and server-simulated creatures alike). A
+    /// Live entities split by dimension: players and server-simulated creatures
+    /// alike, each in the collection for the dimension it currently occupies. A
     /// player avatar shares the id of its connection.
-    entities: Mutex<Entities>,
+    entities_by_dim: [Mutex<Entities>; NUM_DIMENSIONS],
+    /// Which dimension each connected player currently occupies, keyed by entity
+    /// id. Drives where its messages are scoped and which world it interacts with.
+    client_dim: Mutex<HashMap<EntityId, Dimension>>,
     next_id: AtomicU32,
     spawn: (f32, f32),
     /// Reference instant the day/night clock counts from. Offset back in time on
@@ -394,20 +432,28 @@ struct Shared {
     /// [`spawn`](Self::spawn)) — but only if the campfire is still there; a broken
     /// one falls back to world spawn. Folded into [`SavedPlayer`] on disconnect so
     /// it survives reconnects.
-    respawn_points: Mutex<HashMap<EntityId, (i32, i32)>>,
+    respawn_points: Mutex<HashMap<EntityId, (Dimension, i32, i32)>>,
     /// Personal map waypoints of every currently-connected player, keyed by
     /// entity id. Folded into [`SavedPlayer`] on disconnect so they persist.
     waypoints: Mutex<HashMap<EntityId, Vec<Waypoint>>>,
-    /// Lit campfires, keyed by world cell, holding each one's remaining burn time
-    /// in seconds. A cell is present only while its campfire is lit; the tick loop
-    /// counts each down and extinguishes it (reverting the block) at zero.
-    /// Persisted in [`WorldMeta`] so fires survive a save/reload.
-    campfires: Mutex<HashMap<(i32, i32), f32>>,
-    /// Cells holding a log the player placed (rather than naturally grown).
-    /// Tracked so an axe's tree-felling leaves player-built log structures
-    /// standing — a placed log is neither chopped nor traversed by the fell.
-    /// Persisted in [`WorldMeta`] so the distinction survives a save/reload.
-    placed_logs: Mutex<HashSet<(i32, i32)>>,
+    /// Lit campfires, keyed by `(dimension, x, y)`, holding each one's remaining
+    /// burn time in seconds. A cell is present only while its campfire is lit; the
+    /// tick loop counts each down and extinguishes it (reverting the block) at
+    /// zero. Persisted in [`WorldMeta`] so fires survive a save/reload.
+    campfires: Mutex<HashMap<(Dimension, i32, i32), f32>>,
+    /// Cells holding a log the player placed (rather than naturally grown), keyed
+    /// by `(dimension, x, y)`. Tracked so an axe's tree-felling leaves player-built
+    /// log structures standing — a placed log is neither chopped nor traversed by
+    /// the fell. Persisted in [`WorldMeta`] so the distinction survives a reload.
+    placed_logs: Mutex<HashSet<(Dimension, i32, i32)>>,
+    /// Tongues of fire laid down by chasing charred skeletons, keyed by
+    /// `(dimension, x, y)` with each one's remaining burn time. The tick loop
+    /// counts them down and reverts the cell to air at zero. Runtime-only (these
+    /// flames are fleeting, so they aren't persisted).
+    trail_fires: Mutex<HashMap<(Dimension, i32, i32), f32>>,
+    /// Seconds until each player can next take fire damage, keyed by entity id, so
+    /// standing in flame burns at a steady interval rather than every tick.
+    fire_cd: Mutex<HashMap<EntityId, f32>>,
     /// Set when the owning [`RunningServer`] is dropped, to stop the autosave
     /// loop.
     shutdown: AtomicBool,
@@ -416,6 +462,42 @@ struct Shared {
 impl Shared {
     fn alloc_id(&self) -> EntityId {
         self.next_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// The terrain world for `dim`.
+    fn world(&self, dim: Dimension) -> &Mutex<ServerWorld> {
+        &self.worlds_by_dim[dim.index()]
+    }
+
+    /// The entity collection for `dim`.
+    fn entities(&self, dim: Dimension) -> &Mutex<Entities> {
+        &self.entities_by_dim[dim.index()]
+    }
+
+    /// The dimension player `id` currently occupies (defaulting to the overworld
+    /// for an id the map hasn't recorded yet).
+    fn dim_of(&self, id: EntityId) -> Dimension {
+        self.client_dim.lock().get(&id).copied().unwrap_or_default()
+    }
+
+    /// Send `msg` to every client currently in dimension `dim`.
+    fn broadcast_dim(&self, dim: Dimension, msg: ServerMessage) {
+        let client_dim = self.client_dim.lock();
+        for (cid, h) in self.clients.lock().iter() {
+            if client_dim.get(cid).copied().unwrap_or_default() == dim {
+                let _ = h.tx.send(msg.clone());
+            }
+        }
+    }
+
+    /// Send `msg` to every client in dimension `dim` except `except`.
+    fn broadcast_dim_except(&self, dim: Dimension, except: EntityId, msg: ServerMessage) {
+        let client_dim = self.client_dim.lock();
+        for (cid, h) in self.clients.lock().iter() {
+            if *cid != except && client_dim.get(cid).copied().unwrap_or_default() == dim {
+                let _ = h.tx.send(msg.clone());
+            }
+        }
     }
 
     /// Current normalized time of day in `[0, 1)`.
@@ -443,46 +525,58 @@ impl Shared {
     /// thread; logs (rather than propagates) IO errors so a failed save can
     /// never crash the server.
     fn save(&self) {
-        let mut world = self.world.lock();
-        world.flush_chunks();
-        let seed = world.generator.seed();
+        // Flush each dimension's dirty chunks; read the seed from the overworld
+        // (both dimensions share the same generator seed) and keep its store for
+        // the metadata write.
+        let seed = {
+            let mut overworld = self.world(Dimension::Overworld).lock();
+            overworld.flush_chunks();
+            let seed = overworld.generator.seed();
+            self.world(Dimension::Underworld).lock().flush_chunks();
+            seed
+        };
 
-        // Creatures save directly; players are gathered from both the saved set
-        // and any currently-connected avatars (whose live state is freshest).
+        // Creatures save directly (split by dimension); players are gathered from
+        // both the saved set and any currently-connected avatars (whose live state
+        // is freshest), tagged with the dimension they are in.
         let mut players = self.saved_players.lock().clone();
         let invs = self.inventories.lock().clone();
-        let mut creatures = Vec::new();
-        for e in self.entities.lock().values() {
-            match &e.kind {
-                EntityKind::Player { name } if !name.is_empty() => {
-                    players.insert(
-                        name.clone(),
-                        SavedPlayer {
-                            name: name.clone(),
-                            x: e.x,
-                            y: e.y,
-                            health: e.health,
-                            inventory: invs.get(&e.id).cloned().unwrap_or_default(),
-                            respawn: self.respawn_points.lock().get(&e.id).copied(),
-                            waypoints: self
-                                .waypoints
-                                .lock()
-                                .get(&e.id)
-                                .cloned()
-                                .unwrap_or_default(),
-                        },
-                    );
+        let mut creatures: [Vec<Entity>; NUM_DIMENSIONS] = Default::default();
+        for dim in Dimension::ALL {
+            for e in self.entities(dim).lock().values() {
+                match &e.kind {
+                    EntityKind::Player { name } if !name.is_empty() => {
+                        players.insert(
+                            name.clone(),
+                            SavedPlayer {
+                                name: name.clone(),
+                                x: e.x,
+                                y: e.y,
+                                health: e.health,
+                                inventory: invs.get(&e.id).cloned().unwrap_or_default(),
+                                dim,
+                                respawn: self.respawn_points.lock().get(&e.id).copied(),
+                                waypoints: self
+                                    .waypoints
+                                    .lock()
+                                    .get(&e.id)
+                                    .cloned()
+                                    .unwrap_or_default(),
+                            },
+                        );
+                    }
+                    EntityKind::Player { .. } => {} // unnamed: not yet identified
+                    _ => creatures[dim.index()].push(e.clone()),
                 }
-                EntityKind::Player { .. } => {} // unnamed: not yet identified
-                _ => creatures.push(e.clone()),
             }
         }
+        let [overworld_entities, underworld_entities] = creatures;
 
         let campfires = self
             .campfires
             .lock()
             .iter()
-            .map(|(&(x, y), &secs)| (x, y, secs))
+            .map(|(&(dim, x, y), &secs)| (dim, x, y, secs))
             .collect();
         let placed_logs = self.placed_logs.lock().iter().copied().collect();
 
@@ -491,12 +585,18 @@ impl Shared {
             elapsed_secs: self.start.lock().elapsed().as_secs_f32(),
             next_id: self.next_id.load(Ordering::SeqCst),
             spawn: self.spawn,
-            entities: creatures,
+            entities: overworld_entities,
+            underworld_entities,
             players: players.into_values().collect(),
             campfires,
             placed_logs,
         };
-        if let Err(e) = world.store.save_meta(&meta) {
+        if let Err(e) = self
+            .world(Dimension::Overworld)
+            .lock()
+            .store
+            .save_meta(&meta)
+        {
             log::error!("failed to save world: {e:#}");
         }
     }
@@ -506,14 +606,6 @@ impl Shared {
     fn broadcast_all(&self, msg: ServerMessage) {
         for h in self.clients.lock().values() {
             let _ = h.tx.send(msg.clone());
-        }
-    }
-
-    fn broadcast_except(&self, except: u32, msg: ServerMessage) {
-        for (id, h) in self.clients.lock().iter() {
-            if *id != except {
-                let _ = h.tx.send(msg.clone());
-            }
         }
     }
 
@@ -563,7 +655,8 @@ impl Shared {
             return;
         };
         // Spawn at the player's center so the toss reads as coming from them.
-        let origin = self.entities.lock().get(id).map(|e| {
+        let dim = self.dim_of(id);
+        let origin = self.entities(dim).lock().get(id).map(|e| {
             let (pw, ph) = e.size();
             let (iw, ih) = ITEM_SIZE;
             (e.x + (pw - iw) * 0.5, e.y + (ph - ih) * 0.5)
@@ -578,6 +671,7 @@ impl Shared {
         };
         spawn_item(
             self,
+            dim,
             block,
             count,
             durability,
@@ -649,15 +743,16 @@ impl Shared {
         };
         // Spill anything that didn't fit at the crafter's location.
         if !overflow.is_empty() {
+            let dim = self.dim_of(id);
             let cell = self
-                .entities
+                .entities(dim)
                 .lock()
                 .get(id)
                 .map(|e| ((e.x / TILE_SIZE) as i32, (e.y / TILE_SIZE) as i32));
             if let Some((cx, cy)) = cell {
                 for (item, n) in overflow {
                     for _ in 0..n {
-                        spawn_drop(self, cx, cy, item);
+                        spawn_drop(self, dim, cx, cy, item);
                     }
                 }
             }
@@ -742,7 +837,7 @@ impl Shared {
     /// damages and can even kill. Returns the health/hit messages to broadcast and
     /// a respawn target if the bite proved fatal. No-op (empty) if the slot holds
     /// no food.
-    fn eat(&self, id: EntityId, slot: usize) -> (Vec<ServerMessage>, Option<(EntityId, f32, f32)>) {
+    fn eat(&self, id: EntityId, slot: usize) -> (Vec<ServerMessage>, Option<RespawnInfo>) {
         let Some(item) = self.peek_slot(id, slot) else {
             return (Vec::new(), None);
         };
@@ -759,16 +854,12 @@ impl Shared {
                 return (Vec::new(), None);
             }
         }
-        let mut entities = self.entities.lock();
+        let dim = self.dim_of(id);
+        let respawn = self.respawn_target(id);
+        let mut entities = self.entities(dim).lock();
         if delta < 0 {
             // Raw meat: route through the damage path so a fatal bite respawns.
-            apply_damage(
-                &mut entities,
-                id,
-                -delta,
-                (0.0, 0.0),
-                self.respawn_target(id),
-            )
+            apply_damage(&mut entities, id, -delta, (0.0, 0.0), dim, respawn)
         } else {
             let Some(e) = entities.get_mut(id) else {
                 return (Vec::new(), None);
@@ -792,7 +883,8 @@ impl Shared {
         let Some(secs) = crate::block::fuel_seconds(fuel) else {
             return;
         };
-        if !crate::block::is_campfire(self.world.lock().get(x, y)) {
+        let dim = self.dim_of(id);
+        if !crate::block::is_campfire(self.world(dim).lock().get(x, y)) {
             return;
         }
         // Spend one unit of fuel.
@@ -805,18 +897,22 @@ impl Shared {
             inv.remove(fuel, 1);
         }
         // Stoke the fire (extending an already-burning one).
-        *self.campfires.lock().entry((x, y)).or_insert(0.0) += secs;
+        *self.campfires.lock().entry((dim, x, y)).or_insert(0.0) += secs;
         // Light it if it wasn't already, telling everyone its new lit look.
         let lit = {
-            let mut world = self.world.lock();
+            let mut world = self.world(dim).lock();
             world.get(x, y) == crate::block::CAMPFIRE && world.set(x, y, crate::block::CAMPFIRE_LIT)
         };
         if lit {
-            self.broadcast_all(ServerMessage::BlockUpdate {
-                x,
-                y,
-                block: crate::block::CAMPFIRE_LIT,
-            });
+            self.broadcast_dim(
+                dim,
+                ServerMessage::BlockUpdate {
+                    dim,
+                    x,
+                    y,
+                    block: crate::block::CAMPFIRE_LIT,
+                },
+            );
         }
         self.send_inventory(id);
     }
@@ -829,11 +925,12 @@ impl Shared {
     /// the cell and inventory are resynced so a client's optimistic guess is undone.
     fn use_bucket(&self, id: EntityId, x: i32, y: i32, slot: usize) {
         let held = self.peek_slot(id, slot);
+        let dim = self.dim_of(id);
         // Read the target cell and whether it has an orthogonal neighbour to rest
         // against — the same support a normal block placement requires, so water
         // can't be poured into open midair.
         let (cell, supported) = {
-            let mut world = self.world.lock();
+            let mut world = self.world(dim).lock();
             let cell = world.get(x, y);
             let supported = [(1, 0), (-1, 0), (0, 1), (0, -1)]
                 .iter()
@@ -844,12 +941,12 @@ impl Shared {
             // Scoop: an empty bucket fills from a water cell.
             Some(crate::block::BUCKET) if crate::block::is_water(cell) => {
                 self.take_from_slot(id, slot);
-                self.world.lock().set(x, y, crate::block::AIR);
+                self.world(dim).lock().set(x, y, crate::block::AIR);
                 // Hand back a water bucket; if the inventory is somehow full, undo.
                 if self.add_item(id, crate::block::WATER_BUCKET) {
                     Some(crate::block::AIR)
                 } else {
-                    self.world.lock().set(x, y, crate::block::WATER);
+                    self.world(dim).lock().set(x, y, crate::block::WATER);
                     self.add_item(id, crate::block::BUCKET);
                     None
                 }
@@ -858,10 +955,10 @@ impl Shared {
             // into midair, mirroring normal block placement).
             Some(crate::block::WATER_BUCKET) if cell == crate::block::AIR && supported => {
                 self.take_from_slot(id, slot);
-                if self.world.lock().place_water(x, y) {
+                if self.world(dim).lock().place_water(x, y) {
                     // Return the now-empty bucket; if it can't fit, spill it.
                     if !self.add_item(id, crate::block::BUCKET) {
-                        spawn_drop(self, x, y, crate::block::BUCKET);
+                        spawn_drop(self, dim, x, y, crate::block::BUCKET);
                     }
                     Some(crate::block::WATER)
                 } else {
@@ -872,13 +969,14 @@ impl Shared {
             _ => None,
         };
         match changed {
-            Some(block) => self.broadcast_all(ServerMessage::BlockUpdate { x, y, block }),
+            Some(block) => self.broadcast_dim(dim, ServerMessage::BlockUpdate { dim, x, y, block }),
             // Nothing happened: correct the client's optimistic cell guess.
             None => {
-                let actual = self.world.lock().get(x, y);
+                let actual = self.world(dim).lock().get(x, y);
                 self.send_to(
                     id,
                     ServerMessage::BlockUpdate {
+                        dim,
                         x,
                         y,
                         block: actual,
@@ -892,35 +990,43 @@ impl Shared {
     /// Record the campfire at cell `(x, y)` as player `id`'s respawn point. No-op
     /// unless that cell really holds a campfire.
     fn set_respawn(&self, id: EntityId, x: i32, y: i32) {
-        if !crate::block::is_campfire(self.world.lock().get(x, y)) {
+        let dim = self.dim_of(id);
+        if !crate::block::is_campfire(self.world(dim).lock().get(x, y)) {
             return;
         }
-        self.respawn_points.lock().insert(id, (x, y));
+        self.respawn_points.lock().insert(id, (dim, x, y));
     }
 
-    /// Where player `id` should respawn: their last campfire if they've set one and
-    /// it's still standing, otherwise world [`spawn`](Self::spawn) (so a broken
-    /// campfire sends them back to spawn).
-    fn respawn_target(&self, id: EntityId) -> (f32, f32) {
-        let Some((cx, cy)) = self.respawn_points.lock().get(&id).copied() else {
-            return self.spawn;
+    /// Where player `id` should respawn: their last campfire (in whichever
+    /// dimension they set it) if they've set one and it's still standing, otherwise
+    /// the overworld [`spawn`](Self::spawn) (so a broken campfire sends them back to
+    /// the surface). Returns the destination dimension and world-pixel position.
+    fn respawn_target(&self, id: EntityId) -> (Dimension, f32, f32) {
+        let Some((dim, cx, cy)) = self.respawn_points.lock().get(&id).copied() else {
+            return (Dimension::Overworld, self.spawn.0, self.spawn.1);
         };
-        if !crate::block::is_campfire(self.world.lock().get(cx, cy)) {
-            return self.spawn;
+        if !crate::block::is_campfire(self.world(dim).lock().get(cx, cy)) {
+            return (Dimension::Overworld, self.spawn.0, self.spawn.1);
         }
         // Centre the player's 11px-wide body in the campfire's tile; its top sits
         // a tile up so its feet rest on the ground the campfire stands on.
         let px = cx as f32 * TILE_SIZE + (TILE_SIZE - crate::entity::PLAYER_SIZE.0) / 2.0;
         let py = cy as f32 * TILE_SIZE;
-        (px, py)
+        (dim, px, py)
     }
 
     /// Send player `id` the authoritative snapshot of their waypoints and current
     /// home (respawn) point, so the client can redraw its markers.
     fn send_waypoints(&self, id: EntityId) {
         let list = self.waypoints.lock().get(&id).cloned().unwrap_or_default();
-        let home = self.respawn_target(id);
-        self.send_to(id, ServerMessage::Waypoints { list, home });
+        let (_, hx, hy) = self.respawn_target(id);
+        self.send_to(
+            id,
+            ServerMessage::Waypoints {
+                list,
+                home: (hx, hy),
+            },
+        );
     }
 
     /// Record a personal waypoint for player `id`, then resync their list.
@@ -957,7 +1063,8 @@ impl Shared {
     /// campfire at cell `(x, y)`, stopping when the inputs run out. No-op unless
     /// that campfire is lit.
     fn cook(&self, id: EntityId, x: i32, y: i32, recipe_idx: usize, count: u32) {
-        if self.world.lock().get(x, y) != crate::block::CAMPFIRE_LIT {
+        let dim = self.dim_of(id);
+        if self.world(dim).lock().get(x, y) != crate::block::CAMPFIRE_LIT {
             return;
         }
         if let Some(recipe) = crate::recipe::COOK_RECIPES.get(recipe_idx) {
@@ -970,14 +1077,16 @@ impl Shared {
         self.send_inventory(id);
     }
 
-    /// Flow spreading water one cell outward and return the resulting block
-    /// updates to broadcast. Each freshly flooded cell becomes a [`WATER`] block.
-    fn tick_water(&self) -> Vec<ServerMessage> {
-        self.world
+    /// Flow spreading water one cell outward in dimension `dim` and return the
+    /// resulting block updates to broadcast. Each freshly flooded cell becomes a
+    /// [`WATER`] block.
+    fn tick_water(&self, dim: Dimension) -> Vec<ServerMessage> {
+        self.world(dim)
             .lock()
             .spread_water()
             .into_iter()
             .map(|(x, y)| ServerMessage::BlockUpdate {
+                dim,
                 x,
                 y,
                 block: crate::block::WATER,
@@ -985,43 +1094,91 @@ impl Shared {
             .collect()
     }
 
-    /// Advance every lit campfire by `dt`, dropping any whose underlying block is
-    /// gone and extinguishing any whose fuel has run out (reverting the cell to an
-    /// unlit campfire). Returns the resulting block updates to broadcast.
-    fn tick_campfires(&self, dt: f32) -> Vec<ServerMessage> {
+    /// Advance every lit campfire (across all dimensions) by `dt`, dropping any
+    /// whose underlying block is gone and extinguishing any whose fuel has run out
+    /// (reverting the cell to an unlit campfire), broadcasting the change to that
+    /// dimension's clients. Locks are taken one at a time so the world and campfire
+    /// mutexes are never held together.
+    fn tick_campfires(&self, dt: f32) {
+        // Snapshot which campfires' blocks are gone (read world without holding the
+        // campfires lock), then update the timers, then revert any that expired.
+        let keys: Vec<(Dimension, i32, i32)> = self.campfires.lock().keys().copied().collect();
+        let mut gone: HashSet<(Dimension, i32, i32)> = HashSet::new();
+        for &(dim, x, y) in &keys {
+            if !crate::block::is_campfire(self.world(dim).lock().get(x, y)) {
+                gone.insert((dim, x, y));
+            }
+        }
         let mut expired = Vec::new();
         {
-            let mut world = self.world.lock();
             let mut fires = self.campfires.lock();
-            fires.retain(|&(x, y), secs| {
-                if !crate::block::is_campfire(world.get(x, y)) {
+            fires.retain(|key, secs| {
+                if gone.contains(key) {
                     return false; // the campfire was mined or overwritten
                 }
                 *secs -= dt;
                 if *secs <= 0.0 {
-                    expired.push((x, y));
+                    expired.push(*key);
                     false
                 } else {
                     true
                 }
             });
         }
-        let mut msgs = Vec::new();
-        if !expired.is_empty() {
-            let mut world = self.world.lock();
-            for (x, y) in expired {
-                if world.get(x, y) == crate::block::CAMPFIRE_LIT
+        for (dim, x, y) in expired {
+            let reverted = {
+                let mut world = self.world(dim).lock();
+                world.get(x, y) == crate::block::CAMPFIRE_LIT
                     && world.set(x, y, crate::block::CAMPFIRE)
-                {
-                    msgs.push(ServerMessage::BlockUpdate {
+            };
+            if reverted {
+                self.broadcast_dim(
+                    dim,
+                    ServerMessage::BlockUpdate {
+                        dim,
                         x,
                         y,
                         block: crate::block::CAMPFIRE,
-                    });
-                }
+                    },
+                );
             }
         }
-        msgs
+    }
+
+    /// Advance every charred-skeleton trail fire by `dt`, snuffing out (reverting to
+    /// air) any whose brief life has run out and broadcasting the change. A cell
+    /// that has since been overwritten is simply dropped from tracking.
+    fn tick_trail_fires(&self, dt: f32) {
+        let mut expired = Vec::new();
+        {
+            let mut fires = self.trail_fires.lock();
+            fires.retain(|key, secs| {
+                *secs -= dt;
+                if *secs <= 0.0 {
+                    expired.push(*key);
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        for (dim, x, y) in expired {
+            let cleared = {
+                let mut world = self.world(dim).lock();
+                world.get(x, y) == crate::block::FIRE && world.set(x, y, crate::block::AIR)
+            };
+            if cleared {
+                self.broadcast_dim(
+                    dim,
+                    ServerMessage::BlockUpdate {
+                        dim,
+                        x,
+                        y,
+                        block: crate::block::AIR,
+                    },
+                );
+            }
+        }
     }
 
     /// Fell the rest of a tree: flood-fill the run of logs 4-connected to the
@@ -1030,8 +1187,8 @@ impl Shared {
     /// (tracked in [`Shared::placed_logs`]) is left standing and also blocks the
     /// spread, so building with logs never collapses an adjacent tree and felling
     /// a tree never eats a player's log structure.
-    fn chop_connected_logs(&self, x: i32, y: i32) -> Vec<(i32, i32)> {
-        let mut world = self.world.lock();
+    fn chop_connected_logs(&self, dim: Dimension, x: i32, y: i32) -> Vec<(i32, i32)> {
+        let mut world = self.world(dim).lock();
         let placed = self.placed_logs.lock();
         let mut removed = Vec::new();
         let mut seen: HashSet<(i32, i32)> = HashSet::new();
@@ -1044,7 +1201,7 @@ impl Shared {
             if !seen.insert((cx, cy)) {
                 continue;
             }
-            if world.get(cx, cy) != crate::block::LOG || placed.contains(&(cx, cy)) {
+            if world.get(cx, cy) != crate::block::LOG || placed.contains(&(dim, cx, cy)) {
                 continue;
             }
             world.set(cx, cy, crate::block::AIR);
@@ -1062,6 +1219,7 @@ impl Shared {
     /// its rolled drop (leaves still shed their items as they decay).
     fn decay_unsupported_leaves(
         &self,
+        dim: Dimension,
         removed_logs: &[(i32, i32)],
     ) -> Vec<(i32, i32, Option<BlockId>)> {
         let r = LEAF_SUPPORT_RANGE;
@@ -1075,7 +1233,7 @@ impl Shared {
                 }
             }
         }
-        let mut world = self.world.lock();
+        let mut world = self.world(dim).lock();
         let mut decayed = Vec::new();
         for (cx, cy) in candidates {
             if world.get(cx, cy) != crate::block::LEAVES || leaf_supported(&mut world, cx, cy) {
@@ -1094,8 +1252,8 @@ impl Shared {
     /// [`ROPE_LADDER_MAX_DROP`] cells (the rope running out). Returns the filled
     /// cells, top-first, so the caller can broadcast them. `(x, y)` is assumed to
     /// already be air and validated for support.
-    fn roll_rope_ladder(&self, x: i32, y: i32) -> Vec<(i32, i32)> {
-        let mut world = self.world.lock();
+    fn roll_rope_ladder(&self, dim: Dimension, x: i32, y: i32) -> Vec<(i32, i32)> {
+        let mut world = self.world(dim).lock();
         let mut filled = Vec::new();
         let mut ty = y;
         while (filled.len() as i32) < ROPE_LADDER_MAX_DROP {
@@ -1117,8 +1275,8 @@ impl Shared {
     /// been broken by the caller; this gathers the rest of the dangling run, which
     /// collapses as a unit rather than leaving floating rungs (and so a multi-cell
     /// run yields a single dropped rope ladder, not one per cell).
-    fn collapse_rope_ladder(&self, x: i32, y: i32) -> Vec<(i32, i32)> {
-        let mut world = self.world.lock();
+    fn collapse_rope_ladder(&self, dim: Dimension, x: i32, y: i32) -> Vec<(i32, i32)> {
+        let mut world = self.world(dim).lock();
         let mut cleared = Vec::new();
         for dir in [-1, 1] {
             let mut ty = y + dir;
@@ -1131,6 +1289,149 @@ impl Shared {
             }
         }
         cleared
+    }
+}
+
+/// Number of overworld rows (counting up from the very bottom) that the descent
+/// into the underworld treats as the world's floor: a player who falls past this
+/// drops through into the underworld below.
+const OVERWORLD_BOTTOM_ROWS: i32 = 1;
+
+impl Shared {
+    /// Move player `id` into dimension `to` at world pixel `(x, y)`: lift its
+    /// avatar out of its current dimension's entity collection, re-home it in the
+    /// destination, fix up the dimension bookkeeping, and tell every affected
+    /// client. The owning client clears its mirrored world and re-streams the new
+    /// dimension's chunks itself on receiving [`ServerMessage::EnterDimension`].
+    fn enter_dimension(&self, id: EntityId, to: Dimension, x: f32, y: f32) {
+        let from = self.dim_of(id);
+        let mut player = match self.entities(from).lock().remove(id) {
+            Some(e) => e,
+            None => return, // not a live player
+        };
+        player.x = x;
+        player.y = y;
+        player.vx = 0.0;
+        player.vy = 0.0;
+        // Record the new dimension before announcing, so dimension-scoped
+        // broadcasts route correctly.
+        self.client_dim.lock().insert(id, to);
+        // The avatar vanishes from the dimension it left...
+        self.broadcast_dim_except(from, id, ServerMessage::EntityDespawn { id });
+        // ...and appears in the one it entered.
+        self.entities(to).lock().insert(player.clone());
+        self.broadcast_dim_except(to, id, ServerMessage::EntitySpawn { entity: player });
+        // Switch the owning client over: it clears its world/entities and begins
+        // requesting the new dimension's chunks.
+        self.send_to(id, ServerMessage::EnterDimension { dim: to, x, y });
+        // Stream it the entities already present in the new dimension.
+        let snapshot: Vec<Entity> = self
+            .entities(to)
+            .lock()
+            .values()
+            .filter(|e| e.id != id)
+            .cloned()
+            .collect();
+        for entity in snapshot {
+            self.send_to(id, ServerMessage::EntitySpawn { entity });
+        }
+        // Resync the home marker (its dimension may differ from the new one) and
+        // the inventory, which travels with the player across dimensions.
+        self.send_waypoints(id);
+        self.send_inventory(id);
+    }
+
+    /// Enact a death respawn returned by [`apply_damage`]: a same-dimension respawn
+    /// just teleports the avatar (already repositioned server-side) and drops a
+    /// death marker; a cross-dimension one routes through [`enter_dimension`].
+    fn finish_respawn(&self, info: RespawnInfo, current_dim: Dimension) {
+        if info.dim == current_dim {
+            self.send_to(
+                info.id,
+                ServerMessage::Respawn {
+                    x: info.x,
+                    y: info.y,
+                    died: true,
+                },
+            );
+        } else {
+            self.enter_dimension(info.id, info.dim, info.x, info.y);
+        }
+    }
+
+    /// Check whether player `id`, now at world pixel `(x, y)` in dimension `dim`,
+    /// has crossed a dimension boundary, and if so move them across. Returns
+    /// whether a transition happened (so the caller can skip a now-stale move
+    /// broadcast). Falling past the overworld's floor drops the player into the
+    /// underworld; rising above the underworld's ceiling returns them to the
+    /// overworld's depths.
+    fn maybe_transition(&self, id: EntityId, dim: Dimension, x: f32, y: f32) -> bool {
+        match dim {
+            // Fell off the bottom of the overworld: arrive at the top of the
+            // underworld and drop the short way onto its charred surface.
+            Dimension::Overworld
+                if y >= ((WORLD_HEIGHT - OVERWORLD_BOTTOM_ROWS) as f32) * TILE_SIZE =>
+            {
+                let cell_x = (x / TILE_SIZE).floor() as i32;
+                let surface = self.world(Dimension::Underworld).lock().surface(cell_x);
+                // Land a few tiles above the ceiling so the player drops onto it.
+                let ny = ((surface - 3).max(0) as f32) * TILE_SIZE;
+                self.enter_dimension(id, Dimension::Underworld, x, ny);
+                true
+            }
+            // Climbed above the underworld's ceiling: surface back in the overworld
+            // near its bottom, where the player originally broke through.
+            Dimension::Underworld if y <= 0.0 => {
+                let cell_x = (x / TILE_SIZE).floor() as i32;
+                let (nx, ny) = self.carve_overworld_landing(cell_x);
+                self.enter_dimension(id, Dimension::Overworld, nx, ny);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Carve a small air pocket at the overworld's floor in column `cell_x` so a
+    /// player surfacing from the underworld lands in open space (rather than
+    /// suffocating in solid rock), and return the world-pixel position to drop them
+    /// at. A solid floor is guaranteed beneath them. Broadcasts the carved cells to
+    /// the overworld's other clients.
+    fn carve_overworld_landing(&self, cell_x: i32) -> (f32, f32) {
+        let b = WORLD_HEIGHT;
+        let mut updates = Vec::new();
+        {
+            let mut world = self.world(Dimension::Overworld).lock();
+            // Headroom + body: two cells of air to stand in.
+            for ty in [b - 3, b - 2] {
+                if world.get(cell_x, ty) != crate::block::AIR
+                    && world.set(cell_x, ty, crate::block::AIR)
+                {
+                    updates.push((cell_x, ty, crate::block::AIR));
+                }
+            }
+            // Make sure there is solid footing directly beneath them.
+            let below = world.get(cell_x, b - 1);
+            if !world.registry.is_solid(below) {
+                world.set(cell_x, b - 1, crate::block::STONE);
+                updates.push((cell_x, b - 1, crate::block::STONE));
+            }
+        }
+        for (x, y, block) in updates {
+            self.broadcast_dim(
+                Dimension::Overworld,
+                ServerMessage::BlockUpdate {
+                    dim: Dimension::Overworld,
+                    x,
+                    y,
+                    block,
+                },
+            );
+        }
+        // Centre the 11px-wide body in the column; top sits on row b-2 so the feet
+        // rest on the solid floor at row b-1.
+        let px = cell_x as f32 * TILE_SIZE + (TILE_SIZE - PLAYER_SIZE.0) / 2.0;
+        let py = (b - 2) as f32 * TILE_SIZE;
+        (px, py)
     }
 }
 
@@ -1306,7 +1607,7 @@ fn build_endpoint(
 
     let endpoint = Endpoint::server(server_config, bind).context("binding server endpoint")?;
 
-    let store = WorldStore::new(save_dir);
+    let store = WorldStore::new(save_dir.clone());
     // Resume a previous save if one exists, otherwise create a fresh world.
     let saved = match store.load_meta() {
         Ok(meta) => meta,
@@ -1316,7 +1617,8 @@ fn build_endpoint(
         }
     };
 
-    let generator = WorldGen::new(saved.as_ref().map(|m| m.seed).unwrap_or(seed));
+    let world_seed = saved.as_ref().map(|m| m.seed).unwrap_or(seed);
+    let generator = WorldGen::new(world_seed);
     let spawn = saved
         .as_ref()
         .map(|m| m.spawn)
@@ -1341,36 +1643,63 @@ fn build_endpoint(
         .unwrap_or(0xD157_C0DE)
         ^ (next_id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
 
-    // Restore saved creatures into the live world; players go to the saved set.
-    let mut entities = Entities::new();
+    // Restore saved creatures into each dimension's live world; players go to the
+    // saved set.
+    let mut overworld_entities = Entities::new();
+    let mut underworld_entities = Entities::new();
     let mut saved_players = HashMap::new();
     let mut campfires = HashMap::new();
     let mut placed_logs = HashSet::new();
     if let Some(m) = &saved {
         for e in &m.entities {
-            entities.insert(e.clone());
+            overworld_entities.insert(e.clone());
+        }
+        for e in &m.underworld_entities {
+            underworld_entities.insert(e.clone());
         }
         for p in &m.players {
             saved_players.insert(p.name.clone(), p.clone());
         }
-        for &(x, y, secs) in &m.campfires {
-            campfires.insert((x, y), secs);
+        for &(dim, x, y, secs) in &m.campfires {
+            campfires.insert((dim, x, y), secs);
         }
-        for &(x, y) in &m.placed_logs {
-            placed_logs.insert((x, y));
+        for &(dim, x, y) in &m.placed_logs {
+            placed_logs.insert((dim, x, y));
         }
     }
 
-    let shared = Arc::new(Shared {
-        world: Mutex::new(ServerWorld {
+    // One terrain world per dimension, each with its own generator (same seed) and
+    // a store pointed at the shared save directory (dimensions write to separate
+    // chunk subdirectories).
+    let make_world = |dim: Dimension| {
+        Mutex::new(ServerWorld {
+            dim,
             world: World::new(),
-            generator,
+            generator: WorldGen::new(world_seed),
             registry: BlockRegistry::new(),
-            store,
+            store: WorldStore::new(save_dir.clone()),
             dirty: HashSet::new(),
-        }),
+        })
+    };
+    // Keep `generator` alive for the spawn helpers below by storing it in the
+    // overworld; build the underworld fresh.
+    let overworld = Mutex::new(ServerWorld {
+        dim: Dimension::Overworld,
+        world: World::new(),
+        generator,
+        registry: BlockRegistry::new(),
+        store,
+        dirty: HashSet::new(),
+    });
+
+    let shared = Arc::new(Shared {
+        worlds_by_dim: [overworld, make_world(Dimension::Underworld)],
         clients: Mutex::new(HashMap::new()),
-        entities: Mutex::new(entities),
+        entities_by_dim: [
+            Mutex::new(overworld_entities),
+            Mutex::new(underworld_entities),
+        ],
+        client_dim: Mutex::new(HashMap::new()),
         next_id: AtomicU32::new(next_id),
         spawn,
         start: Mutex::new(start),
@@ -1381,6 +1710,8 @@ fn build_endpoint(
         waypoints: Mutex::new(HashMap::new()),
         campfires: Mutex::new(campfires),
         placed_logs: Mutex::new(placed_logs),
+        trail_fires: Mutex::new(HashMap::new()),
+        fire_cd: Mutex::new(HashMap::new()),
         shutdown: AtomicBool::new(false),
     });
 
@@ -1411,8 +1742,8 @@ async fn accept_loop(ctx: AcceptCtx) {
 /// mountains. Each spawn slot looks up its column's biome and spawns whatever
 /// belongs there.
 fn spawn_creatures(shared: &Shared) {
-    let world = shared.world.lock();
-    let mut entities = shared.entities.lock();
+    let world = shared.world(Dimension::Overworld).lock();
+    let mut entities = shared.entities(Dimension::Overworld).lock();
     for i in 0..SPAWN_SLOTS {
         let cell_x = (i - SPAWN_SLOTS / 2) * SPAWN_SPACING;
         // Alternate hostile/placid creatures in mountains; `i` parity keeps the
@@ -1469,7 +1800,7 @@ const CHUNK_SPAWN_MAX: u32 = 3;
 /// decision is deterministic per chunk via [`chunk_hash`], so exploring the same
 /// terrain never double-spawns. Mirrors [`spawn_creatures`] for placement.
 fn maybe_spawn_in_chunk(shared: &Shared, cx: i32, cy: i32) {
-    let world = shared.world.lock();
+    let world = shared.world(Dimension::Overworld).lock();
     let seed = world.generator.seed();
     if chunk_hash(seed, cx, cy, 0) % 100 >= CHUNK_SPAWN_CHANCE {
         return;
@@ -1482,7 +1813,7 @@ fn maybe_spawn_in_chunk(shared: &Shared, cx: i32, cy: i32) {
 
     let mut spawned = Vec::new();
     {
-        let mut entities = shared.entities.lock();
+        let mut entities = shared.entities(Dimension::Overworld).lock();
         for n in 0..count {
             // Scatter spawns across the chunk's columns.
             let lx = chunk_hash(seed, cx, cy, 2 + n) % CHUNK_SIZE as u32;
@@ -1506,7 +1837,58 @@ fn maybe_spawn_in_chunk(shared: &Shared, cx: i32, cy: i32) {
     drop(world);
 
     for entity in spawned {
-        shared.broadcast_all(ServerMessage::EntitySpawn { entity });
+        shared.broadcast_dim(Dimension::Overworld, ServerMessage::EntitySpawn { entity });
+    }
+}
+
+/// Possibly seed charred skeletons into a freshly generated underworld chunk.
+/// They drop onto any charred-rock floor (open cell above, solid below) the chunk
+/// contains. Deterministic per chunk via [`chunk_hash`] on its own salt range, so
+/// re-exploring the same terrain never double-spawns.
+fn maybe_spawn_charred_skeletons(shared: &Shared, cx: i32, cy: i32) {
+    let mut world = shared.world(Dimension::Underworld).lock();
+    let seed = world.generator.seed();
+    if chunk_hash(seed, cx, cy, 200) % 100 >= CHARRED_SKELETON_CHUNK_CHANCE {
+        return;
+    }
+
+    let base_x = cx * CHUNK_SIZE;
+    let chunk_top = cy * CHUNK_SIZE;
+    let chunk_bottom = chunk_top + CHUNK_SIZE;
+    let count = 1 + chunk_hash(seed, cx, cy, 201) % CHARRED_SKELETON_CHUNK_MAX;
+    let (_, h) = EntityKind::CharredSkeleton.size();
+
+    let mut spawned = Vec::new();
+    {
+        let mut entities = shared.entities(Dimension::Underworld).lock();
+        for n in 0..count {
+            let lx = chunk_hash(seed, cx, cy, 202 + n) % CHUNK_SIZE as u32;
+            let cell_x = base_x + lx as i32;
+            // Find an open cell in this column with solid charred rock beneath —
+            // a floor to stand on — scanning from the chunk's bottom upward.
+            let mut placed = None;
+            for ty in (chunk_top..chunk_bottom).rev() {
+                if !world.solid(cell_x, ty) && world.solid(cell_x, ty + 1) {
+                    placed = Some((ty + 1) as f32 * TILE_SIZE - h);
+                    break;
+                }
+            }
+            let Some(y) = placed else { continue };
+            let id = shared.alloc_id();
+            let entity = Entity::new(
+                id,
+                EntityKind::CharredSkeleton,
+                cell_x as f32 * TILE_SIZE,
+                y,
+            );
+            entities.insert(entity.clone());
+            spawned.push(entity);
+        }
+    }
+    drop(world);
+
+    for entity in spawned {
+        shared.broadcast_dim(Dimension::Underworld, ServerMessage::EntitySpawn { entity });
     }
 }
 
@@ -1519,7 +1901,7 @@ fn maybe_spawn_in_chunk(shared: &Shared, cx: i32, cy: i32) {
 /// same terrain never double-spawns, and it runs independently of
 /// [`maybe_spawn_in_chunk`].
 fn maybe_spawn_spiders(shared: &Shared, cx: i32, cy: i32) {
-    let mut world = shared.world.lock();
+    let mut world = shared.world(Dimension::Overworld).lock();
     let seed = world.generator.seed();
     if chunk_hash(seed, cx, cy, 100) % 100 >= SPIDER_CHUNK_CHANCE {
         return;
@@ -1533,7 +1915,7 @@ fn maybe_spawn_spiders(shared: &Shared, cx: i32, cy: i32) {
 
     let mut spawned = Vec::new();
     {
-        let mut entities = shared.entities.lock();
+        let mut entities = shared.entities(Dimension::Overworld).lock();
         for n in 0..count {
             // Scatter spawns across the chunk's columns.
             let lx = chunk_hash(seed, cx, cy, 102 + n) % CHUNK_SIZE as u32;
@@ -1565,7 +1947,7 @@ fn maybe_spawn_spiders(shared: &Shared, cx: i32, cy: i32) {
     drop(world);
 
     for entity in spawned {
-        shared.broadcast_all(ServerMessage::EntitySpawn { entity });
+        shared.broadcast_dim(Dimension::Overworld, ServerMessage::EntitySpawn { entity });
     }
 }
 
@@ -1614,9 +1996,10 @@ fn maybe_spawn_zombies(shared: &Shared, rng: &mut u32) {
         return;
     }
 
-    // world then entities, matching the lock order used elsewhere.
-    let world = shared.world.lock();
-    let mut entities = shared.entities.lock();
+    // Zombies and skeletons belong to the overworld night. world then entities,
+    // matching the lock order used elsewhere.
+    let world = shared.world(Dimension::Overworld).lock();
+    let mut entities = shared.entities(Dimension::Overworld).lock();
 
     let players: Vec<(f32, f32)> = entities
         .values()
@@ -1668,18 +2051,22 @@ fn maybe_spawn_zombies(shared: &Shared, rng: &mut u32) {
     entities.insert(mob.clone());
     drop(entities);
     drop(world);
-    shared.broadcast_all(ServerMessage::EntitySpawn { entity: mob });
+    shared.broadcast_dim(
+        Dimension::Overworld,
+        ServerMessage::EntitySpawn { entity: mob },
+    );
 }
 
-/// Spawn a dropped-block item at the center of cell `(cell_x, cell_y)`, popping
-/// it upward so it clears the player who mined it, and announce it to everyone.
-/// Mined/crafted drops are a single item at full durability.
-fn spawn_drop(shared: &Shared, cell_x: i32, cell_y: i32, block: BlockId) {
+/// Spawn a dropped-block item at the center of cell `(cell_x, cell_y)` in `dim`,
+/// popping it upward so it clears the player who mined it, and announce it to that
+/// dimension. Mined/crafted drops are a single item at full durability.
+fn spawn_drop(shared: &Shared, dim: Dimension, cell_x: i32, cell_y: i32, block: BlockId) {
     let (iw, ih) = ITEM_SIZE;
     let x = cell_x as f32 * TILE_SIZE + (TILE_SIZE - iw) * 0.5;
     let y = cell_y as f32 * TILE_SIZE + (TILE_SIZE - ih) * 0.5;
     spawn_item(
         shared,
+        dim,
         block,
         1,
         crate::block::max_durability(block),
@@ -1691,12 +2078,13 @@ fn spawn_drop(shared: &Shared, cell_x: i32, cell_y: i32, block: BlockId) {
     );
 }
 
-/// Spawn a dropped-item entity carrying its full stack and durability, with an
-/// initial velocity and a pickup delay, and announce it to everyone. The
-/// low-level primitive behind both mined drops and player-initiated drops.
+/// Spawn a dropped-item entity in `dim` carrying its full stack and durability,
+/// with an initial velocity and a pickup delay, and announce it to that
+/// dimension. The low-level primitive behind both mined drops and player drops.
 #[allow(clippy::too_many_arguments)]
 fn spawn_item(
     shared: &Shared,
+    dim: Dimension,
     block: BlockId,
     count: u32,
     durability: u16,
@@ -1723,8 +2111,8 @@ fn spawn_item(
     item.vx = vx;
     item.vy = vy;
     item.attack_cd = pickup_delay; // reused as the pickup-delay timer
-    shared.entities.lock().insert(item.clone());
-    shared.broadcast_all(ServerMessage::EntitySpawn { entity: item });
+    shared.entities(dim).lock().insert(item.clone());
+    shared.broadcast_dim(dim, ServerMessage::EntitySpawn { entity: item });
 }
 
 /// Periodically simulates non-player entities, applies survival rules, and
@@ -1746,36 +2134,43 @@ async fn entity_tick_loop(shared: Arc<Shared>) {
             return;
         }
 
-        let Step {
-            broadcasts,
-            respawns,
-            mut pickups,
-        } = step_entities(&shared);
-        for msg in broadcasts {
-            shared.broadcast_all(msg);
-        }
-        for (id, x, y) in respawns {
-            shared.send_to(id, ServerMessage::Respawn { x, y, died: true });
-        }
-        // Items were credited during the step; push each collector a fresh
-        // inventory snapshot (deduplicating repeat collectors).
-        pickups.sort_unstable();
-        pickups.dedup();
-        for pid in pickups {
-            shared.send_inventory(pid);
+        // Simulate each dimension independently, scoping its broadcasts to the
+        // clients currently in it.
+        for dim in Dimension::ALL {
+            let Step {
+                broadcasts,
+                respawns,
+                mut pickups,
+            } = step_entities(&shared, dim);
+            for msg in broadcasts {
+                shared.broadcast_dim(dim, msg);
+            }
+            for info in respawns {
+                shared.finish_respawn(info, dim);
+            }
+            // Items were credited during the step; push each collector a fresh
+            // inventory snapshot (deduplicating repeat collectors).
+            pickups.sort_unstable();
+            pickups.dedup();
+            for pid in pickups {
+                shared.send_inventory(pid);
+            }
         }
 
-        // Burn down lit campfires, extinguishing any that have run out of fuel.
-        for msg in shared.tick_campfires(TICK_DT) {
-            shared.broadcast_all(msg);
-        }
+        // Burn down lit campfires, extinguishing any that have run out of fuel,
+        // and gutter out spent charred-skeleton fire trails.
+        shared.tick_campfires(TICK_DT);
+        shared.tick_trail_fires(TICK_DT);
 
-        // Creep spreading water one cell outward through loaded terrain.
+        // Creep spreading water one cell outward through loaded terrain, per
+        // dimension.
         since_water_flow += TICK_DT;
         if since_water_flow >= WATER_FLOW_SECS {
             since_water_flow = 0.0;
-            for msg in shared.tick_water() {
-                shared.broadcast_all(msg);
+            for dim in Dimension::ALL {
+                for msg in shared.tick_water(dim) {
+                    shared.broadcast_dim(dim, msg);
+                }
             }
         }
 
@@ -1804,26 +2199,26 @@ async fn entity_tick_loop(shared: Arc<Shared>) {
     }
 }
 
-/// Outcome of one simulation tick: messages to broadcast to everyone, and
-/// per-player respawn targets to send to their owners.
+/// Outcome of one simulation tick (for one dimension): messages to broadcast to
+/// that dimension, and per-player respawn outcomes to enact for their owners.
 struct Step {
     broadcasts: Vec<ServerMessage>,
-    respawns: Vec<(EntityId, f32, f32)>,
+    respawns: Vec<RespawnInfo>,
     /// Players who collected an item this tick and so need a fresh inventory
     /// snapshot (sent after the entity locks are released). May contain repeats.
     pickups: Vec<EntityId>,
 }
 
-/// Advance every server-simulated entity by one tick. Players are skipped for
-/// motion (they are authoritative on their owning client) but can still be
-/// targeted and bitten by slimes at night.
+/// Advance every server-simulated entity in dimension `dim` by one tick. Players
+/// are skipped for motion (they are authoritative on their owning client) but can
+/// still be targeted and bitten by creatures and singed by fire.
 ///
-/// Locks `world` then `entities` for the whole step, matching the order used by
-/// [`spawn_slimes`] so the two can never deadlock.
-fn step_entities(shared: &Shared) -> Step {
+/// Locks `dim`'s `world` then its `entities` for the whole step, matching the
+/// order used elsewhere so the two can never deadlock.
+fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     let night = daylight::is_night(shared.time_of_day());
-    let mut world = shared.world.lock();
-    let mut entities = shared.entities.lock();
+    let mut world = shared.world(dim).lock();
+    let mut entities = shared.entities(dim).lock();
 
     // Snapshot player positions up front so slime targeting doesn't fight the
     // borrow checker over a second mutable handle into the map.
@@ -1886,6 +2281,11 @@ fn step_entities(shared: &Shared) -> Step {
         .filter(|e| matches!(e.kind, EntityKind::Skeleton))
         .map(|e| e.id)
         .collect();
+    let charred_skeleton_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::CharredSkeleton))
+        .map(|e| e.id)
+        .collect();
     let bone_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::Bone))
@@ -1908,6 +2308,9 @@ fn step_entities(shared: &Shared) -> Step {
     // player, the knockback `(vx, vy)` to shove it away from the attacker, and
     // the damage dealt (slimes nip, zombies hit hard).
     let mut bites: Vec<(EntityId, (f32, f32), i32)> = Vec::new();
+    // Cells where a chasing charred skeleton laid a tongue of fire this tick,
+    // registered with the trail-fire tracker once the world lock is released.
+    let mut new_trail_fires: Vec<(i32, i32)> = Vec::new();
 
     for id in slime_ids {
         let Some(e) = entities.get_mut(id) else {
@@ -2322,6 +2725,91 @@ fn step_entities(shared: &Shared) -> Step {
         broadcasts.push(ServerMessage::EntitySpawn { entity: bone });
     }
 
+    // Charred skeletons: the underworld's relentless brawlers. They charge any
+    // player on sight (at all hours — the underworld is always dark), hit harder
+    // than a zombie, and lay down a trail of fire behind them while closing in.
+    for id in charred_skeleton_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        // The fire-trail timer rides on the unused `flee` field for this kind.
+        e.flee = (e.flee - TICK_DT).max(0.0);
+        let home = *e.home_x.get_or_insert(e.x);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+
+        let target = nearest_player(&players, scx, scy, CHARRED_SKELETON_AGGRO);
+        let chasing = target.is_some();
+        let dir = match target {
+            Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -1.0,
+            Some(_) => 1.0,
+            None => wander_dir(scx, e.vx, home),
+        };
+
+        let m = step_ground(
+            &mut world,
+            (e.x, e.y, w, h),
+            e.vy,
+            dir,
+            CHARRED_SKELETON_SPEED,
+            chasing,
+        );
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        let ready_to_burn = chasing && e.flee <= 0.0;
+        if ready_to_burn {
+            e.flee = CHARRED_SKELETON_FIRE_INTERVAL;
+        }
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: m.vx,
+            vy: m.vy,
+        });
+
+        // Only while actively chasing does it scorch the ground: drop a flame in
+        // the (empty) cell at its feet, on a short interval so the trail is broken.
+        if ready_to_burn {
+            let fx = (m.x + w * 0.5) / TILE_SIZE;
+            let fy = (m.y + h - EPS) / TILE_SIZE;
+            let (fx, fy) = (fx.floor() as i32, fy.floor() as i32);
+            if world.get(fx, fy) == crate::block::AIR && world.set(fx, fy, crate::block::FIRE) {
+                new_trail_fires.push((fx, fy));
+                broadcasts.push(ServerMessage::BlockUpdate {
+                    dim,
+                    x: fx,
+                    y: fy,
+                    block: crate::block::FIRE,
+                });
+            }
+        }
+
+        // Land a heavy melee blow when a player is in reach and we're off cooldown.
+        if let Some((pid, px, py)) = target {
+            if e.attack_cd <= 0.0
+                && aabb_gap(m.x, m.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1)
+                    <= CHARRED_SKELETON_ATTACK_RANGE
+            {
+                e.attack_cd = CHARRED_SKELETON_ATTACK_INTERVAL;
+                let dir = if px + PLAYER_SIZE.0 * 0.5 >= m.x + w * 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                bites.push((
+                    pid,
+                    (dir * KNOCKBACK_X, -KNOCKBACK_Y),
+                    CHARRED_SKELETON_DAMAGE,
+                ));
+            }
+        }
+    }
+
     // Bones in flight: travel in a straight line (no gravity), striking the first
     // player they overlap or winking out on a wall or when their short life ends.
     let mut bone_despawns: Vec<EntityId> = Vec::new();
@@ -2440,13 +2928,61 @@ fn step_entities(shared: &Shared) -> Step {
         broadcasts.push(ServerMessage::EntityMoved { id, x, y, vx, vy });
     }
 
+    // Fire damage: a player whose body overlaps a burning cell is singed on a
+    // steady interval. Detected while the world lock is still held; applied below.
+    let mut fire_hits: Vec<EntityId> = Vec::new();
+    {
+        let mut cds = shared.fire_cd.lock();
+        for &(pid, px, py) in &players {
+            let cd = cds.entry(pid).or_insert(0.0);
+            *cd = (*cd - TICK_DT).max(0.0);
+            if *cd <= 0.0 && player_in_fire(&mut world, px, py) {
+                *cd = FIRE_DAMAGE_INTERVAL;
+                fire_hits.push(pid);
+            }
+        }
+    }
+
+    // Release the world lock before applying damage: a respawn at a campfire
+    // relocks the world to verify it, which would deadlock if we still held it.
+    drop(world);
+
     let mut respawns = Vec::new();
     for (pid, kb, damage) in bites {
-        let (msgs, respawn) =
-            apply_damage(&mut entities, pid, damage, kb, shared.respawn_target(pid));
+        let (msgs, respawn) = apply_damage(
+            &mut entities,
+            pid,
+            damage,
+            kb,
+            dim,
+            shared.respawn_target(pid),
+        );
         broadcasts.extend(msgs);
         if let Some(r) = respawn {
             respawns.push(r);
+        }
+    }
+    for pid in fire_hits {
+        let (msgs, respawn) = apply_damage(
+            &mut entities,
+            pid,
+            FIRE_DAMAGE,
+            (0.0, 0.0),
+            dim,
+            shared.respawn_target(pid),
+        );
+        broadcasts.extend(msgs);
+        if let Some(r) = respawn {
+            respawns.push(r);
+        }
+    }
+    drop(entities);
+
+    // Register the tongues of fire laid this tick so they burn out shortly.
+    if !new_trail_fires.is_empty() {
+        let mut tf = shared.trail_fires.lock();
+        for (x, y) in new_trail_fires {
+            tf.insert((dim, x, y), TRAIL_FIRE_LIFETIME);
         }
     }
 
@@ -2455,6 +2991,16 @@ fn step_entities(shared: &Shared) -> Step {
         respawns,
         pickups,
     }
+}
+
+/// Whether the player AABB at `(px, py)` overlaps any burning cell. Mirrors
+/// [`body_in_water`] for fire, so a player standing in flame takes damage.
+fn player_in_fire(world: &mut ServerWorld, px: f32, py: f32) -> bool {
+    let x0 = (px / TILE_SIZE).floor() as i32;
+    let x1 = ((px + PLAYER_SIZE.0 - EPS) / TILE_SIZE).floor() as i32;
+    let y0 = (py / TILE_SIZE).floor() as i32;
+    let y1 = ((py + PLAYER_SIZE.1 - EPS) / TILE_SIZE).floor() as i32;
+    (y0..=y1).any(|ty| (x0..=x1).any(|tx| crate::block::is_fire(world.get(tx, ty))))
 }
 
 /// Nearest player (returned as its top-left `(id, x, y)`) whose center is within
@@ -2484,17 +3030,30 @@ fn aabb_gap(ax: f32, ay: f32, aw: f32, ah: f32, bx: f32, by: f32, bw: f32, bh: f
     gx.max(gy)
 }
 
-/// Apply `amount` damage to entity `id` (caller already holds the entities
-/// lock). Returns the messages to broadcast and, if a *player* died, the
-/// `(id, x, y)` respawn target to send to its owner. A non-player that dies is
-/// removed from the world.
+/// Where a freshly killed player must be sent to respawn: the destination
+/// dimension and world-pixel position. Resolved after the entity locks are
+/// released (see [`Shared::finish_respawn`]) since a respawn may cross dimensions.
+struct RespawnInfo {
+    id: EntityId,
+    dim: Dimension,
+    x: f32,
+    y: f32,
+}
+
+/// Apply `amount` damage to entity `id` (caller already holds the entities lock
+/// for `current_dim`). Returns the messages to broadcast and, if a *player* died,
+/// the [`RespawnInfo`] to enact once locks are released. A non-player that dies is
+/// removed from the world. A player who dies is healed; if their respawn is in
+/// `current_dim` it is repositioned in place here, otherwise it is left untouched
+/// for [`Shared::enter_dimension`] to move it across.
 fn apply_damage(
     entities: &mut Entities,
     id: EntityId,
     amount: i32,
     knockback: (f32, f32),
-    respawn: (f32, f32),
-) -> (Vec<ServerMessage>, Option<(EntityId, f32, f32)>) {
+    current_dim: Dimension,
+    respawn: (Dimension, f32, f32),
+) -> (Vec<ServerMessage>, Option<RespawnInfo>) {
     let Some(e) = entities.get_mut(id) else {
         return (Vec::new(), None);
     };
@@ -2533,9 +3092,14 @@ fn apply_damage(
     if e.kind.is_player() {
         // Death = respawn at full health at the player's respawn point (their last
         // campfire, or world spawn if they haven't used one).
+        let (rdim, rx, ry) = respawn;
         e.health = e.max_health;
-        e.x = respawn.0;
-        e.y = respawn.1;
+        // A same-dimension respawn repositions the avatar here; a cross-dimension
+        // one is left for enter_dimension to relocate after locks are released.
+        if rdim == current_dim {
+            e.x = rx;
+            e.y = ry;
+        }
         let health = e.health;
         let max_health = e.max_health;
         msgs.push(ServerMessage::EntityHealth {
@@ -2543,7 +3107,15 @@ fn apply_damage(
             health,
             max_health,
         });
-        (msgs, Some((id, respawn.0, respawn.1)))
+        (
+            msgs,
+            Some(RespawnInfo {
+                id,
+                dim: rdim,
+                x: rx,
+                y: ry,
+            }),
+        )
     } else {
         entities.remove(id);
         msgs.push(ServerMessage::EntityDespawn { id });
@@ -2889,8 +3461,11 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
         sx,
         sy,
     );
+    // Fresh connections begin in the overworld; a returning player may be moved
+    // to the underworld on `Hello` if that's where they left off.
+    shared.client_dim.lock().insert(id, Dimension::Overworld);
     {
-        let mut entities = shared.entities.lock();
+        let mut entities = shared.entities(Dimension::Overworld).lock();
         for e in entities.values() {
             let _ = tx.send(ServerMessage::EntitySpawn { entity: e.clone() });
         }
@@ -2900,7 +3475,11 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
         .clients
         .lock()
         .insert(id, ClientHandle { tx: tx.clone() });
-    shared.broadcast_except(id, ServerMessage::EntitySpawn { entity: player });
+    shared.broadcast_dim_except(
+        Dimension::Overworld,
+        id,
+        ServerMessage::EntitySpawn { entity: player },
+    );
     // Start with an empty inventory; a returning player gets theirs restored on
     // Hello. Either way the owner is told its contents.
     shared.inventories.lock().insert(id, Inventory::new());
@@ -2925,7 +3504,9 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     log::info!("player {id} is '{name}'");
                     // If this name has saved state, move them back into it.
                     let restored = shared.saved_players.lock().remove(&name);
-                    if let Some(e) = shared.entities.lock().get_mut(id) {
+                    // The avatar currently lives in the overworld collection it was
+                    // registered into; set its name (and overworld-relative state).
+                    if let Some(e) = shared.entities(Dimension::Overworld).lock().get_mut(id) {
                         e.kind = EntityKind::Player { name };
                         if let Some(sp) = &restored {
                             e.x = sp.x;
@@ -2943,41 +3524,66 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         shared.send_inventory(id);
                         // Restore their personal waypoints.
                         shared.waypoints.lock().insert(id, sp.waypoints.clone());
-                        // Teleport the owner's avatar and resync its health. This
-                        // is a reconnect, not a death, so no death marker is dropped.
-                        let _ = tx.send(ServerMessage::Respawn {
-                            x: sp.x,
-                            y: sp.y,
-                            died: false,
-                        });
+                        if sp.dim == Dimension::Overworld {
+                            // Teleport the owner's avatar and resync its health. This
+                            // is a reconnect, not a death, so no death marker drops.
+                            let _ = tx.send(ServerMessage::Respawn {
+                                x: sp.x,
+                                y: sp.y,
+                                died: false,
+                            });
+                            shared.broadcast_dim_except(
+                                Dimension::Overworld,
+                                id,
+                                ServerMessage::EntityMoved {
+                                    id,
+                                    x: sp.x,
+                                    y: sp.y,
+                                    vx: 0.0,
+                                    vy: 0.0,
+                                },
+                            );
+                        } else {
+                            // They logged out in the underworld: move the avatar
+                            // there (this clears and re-streams the client's world).
+                            shared.enter_dimension(id, sp.dim, sp.x, sp.y);
+                        }
                         shared.broadcast_all(ServerMessage::EntityHealth {
                             id,
                             health: sp.health,
                             max_health: crate::entity::PLAYER_MAX_HEALTH,
                         });
-                        shared.broadcast_except(
-                            id,
-                            ServerMessage::EntityMoved {
-                                id,
-                                x: sp.x,
-                                y: sp.y,
-                                vx: 0.0,
-                                vy: 0.0,
-                            },
-                        );
                     }
                     // Sync waypoints + home now that any saved state is restored
                     // (a fresh player just gets an empty list and the world spawn).
                     shared.send_waypoints(id);
                 }
-                ClientMessage::RequestChunk { cx, cy } => {
-                    let (blocks, fresh) = shared.world.lock().chunk_blocks(cx, cy);
-                    let _ = tx.send(ServerMessage::Chunk { cx, cy, blocks });
-                    // A chunk coming into existence for the first time has a
-                    // medium chance to seed creatures into its terrain.
+                ClientMessage::RequestChunk { dim, cx, cy } => {
+                    // Only serve chunks for the dimension the player is actually in;
+                    // a stale request from just before a transition is ignored.
+                    let cur = shared.dim_of(id);
+                    if dim != cur {
+                        continue;
+                    }
+                    let (blocks, fresh) = shared.world(dim).lock().chunk_blocks(cx, cy);
+                    let _ = tx.send(ServerMessage::Chunk {
+                        dim,
+                        cx,
+                        cy,
+                        blocks,
+                    });
+                    // A chunk coming into existence for the first time has a chance
+                    // to seed dimension-appropriate creatures into its terrain.
                     if fresh {
-                        maybe_spawn_in_chunk(&shared, cx, cy);
-                        maybe_spawn_spiders(&shared, cx, cy);
+                        match dim {
+                            Dimension::Overworld => {
+                                maybe_spawn_in_chunk(&shared, cx, cy);
+                                maybe_spawn_spiders(&shared, cx, cy);
+                            }
+                            Dimension::Underworld => {
+                                maybe_spawn_charred_skeletons(&shared, cx, cy);
+                            }
+                        }
                     }
                 }
                 ClientMessage::SetBlock {
@@ -2986,10 +3592,11 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     block: _,
                     held,
                 } => {
+                    let dim = shared.dim_of(id);
                     // Mining is gated by the player's melee reach — the same limit
                     // that governs attacks and placement.
                     let in_reach = {
-                        let entities = shared.entities.lock();
+                        let entities = shared.entities(dim).lock();
                         entities.get(id).is_some_and(|p| {
                             let (pw, ph) = p.size();
                             aabb_gap(
@@ -3007,10 +3614,11 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     if !in_reach {
                         // Out of range: resync the cell so the client's optimistic
                         // break is undone.
-                        let actual = shared.world.lock().get(x, y);
+                        let actual = shared.world(dim).lock().get(x, y);
                         shared.send_to(
                             id,
                             ServerMessage::BlockUpdate {
+                                dim,
                                 x,
                                 y,
                                 block: actual,
@@ -3021,7 +3629,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     // Breaking: clear the cell and drop its block on the ground
                     // for the player to walk over and collect.
                     let mined = {
-                        let mut w = shared.world.lock();
+                        let mut w = shared.world(dim).lock();
                         let prev = w.get(x, y);
                         if prev != crate::block::AIR && w.set(x, y, crate::block::AIR) {
                             Some(prev)
@@ -3030,15 +3638,23 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         }
                     };
                     if let Some(prev) = mined {
-                        shared.broadcast_all(ServerMessage::BlockUpdate {
-                            x,
-                            y,
-                            block: crate::block::AIR,
-                        });
+                        shared.broadcast_dim(
+                            dim,
+                            ServerMessage::BlockUpdate {
+                                dim,
+                                x,
+                                y,
+                                block: crate::block::AIR,
+                            },
+                        );
                         // A mined campfire forgets its burn timer (it drops as a
-                        // plain unlit campfire via mined_drop).
+                        // plain unlit campfire via mined_drop). A snuffed trail-fire
+                        // cell likewise stops being tracked.
                         if crate::block::is_campfire(prev) {
-                            shared.campfires.lock().remove(&(x, y));
+                            shared.campfires.lock().remove(&(dim, x, y));
+                        }
+                        if crate::block::is_fire(prev) {
+                            shared.trail_fires.lock().remove(&(dim, x, y));
                         }
                         // Tool-gated blocks (stone, iron ore) only yield a drop
                         // when mined with a strong enough pickaxe; broken with too
@@ -3048,36 +3664,46 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             && let Some(drop) =
                                 crate::block::mined_drop_rolled(prev, shared.rand_unit())
                         {
-                            spawn_drop(&shared, x, y, drop);
+                            spawn_drop(&shared, dim, x, y, drop);
                         }
                         // Logs are special: breaking one updates the placed-log
                         // bookkeeping, an axe fells the whole tree, and any leaves
                         // it leaves stranded decay (still shedding their drops).
                         if prev == crate::block::LOG {
-                            let was_placed = shared.placed_logs.lock().remove(&(x, y));
+                            let was_placed = shared.placed_logs.lock().remove(&(dim, x, y));
                             let mut removed_logs = vec![(x, y)];
                             // An axe sweeps through a naturally-grown trunk, felling
                             // every connected log at once; a player-placed log is
                             // exempt and just breaks on its own.
                             if !was_placed && crate::block::is_axe(held) {
-                                for (lx, ly) in shared.chop_connected_logs(x, y) {
-                                    shared.broadcast_all(ServerMessage::BlockUpdate {
-                                        x: lx,
-                                        y: ly,
-                                        block: crate::block::AIR,
-                                    });
-                                    spawn_drop(&shared, lx, ly, crate::block::LOG);
+                                for (lx, ly) in shared.chop_connected_logs(dim, x, y) {
+                                    shared.broadcast_dim(
+                                        dim,
+                                        ServerMessage::BlockUpdate {
+                                            dim,
+                                            x: lx,
+                                            y: ly,
+                                            block: crate::block::AIR,
+                                        },
+                                    );
+                                    spawn_drop(&shared, dim, lx, ly, crate::block::LOG);
                                     removed_logs.push((lx, ly));
                                 }
                             }
-                            for (lx, ly, drop) in shared.decay_unsupported_leaves(&removed_logs) {
-                                shared.broadcast_all(ServerMessage::BlockUpdate {
-                                    x: lx,
-                                    y: ly,
-                                    block: crate::block::AIR,
-                                });
+                            for (lx, ly, drop) in
+                                shared.decay_unsupported_leaves(dim, &removed_logs)
+                            {
+                                shared.broadcast_dim(
+                                    dim,
+                                    ServerMessage::BlockUpdate {
+                                        dim,
+                                        x: lx,
+                                        y: ly,
+                                        block: crate::block::AIR,
+                                    },
+                                );
                                 if let Some(drop) = drop {
-                                    spawn_drop(&shared, lx, ly, drop);
+                                    spawn_drop(&shared, dim, lx, ly, drop);
                                 }
                             }
                         }
@@ -3086,12 +3712,16 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         // it. Only the cell the player struck drops an item (handled
                         // above), so a long run yields one rope ladder, not many.
                         if prev == crate::block::ROPE_LADDER {
-                            for (cx, cy) in shared.collapse_rope_ladder(x, y) {
-                                shared.broadcast_all(ServerMessage::BlockUpdate {
-                                    x: cx,
-                                    y: cy,
-                                    block: crate::block::AIR,
-                                });
+                            for (cx, cy) in shared.collapse_rope_ladder(dim, x, y) {
+                                shared.broadcast_dim(
+                                    dim,
+                                    ServerMessage::BlockUpdate {
+                                        dim,
+                                        x: cx,
+                                        y: cy,
+                                        block: crate::block::AIR,
+                                    },
+                                );
                             }
                         }
                         // Mining wears the held tool: a pickaxe's intended job
@@ -3106,6 +3736,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     // ladder is stricter: it mounts on the side of a wall, so it
                     // needs a solid block to the left or right (or a ladder
                     // directly above, to extend a run downward).
+                    let dim = shared.dim_of(id);
                     let held_slot = shared.peek_slot(id, slot as usize);
                     let placing_ladder = held_slot.is_some_and(crate::block::is_climbable);
                     // A rope ladder may additionally hang from a solid block
@@ -3114,7 +3745,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     // wall.
                     let placing_rope = held_slot.is_some_and(crate::block::is_rope_ladder);
                     let supported = {
-                        let mut world = shared.world.lock();
+                        let mut world = shared.world(dim).lock();
                         if world.get(x, y) != crate::block::AIR {
                             false
                         } else if placing_ladder {
@@ -3132,7 +3763,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     // block can only go where the player could swing — the same
                     // limit that governs attacks.
                     let in_reach = {
-                        let entities = shared.entities.lock();
+                        let entities = shared.entities(dim).lock();
                         entities.get(id).is_some_and(|p| {
                             let (pw, ph) = p.size();
                             aabb_gap(
@@ -3150,10 +3781,11 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     if !supported || !in_reach {
                         // Reject: resync the cell's true contents and the inventory
                         // so the client's optimistic placement is undone.
-                        let actual = shared.world.lock().get(x, y);
+                        let actual = shared.world(dim).lock().get(x, y);
                         shared.send_to(
                             id,
                             ServerMessage::BlockUpdate {
+                                dim,
                                 x,
                                 y,
                                 block: actual,
@@ -3169,7 +3801,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     match shared.peek_slot(id, slot as usize) {
                         // Plain items (bark, sticks, tools) can't be placed —
                         // leave the slot untouched and just resync it.
-                        Some(block) if !shared.world.lock().registry.is_placeable(block) => {
+                        Some(block) if !shared.world(dim).lock().registry.is_placeable(block) => {
                             shared.send_inventory(id);
                         }
                         Some(_) => {
@@ -3179,29 +3811,32 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                     // A rope ladder unrolls downward from the target
                                     // cell, filling the shaft until it bottoms out or
                                     // its rope runs out. One placed item, many cells.
-                                    let filled = shared.roll_rope_ladder(x, y);
+                                    let filled = shared.roll_rope_ladder(dim, x, y);
                                     if filled.is_empty() {
                                         shared.add_item(id, block); // nothing placed: refund
                                     } else {
                                         for (fx, fy) in filled {
-                                            shared.broadcast_all(ServerMessage::BlockUpdate {
-                                                x: fx,
-                                                y: fy,
-                                                block,
-                                            });
+                                            shared.broadcast_dim(
+                                                dim,
+                                                ServerMessage::BlockUpdate {
+                                                    dim,
+                                                    x: fx,
+                                                    y: fy,
+                                                    block,
+                                                },
+                                            );
                                         }
                                     }
-                                } else if shared.world.lock().set(x, y, block) {
+                                } else if shared.world(dim).lock().set(x, y, block) {
                                     // Remember player-placed logs so an axe's
                                     // tree-felling spares what the player built.
                                     if block == crate::block::LOG {
-                                        shared.placed_logs.lock().insert((x, y));
+                                        shared.placed_logs.lock().insert((dim, x, y));
                                     }
-                                    shared.broadcast_all(ServerMessage::BlockUpdate {
-                                        x,
-                                        y,
-                                        block,
-                                    });
+                                    shared.broadcast_dim(
+                                        dim,
+                                        ServerMessage::BlockUpdate { dim, x, y, block },
+                                    );
                                 } else {
                                     // Cell was occupied: refund the spent block.
                                     shared.add_item(id, block);
@@ -3212,10 +3847,11 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         None => {
                             // Empty slot: correct the client's optimistic guess by
                             // resending the cell's true contents and inventory.
-                            let actual = shared.world.lock().get(x, y);
+                            let actual = shared.world(dim).lock().get(x, y);
                             shared.send_to(
                                 id,
                                 ServerMessage::BlockUpdate {
+                                    dim,
                                     x,
                                     y,
                                     block: actual,
@@ -3226,10 +3862,11 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     }
                 }
                 ClientMessage::UseBucket { x, y, slot } => {
+                    let dim = shared.dim_of(id);
                     // Gated by the player's melee reach, the same limit governing
                     // mining and placement.
                     let in_reach = {
-                        let entities = shared.entities.lock();
+                        let entities = shared.entities(dim).lock();
                         entities.get(id).is_some_and(|p| {
                             let (pw, ph) = p.size();
                             aabb_gap(
@@ -3249,10 +3886,11 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     } else {
                         // Out of range: resync the cell and inventory to undo the
                         // client's optimistic use.
-                        let actual = shared.world.lock().get(x, y);
+                        let actual = shared.world(dim).lock().get(x, y);
                         shared.send_to(
                             id,
                             ServerMessage::BlockUpdate {
+                                dim,
                                 x,
                                 y,
                                 block: actual,
@@ -3286,19 +3924,13 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     shared.send_inventory(id);
                 }
                 ClientMessage::Eat { slot } => {
+                    let dim = shared.dim_of(id);
                     let (msgs, respawn) = shared.eat(id, slot as usize);
                     for m in msgs {
-                        shared.broadcast_all(m);
+                        shared.broadcast_dim(dim, m);
                     }
-                    if let Some((rid, rx, ry)) = respawn {
-                        shared.send_to(
-                            rid,
-                            ServerMessage::Respawn {
-                                x: rx,
-                                y: ry,
-                                died: true,
-                            },
-                        );
+                    if let Some(info) = respawn {
+                        shared.finish_respawn(info, dim);
                     }
                     shared.send_inventory(id);
                 }
@@ -3325,11 +3957,19 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     shared.cook(id, x, y, recipe as usize, count);
                 }
                 ClientMessage::PlayerMove { x, y } => {
-                    if let Some(e) = shared.entities.lock().get_mut(id) {
+                    let dim = shared.dim_of(id);
+                    if let Some(e) = shared.entities(dim).lock().get_mut(id) {
                         e.x = x;
                         e.y = y;
                     }
-                    shared.broadcast_except(
+                    // Falling off the bottom of the overworld (or climbing out the
+                    // top of the underworld) moves the player across dimensions; a
+                    // transition supersedes the stale position broadcast.
+                    if shared.maybe_transition(id, dim, x, y) {
+                        continue;
+                    }
+                    shared.broadcast_dim_except(
+                        dim,
                         id,
                         ServerMessage::EntityMoved {
                             id,
@@ -3341,10 +3981,11 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     );
                 }
                 ClientMessage::Attack { target, held } => {
+                    let dim = shared.dim_of(id);
                     // Validate reach and, if good, compute the knockback shoving
                     // the target away from the attacker.
                     let knockback = {
-                        let entities = shared.entities.lock();
+                        let entities = shared.entities(dim).lock();
                         match (entities.get(id), entities.get(target)) {
                             (Some(a), Some(b)) => {
                                 let (aw, ah) = a.size();
@@ -3369,42 +4010,37 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         // Snapshot the victim's kind and position before the hit,
                         // so a fatal blow can spill its loot where it fell.
                         let victim = {
-                            let entities = shared.entities.lock();
+                            let entities = shared.entities(dim).lock();
                             entities.get(target).map(|e| (e.kind.clone(), e.x, e.y))
                         };
+                        let respawn_target = shared.respawn_target(target);
                         let (msgs, respawn) = {
-                            let mut entities = shared.entities.lock();
+                            let mut entities = shared.entities(dim).lock();
                             apply_damage(
                                 &mut entities,
                                 target,
                                 crate::block::attack_damage(held),
                                 kb,
-                                shared.respawn_target(target),
+                                dim,
+                                respawn_target,
                             )
                         };
                         for m in msgs {
-                            shared.broadcast_all(m);
+                            shared.broadcast_dim(dim, m);
                         }
-                        if let Some((rid, rx, ry)) = respawn {
-                            shared.send_to(
-                                rid,
-                                ServerMessage::Respawn {
-                                    x: rx,
-                                    y: ry,
-                                    died: true,
-                                },
-                            );
+                        if let Some(info) = respawn {
+                            shared.finish_respawn(info, dim);
                         }
                         // If that killed a creature (it's no longer in the world),
                         // drop whatever it carries — animals leave raw meat.
                         if let Some((kind, vx, vy)) = victim
-                            && shared.entities.lock().get(target).is_none()
+                            && shared.entities(dim).lock().get(target).is_none()
                         {
                             let cx = (vx / TILE_SIZE) as i32;
                             let cy = (vy / TILE_SIZE) as i32;
                             for &(item, n) in creature_loot(&kind) {
                                 for _ in 0..n {
-                                    spawn_drop(&shared, cx, cy, item);
+                                    spawn_drop(&shared, dim, cx, cy, item);
                                 }
                             }
                         }
@@ -3415,28 +4051,17 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 }
                 ClientMessage::FallDamage { amount } => {
                     if amount > 0 {
+                        let dim = shared.dim_of(id);
+                        let respawn_target = shared.respawn_target(id);
                         let (msgs, respawn) = {
-                            let mut entities = shared.entities.lock();
-                            apply_damage(
-                                &mut entities,
-                                id,
-                                amount,
-                                (0.0, 0.0),
-                                shared.respawn_target(id),
-                            )
+                            let mut entities = shared.entities(dim).lock();
+                            apply_damage(&mut entities, id, amount, (0.0, 0.0), dim, respawn_target)
                         };
                         for m in msgs {
-                            shared.broadcast_all(m);
+                            shared.broadcast_dim(dim, m);
                         }
-                        if let Some((rid, rx, ry)) = respawn {
-                            shared.send_to(
-                                rid,
-                                ServerMessage::Respawn {
-                                    x: rx,
-                                    y: ry,
-                                    died: true,
-                                },
-                            );
+                        if let Some(info) = respawn {
+                            shared.finish_respawn(info, dim);
                         }
                     }
                 }
@@ -3448,7 +4073,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     if !trimmed.is_empty() {
                         let text: String = trimmed.chars().take(MAX_CHAT_LEN).collect();
                         let from = shared
-                            .entities
+                            .entities(shared.dim_of(id))
                             .lock()
                             .get(id)
                             .and_then(|e| match &e.kind {
@@ -3474,17 +4099,20 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 }
                 ClientMessage::SpawnEntity { kind, x, y } if is_dev => {
                     // Never let dev spawn a player avatar (those are owned by a
-                    // connection); only server-simulated creatures.
+                    // connection); only server-simulated creatures, into the
+                    // dimension the dev is currently in.
                     if !kind.is_player() {
+                        let dim = shared.dim_of(id);
                         let eid = shared.alloc_id();
                         let entity = Entity::new(eid, kind, x, y);
-                        shared.entities.lock().insert(entity.clone());
-                        shared.broadcast_all(ServerMessage::EntitySpawn { entity });
+                        shared.entities(dim).lock().insert(entity.clone());
+                        shared.broadcast_dim(dim, ServerMessage::EntitySpawn { entity });
                     }
                 }
                 ClientMessage::DebugSetBlock { x, y, block } if is_dev => {
-                    if shared.world.lock().set(x, y, block) {
-                        shared.broadcast_all(ServerMessage::BlockUpdate { x, y, block });
+                    let dim = shared.dim_of(id);
+                    if shared.world(dim).lock().set(x, y, block) {
+                        shared.broadcast_dim(dim, ServerMessage::BlockUpdate { dim, x, y, block });
                     }
                 }
                 // Unauthorized dev commands from a non-creator are ignored.
@@ -3499,8 +4127,11 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
     .await;
 
     // Cleanup. Preserve the player's state so they resume where they left off.
+    let dim = shared.dim_of(id);
     shared.clients.lock().remove(&id);
-    let removed = shared.entities.lock().remove(id);
+    shared.client_dim.lock().remove(&id);
+    shared.fire_cd.lock().remove(&id);
+    let removed = shared.entities(dim).lock().remove(id);
     let inventory = shared.inventories.lock().remove(&id).unwrap_or_default();
     let respawn = shared.respawn_points.lock().remove(&id);
     let waypoints = shared.waypoints.lock().remove(&id).unwrap_or_default();
@@ -3521,12 +4152,13 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 y,
                 health,
                 inventory,
+                dim,
                 respawn,
                 waypoints,
             },
         );
     }
-    shared.broadcast_all(ServerMessage::EntityDespawn { id });
+    shared.broadcast_dim_except(dim, id, ServerMessage::EntityDespawn { id });
     writer.abort();
     log::info!("player {id} disconnected");
     read_result
