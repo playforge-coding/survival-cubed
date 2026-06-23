@@ -87,6 +87,25 @@ fn sanitize_world_name(input: &str) -> Option<String> {
     }
 }
 
+/// Resolve an item-giver query to a [`BlockId`]. The query is either a numeric
+/// id (`"22"`) or a registry name (`"cooked_meat"`, also accepting spaces or
+/// dashes in place of underscores, case-insensitively). Returns `None` for an
+/// empty, out-of-range, or unknown query, and never resolves to air.
+fn resolve_item(registry: &BlockRegistry, query: &str) -> Option<BlockId> {
+    let q = query.trim();
+    if q.is_empty() {
+        return None;
+    }
+    if let Ok(id) = q.parse::<BlockId>() {
+        return ((id as usize) < registry.len() && id != AIR).then_some(id);
+    }
+    let norm = q.to_ascii_lowercase().replace([' ', '-'], "_");
+    registry
+        .iter()
+        .find(|d| d.id != AIR && d.name == norm)
+        .map(|d| d.id)
+}
+
 /// Entry point: build the app and run the winit event loop.
 pub fn run() -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
@@ -317,6 +336,10 @@ struct App {
     /// Whether dev mode is requested for the next world. Takes effect only when
     /// this client creates/hosts the server (a remote join is never the creator).
     debug_enabled: bool,
+    /// Item id or name typed into the dev-tools item giver.
+    give_item_input: String,
+    /// How many of the item the dev-tools item giver hands over per click.
+    give_item_count: u32,
 
     net: Option<NetHandle>,
     server: Option<RunningServer>,
@@ -361,6 +384,8 @@ impl App {
             dev_seq: String::new(),
             dev_unlocked: false,
             debug_enabled: false,
+            give_item_input: String::new(),
+            give_item_count: 1,
             net: None,
             server: None,
             pending_tofu: None,
@@ -1851,8 +1876,13 @@ impl App {
             (g.fly, g.time_of_day, g.debug_block, g.pos)
         };
         let registry = self.registry.clone();
+        // The item-giver input lives on `self`, but the window closure below
+        // doesn't borrow `self`; pull the fields into locals and write them back.
+        let mut give_input = std::mem::take(&mut self.give_item_input);
+        let mut give_count = self.give_item_count;
         let mut set_time: Option<f32> = None;
         let mut spawn: Option<EntityKind> = None;
+        let mut give: Option<(BlockId, u32)> = None;
 
         egui::Window::new("🛠 Dev tools")
             .anchor(egui::Align2::RIGHT_TOP, [-8.0, 56.0])
@@ -1927,6 +1957,36 @@ impl App {
                         }
                     }
                 });
+
+                ui.separator();
+                ui.label("Give item (id or name)");
+                let resolved = resolve_item(&registry, &give_input);
+                ui.horizontal(|ui| {
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut give_input)
+                            .desired_width(120.0)
+                            .hint_text("id or name"),
+                    );
+                    ui.add(egui::DragValue::new(&mut give_count).range(1..=999));
+                    let submit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let enabled = resolved.is_some();
+                    if ui.add_enabled(enabled, egui::Button::new("Give")).clicked()
+                        || (submit && enabled)
+                    {
+                        give = resolved.map(|item| (item, give_count.max(1)));
+                        give_input.clear();
+                    }
+                });
+                // Resolved-item preview / typo warning under the field.
+                match resolved {
+                    Some(item) => {
+                        ui.label(format!("→ {} (#{item})", registry.get(item).name));
+                    }
+                    None if !give_input.trim().is_empty() => {
+                        ui.colored_label(egui::Color32::LIGHT_RED, "no such item");
+                    }
+                    None => {}
+                }
             });
 
         // Apply UI changes back to game state.
@@ -1937,6 +1997,9 @@ impl App {
                 g.time_of_day = t; // optimistic; the server confirms via TimeOfDay
             }
         }
+        // Restore the item-giver input/count edited inside the window closure.
+        self.give_item_input = give_input;
+        self.give_item_count = give_count;
         // Forward authoritative-state changes to the server.
         if let Some(net) = &self.net {
             if let Some(t) = set_time {
@@ -1948,6 +2011,9 @@ impl App {
                     x: player_pos.x,
                     y: player_pos.y,
                 });
+            }
+            if let Some((item, count)) = give {
+                let _ = net.commands.send(NetCommand::GiveItem { item, count });
             }
         }
     }

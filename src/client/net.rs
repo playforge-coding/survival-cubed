@@ -232,6 +232,11 @@ pub enum NetCommand {
         x: f32,
         y: f32,
     },
+    /// Dev mode: drop `count` of item `item` straight into the dev's inventory.
+    GiveItem {
+        item: BlockId,
+        count: u32,
+    },
     /// Dev mode: place `block` at a world cell for free (infinite blocks).
     DebugSetBlock {
         x: i32,
@@ -436,6 +441,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::FallDamage { amount } => ClientMessage::FallDamage { amount },
         NetCommand::SetTime { t } => ClientMessage::SetTime { t },
         NetCommand::SpawnEntity { kind, x, y } => ClientMessage::SpawnEntity { kind, x, y },
+        NetCommand::GiveItem { item, count } => ClientMessage::GiveItem { item, count },
         NetCommand::DebugSetBlock { x, y, block } => ClientMessage::DebugSetBlock { x, y, block },
         NetCommand::Chat { text } => ClientMessage::Chat { text },
         NetCommand::Disconnect => unreachable!("handled before conversion"),

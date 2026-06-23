@@ -36,7 +36,7 @@ pub struct Waypoint {
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -167,6 +167,10 @@ pub enum ClientMessage {
     /// Debug: set the block at a world cell directly, with no inventory cost or
     /// adjacency requirement (used by dev mode's infinite-block placement).
     DebugSetBlock { x: i32, y: i32, block: BlockId },
+    /// Debug: drop `count` of item `item` straight into the dev's inventory (the
+    /// item-giver UI). The server validates `item` is a real id and stacks it in,
+    /// then resyncs the inventory.
+    GiveItem { item: BlockId, count: u32 },
     /// Send a line of chat. The server attributes it to this connection's
     /// player name and rebroadcasts it to everyone (see [`ServerMessage::Chat`]).
     Chat { text: String },

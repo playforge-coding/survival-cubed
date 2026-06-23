@@ -4633,9 +4633,28 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         shared.broadcast_dim(dim, ServerMessage::BlockUpdate { dim, x, y, block });
                     }
                 }
+                ClientMessage::GiveItem { item, count } if is_dev => {
+                    // Reject unknown ids (and air) so a typo can't inject a bogus
+                    // stack; the registry treats out-of-range ids as air.
+                    let known = {
+                        let dim = shared.dim_of(id);
+                        let world = shared.world(dim).lock();
+                        item != crate::block::AIR && (item as usize) < world.registry.len()
+                    };
+                    if known {
+                        shared
+                            .inventories
+                            .lock()
+                            .entry(id)
+                            .or_default()
+                            .add(item, count.max(1));
+                        shared.send_inventory(id);
+                    }
+                }
                 // Unauthorized dev commands from a non-creator are ignored.
                 ClientMessage::SetTime { .. }
                 | ClientMessage::SpawnEntity { .. }
+                | ClientMessage::GiveItem { .. }
                 | ClientMessage::DebugSetBlock { .. } => {
                     log::debug!("ignoring dev command from unauthorized player {id}");
                 }
