@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 
 use crate::block::BlockRegistry;
 use crate::daylight;
-use crate::entity::{Entities, Entity, EntityId, EntityKind, ITEM_SIZE, PLAYER_SIZE};
+use crate::entity::{BONE_SIZE, Entities, Entity, EntityId, EntityKind, ITEM_SIZE, PLAYER_SIZE};
 use crate::inventory::Inventory;
 use crate::net::{VERSION_MISMATCH_CLOSE, fingerprint, read_msg, read_version, write_msg};
 use crate::protocol::{ALPN, BlockId, ClientMessage, PROTOCOL_VERSION, ServerMessage, Waypoint};
@@ -86,6 +86,32 @@ const SPIDER_CHUNK_MAX: u32 = 2;
 /// they only nest in the underground caverns and never in surface tunnels that
 /// open to daylight. Sits well below the surface baseline (`WORLD_HEIGHT / 2`).
 const SPIDER_CAVERN_MIN_Y: i32 = WORLD_HEIGHT * 11 / 16;
+/// Stalking speed of a skeleton, in pixels/second — a touch quicker than a
+/// zombie, since it wants to reposition for a clean shot rather than just maul.
+const SKELETON_SPEED: f32 = 22.0;
+/// How far (px) a skeleton notices a player and begins stalking/firing.
+const SKELETON_AGGRO: f32 = 240.0;
+/// Maximum gap (px between AABBs) at which a skeleton will loose a bone — it
+/// stops advancing and throws once a player is this close.
+const SKELETON_THROW_RANGE: f32 = 190.0;
+/// Standoff gap (px between AABBs) a skeleton tries to keep: it backs away from a
+/// player closer than this so it can keep peppering them from range.
+const SKELETON_KEEP_DIST: f32 = 90.0;
+/// Seconds a skeleton waits between throws.
+const SKELETON_THROW_INTERVAL: f32 = 1.6;
+/// Of the night undead the server spawns near players, the percent that arrive as
+/// skeletons rather than zombies.
+const SKELETON_SPAWN_PERCENT: u32 = 30;
+/// Flight speed of a thrown bone, in pixels/second.
+const BONE_SPEED: f32 = 170.0;
+/// Damage a bone deals on striking a player.
+const BONE_DAMAGE: i32 = 5;
+/// Seconds a thrown bone stays airborne before it gives out and despawns, in case
+/// it never hits anything.
+const BONE_LIFETIME: f32 = 3.0;
+/// Maximum gap (px between AABBs) at which an in-flight bone counts as striking a
+/// player.
+const BONE_HIT_RANGE: f32 = 2.0;
 /// Distance (px) from the nearest player beyond which any non-player entity is
 /// culled, so creatures and dropped items don't pile up in terrain no one is
 /// near. Set comfortably past the screen edge and every spawn distance, so an
@@ -1488,15 +1514,17 @@ fn maybe_spawn_zombies(shared: &Shared, rng: &mut u32) {
     if players.is_empty() {
         return;
     }
-    let zombies = entities
+    // Skeletons share the zombie's nightly budget, so the two undead together
+    // stay capped per player rather than each filling the cap on their own.
+    let undead = entities
         .values()
-        .filter(|e| matches!(e.kind, EntityKind::Zombie))
+        .filter(|e| matches!(e.kind, EntityKind::Zombie | EntityKind::Skeleton))
         .count();
-    if zombies >= players.len() * ZOMBIE_MAX_PER_PLAYER {
+    if undead >= players.len() * ZOMBIE_MAX_PER_PLAYER {
         return;
     }
 
-    // Pick a player, a side, and a distance to drop the zombie at.
+    // Pick a player, a side, and a distance to drop the mob at.
     next_rng(rng);
     let (px, py) = players[(*rng as usize) % players.len()];
     next_rng(rng);
@@ -1505,7 +1533,13 @@ fn maybe_spawn_zombies(shared: &Shared, rng: &mut u32) {
     let span = (ZOMBIE_SPAWN_MAX_DIST - ZOMBIE_SPAWN_MIN_DIST) as u32;
     let dist = ZOMBIE_SPAWN_MIN_DIST + (*rng % span.max(1)) as f32;
 
-    let kind = EntityKind::Zombie;
+    // Some of the night's undead arrive as ranged skeletons instead of zombies.
+    next_rng(rng);
+    let kind = if *rng % 100 < SKELETON_SPAWN_PERCENT {
+        EntityKind::Skeleton
+    } else {
+        EntityKind::Zombie
+    };
     let (_, h) = kind.size();
     let cell_x = ((px + side * dist) / TILE_SIZE).floor() as i32;
     let surface = world.surface(cell_x);
@@ -1518,11 +1552,11 @@ fn maybe_spawn_zombies(shared: &Shared, rng: &mut u32) {
     }
 
     let id = shared.alloc_id();
-    let zombie = Entity::new(id, kind, x, y);
-    entities.insert(zombie.clone());
+    let mob = Entity::new(id, kind, x, y);
+    entities.insert(mob.clone());
     drop(entities);
     drop(world);
-    shared.broadcast_all(ServerMessage::EntitySpawn { entity: zombie });
+    shared.broadcast_all(ServerMessage::EntitySpawn { entity: mob });
 }
 
 /// Spawn a dropped-block item at the center of cell `(cell_x, cell_y)`, popping
@@ -1723,6 +1757,16 @@ fn step_entities(shared: &Shared) -> Step {
     let spider_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::Spider))
+        .map(|e| e.id)
+        .collect();
+    let skeleton_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Skeleton))
+        .map(|e| e.id)
+        .collect();
+    let bone_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Bone))
         .map(|e| e.id)
         .collect();
     let item_ids: Vec<EntityId> = entities
@@ -2032,6 +2076,179 @@ fn step_entities(shared: &Shared) -> Step {
         }
     }
     for id in zombie_despawns {
+        entities.remove(id);
+        broadcasts.push(ServerMessage::EntityDespawn { id });
+    }
+
+    // Skeletons: night undead archers. They stalk the player like a zombie but
+    // hang back and lob bones from range. Daybreak destroys them outright —
+    // unlike the zombie they have no crumble animation to play.
+    let mut skeleton_despawns: Vec<EntityId> = Vec::new();
+    // Bones loosed this tick, spawned after the loop so we aren't holding a
+    // mutable borrow of the thrower while inserting into the same map. Each entry
+    // is the bone's spawn `(x, y)` and its flight `(vx, vy)`.
+    let mut throws: Vec<(f32, f32, f32, f32)> = Vec::new();
+    for id in skeleton_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+
+        // Daybreak: burn up and vanish on the spot (no death animation yet).
+        if !night {
+            skeleton_despawns.push(id);
+            continue;
+        }
+
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let home = *e.home_x.get_or_insert(e.x);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+        let target = nearest_player(&players, scx, scy, SKELETON_AGGRO);
+        let chasing = target.is_some();
+
+        // Kiting heading: close in when out of throwing range, back off when the
+        // player slips inside the standoff distance, otherwise hold and fire.
+        let (dir, gap, aim) = match target {
+            Some((_, px, py)) => {
+                let gap = aabb_gap(e.x, e.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1);
+                let toward = if px + PLAYER_SIZE.0 * 0.5 >= scx {
+                    1.0
+                } else {
+                    -1.0
+                };
+                let dir = if gap < SKELETON_KEEP_DIST {
+                    -toward // too close: retreat
+                } else if gap > SKELETON_THROW_RANGE {
+                    toward // too far: advance
+                } else {
+                    0.0 // in the sweet spot: stand and throw
+                };
+                (dir, gap, Some((px, py)))
+            }
+            None => (wander_dir(scx, e.vx, home), f32::INFINITY, None),
+        };
+
+        let m = step_ground(
+            &mut world,
+            (e.x, e.y, w, h),
+            e.vy,
+            dir,
+            SKELETON_SPEED,
+            chasing,
+        );
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        // The client derives facing from the sign of the broadcast vx. A skeleton
+        // should always face the player it's fighting — even while striding
+        // backwards to keep its distance — so point the reported vx's sign at the
+        // target while keeping its true magnitude (so the walk cycle still plays).
+        // Its real velocity stays in `e.vx` so wander heading survives losing the
+        // target.
+        let bcast_vx = match aim {
+            Some((px, _)) => {
+                let cx = m.x + w * 0.5;
+                let toward = if px + PLAYER_SIZE.0 * 0.5 >= cx {
+                    1.0
+                } else {
+                    -1.0
+                };
+                toward * m.vx.abs()
+            }
+            None => m.vx,
+        };
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: bcast_vx,
+            vy: m.vy,
+        });
+
+        // Loose a bone when a player is within range and we're off cooldown,
+        // aiming from the skeleton's upper body straight at the player's center.
+        if let Some((px, py)) = aim {
+            if e.attack_cd <= 0.0 && gap <= SKELETON_THROW_RANGE {
+                e.attack_cd = SKELETON_THROW_INTERVAL;
+                let (bw, bh) = BONE_SIZE;
+                let sx = m.x + w * 0.5 - bw * 0.5;
+                let sy = m.y + h * 0.3 - bh * 0.5;
+                let tx = px + PLAYER_SIZE.0 * 0.5;
+                let ty = py + PLAYER_SIZE.1 * 0.5;
+                let dx = tx - (sx + bw * 0.5);
+                let dy = ty - (sy + bh * 0.5);
+                let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                throws.push((sx, sy, dx / len * BONE_SPEED, dy / len * BONE_SPEED));
+            }
+        }
+    }
+    for id in skeleton_despawns {
+        entities.remove(id);
+        broadcasts.push(ServerMessage::EntityDespawn { id });
+    }
+    // Spawn the bones loosed this tick. They aren't in `bone_ids`, so they begin
+    // flying next tick rather than being simulated again immediately.
+    for (x, y, vx, vy) in throws {
+        let bid = shared.alloc_id();
+        let mut bone = Entity::new(bid, EntityKind::Bone, x, y);
+        bone.vx = vx;
+        bone.vy = vy;
+        bone.attack_cd = BONE_LIFETIME; // reused as the airborne lifetime timer
+        entities.insert(bone.clone());
+        broadcasts.push(ServerMessage::EntitySpawn { entity: bone });
+    }
+
+    // Bones in flight: travel in a straight line (no gravity), striking the first
+    // player they overlap or winking out on a wall or when their short life ends.
+    let mut bone_despawns: Vec<EntityId> = Vec::new();
+    for id in bone_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+
+        let (nx, hit_x) = move_x(&mut world, e.x, e.y, w, h, e.vx * TICK_DT);
+        let (ny, hit_y) = move_y(&mut world, nx, e.y, w, h, e.vy * TICK_DT);
+        e.x = nx;
+        e.y = ny;
+
+        // Struck a wall, or flew long enough without hitting anything: gone.
+        if hit_x || hit_y || e.attack_cd <= 0.0 {
+            bone_despawns.push(id);
+            continue;
+        }
+
+        // Struck a player: deal damage, knock them along the bone's flight, gone.
+        let mut struck = false;
+        for &(pid, px, py) in &players {
+            if aabb_gap(nx, ny, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1) <= BONE_HIT_RANGE {
+                let kx = if e.vx >= 0.0 {
+                    KNOCKBACK_X
+                } else {
+                    -KNOCKBACK_X
+                };
+                bites.push((pid, (kx, -KNOCKBACK_Y), BONE_DAMAGE));
+                struck = true;
+                break;
+            }
+        }
+        if struck {
+            bone_despawns.push(id);
+            continue;
+        }
+
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: nx,
+            y: ny,
+            vx: e.vx,
+            vy: e.vy,
+        });
+    }
+    for id in bone_despawns {
         entities.remove(id);
         broadcasts.push(ServerMessage::EntityDespawn { id });
     }

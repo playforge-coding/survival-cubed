@@ -35,6 +35,12 @@ pub const GOAT_SIZE: (f32, f32) = (16.0, 16.0);
 pub const ZOMBIE_SIZE: (f32, f32) = (14.0, 19.0);
 /// Collision/draw size (width, height) in pixels of a spider — low and wide.
 pub const SPIDER_SIZE: (f32, f32) = (14.0, 10.0);
+/// Collision/draw size (width, height) in pixels of a skeleton — a lanky
+/// humanoid, the same build as the player.
+pub const SKELETON_SIZE: (f32, f32) = (11.0, 16.0);
+/// Collision/draw size (width, height) in pixels of a thrown bone — a small
+/// tumbling projectile.
+pub const BONE_SIZE: (f32, f32) = (12.0, 12.0);
 /// Collision/draw size (width, height) in pixels of a dropped block item.
 pub const ITEM_SIZE: (f32, f32) = (8.0, 8.0);
 
@@ -57,6 +63,10 @@ pub const ZOMBIE_MAX_HEALTH: i32 = 40;
 /// Maximum health of a spider, in hit points. Frail — it relies on speed and
 /// numbers rather than soaking up hits.
 pub const SPIDER_MAX_HEALTH: i32 = 12;
+/// Maximum health of a skeleton, in hit points. Sturdier than a spider but
+/// frailer than a zombie — it survives by keeping its distance and pelting the
+/// player with bones rather than soaking up blows.
+pub const SKELETON_MAX_HEALTH: i32 = 24;
 
 /// What an entity *is*. Adding a new creature/object means adding a variant
 /// here plus (for server-simulated kinds) a branch in the server tick loop.
@@ -91,6 +101,15 @@ pub enum EntityKind {
         count: u32,
         durability: u16,
     },
+    /// A lanky undead archer that roams at night like the zombie but keeps its
+    /// distance, lobbing [`EntityKind::Bone`] projectiles at players instead of
+    /// closing for melee. Burns up at daybreak (despawning outright — it has no
+    /// death animation). Server-simulated.
+    Skeleton,
+    /// A bone thrown by a [`EntityKind::Skeleton`], flying in a straight line
+    /// until it strikes a player or a wall (or its short life runs out). Its
+    /// [`Entity::vx`]/[`Entity::vy`] carry its flight velocity. Server-simulated.
+    Bone,
 }
 
 impl EntityKind {
@@ -103,6 +122,8 @@ impl EntityKind {
             EntityKind::Goat => GOAT_SIZE,
             EntityKind::Zombie => ZOMBIE_SIZE,
             EntityKind::Spider => SPIDER_SIZE,
+            EntityKind::Skeleton => SKELETON_SIZE,
+            EntityKind::Bone => BONE_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -129,6 +150,10 @@ impl EntityKind {
             EntityKind::Goat => GOAT_MAX_HEALTH,
             EntityKind::Zombie => ZOMBIE_MAX_HEALTH,
             EntityKind::Spider => SPIDER_MAX_HEALTH,
+            EntityKind::Skeleton => SKELETON_MAX_HEALTH,
+            // A bone is an inert projectile; 1 keeps health == max_health so no
+            // health bar shows and a stray melee swing can't meaningfully "kill" it.
+            EntityKind::Bone => 1,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }

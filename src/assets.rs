@@ -82,4 +82,6 @@ sprites!(
     "zombie" => [0, 1, 2, 3],
     "zombie/death" => [0, 1, 2, 3],
     "spider" => [0, 1, 2, 3],
+    "skeleton" => [0, 1, 2, 3, 4, 5],
+    "bone" => [0, 1, 2, 3],
 );

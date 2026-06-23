@@ -86,8 +86,26 @@ pub static SPIDER_SPRITE: SpriteDef = SpriteDef {
     fps: 10.0,
 };
 
+/// Skeleton: a lanky undead archer that strides along as it stalks the player.
+pub static SKELETON_SPRITE: SpriteDef = SpriteDef {
+    name: "skeleton",
+    frame_w: 11,
+    frame_h: 16,
+    frames: 6,
+    fps: 8.0,
+};
+
+/// Bone: a small thrown projectile that tumbles end over end as it flies.
+pub static BONE_SPRITE: SpriteDef = SpriteDef {
+    name: "bone",
+    frame_w: 16,
+    frame_h: 16,
+    frames: 4,
+    fps: 12.0,
+};
+
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 7] {
+pub fn all() -> [&'static SpriteDef; 9] {
     [
         &PLAYER_SPRITE,
         &SLIME_SPRITE,
@@ -96,6 +114,8 @@ pub fn all() -> [&'static SpriteDef; 7] {
         &ZOMBIE_SPRITE,
         &ZOMBIE_DEATH_SPRITE,
         &SPIDER_SPRITE,
+        &SKELETON_SPRITE,
+        &BONE_SPRITE,
     ]
 }
 
@@ -108,6 +128,8 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         EntityKind::Goat => &GOAT_SPRITE,
         EntityKind::Zombie => &ZOMBIE_SPRITE,
         EntityKind::Spider => &SPIDER_SPRITE,
+        EntityKind::Skeleton => &SKELETON_SPRITE,
+        EntityKind::Bone => &BONE_SPRITE,
         // Dropped items are drawn from their block texture, not an animation
         // sheet (see the client's scene builder), so this is never queried for
         // them; fall back to the slime sheet to keep the match total.
