@@ -129,6 +129,12 @@ pub enum NetCommand {
         y: i32,
         slot: u8,
     },
+    /// Swing the door touching cell `(x, y)` open or shut (server flips both
+    /// halves and resyncs).
+    ToggleDoor {
+        x: i32,
+        y: i32,
+    },
     MoveItem {
         from: u8,
         to: u8,
@@ -383,6 +389,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::SetBlock { x, y, block, held } => ClientMessage::SetBlock { x, y, block, held },
         NetCommand::PlaceBlock { x, y, slot } => ClientMessage::PlaceBlock { x, y, slot },
         NetCommand::UseBucket { x, y, slot } => ClientMessage::UseBucket { x, y, slot },
+        NetCommand::ToggleDoor { x, y } => ClientMessage::ToggleDoor { x, y },
         NetCommand::MoveItem { from, to } => ClientMessage::MoveItem { from, to },
         NetCommand::DropItem { slot, all, dir } => ClientMessage::DropItem { slot, all, dir },
         NetCommand::Craft { recipe } => ClientMessage::Craft { recipe },

@@ -83,6 +83,10 @@ blocks!(
     "tungsten_pickaxe",
     "tungsten_sword",
     "tungsten_axe",
+    "door",
+    "door_top",
+    "door_open",
+    "door_open_top",
 );
 
 sprites!(

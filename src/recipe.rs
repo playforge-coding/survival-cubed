@@ -9,9 +9,9 @@
 //! A recipe is identified on the wire by its index in [`RECIPES`].
 
 use crate::block::{
-    BARK, BUCKET, CAMPFIRE, COOKED_MEAT, FORGE, IRON_AXE, IRON_INGOT, IRON_PICKAXE, IRON_SWORD,
-    LADDER, LOG, PICKAXE, RAW_IRON, RAW_MEAT, RAW_TUNGSTEN, ROPE, ROPE_LADDER, STICK, STONE,
-    STONE_AXE, STONE_PICKAXE, STONE_SWORD, TUNGSTEN_AXE, TUNGSTEN_INGOT, TUNGSTEN_PICKAXE,
+    BARK, BUCKET, CAMPFIRE, COOKED_MEAT, DOOR, FORGE, IRON_AXE, IRON_INGOT, IRON_PICKAXE,
+    IRON_SWORD, LADDER, LOG, PICKAXE, RAW_IRON, RAW_MEAT, RAW_TUNGSTEN, ROPE, ROPE_LADDER, STICK,
+    STONE, STONE_AXE, STONE_PICKAXE, STONE_SWORD, TUNGSTEN_AXE, TUNGSTEN_INGOT, TUNGSTEN_PICKAXE,
     TUNGSTEN_SWORD, WOOD, WOOD_AXE, WOOD_SWORD,
 };
 use crate::inventory::Inventory;
@@ -142,6 +142,12 @@ pub const RECIPES: &[Recipe] = &[
         name: "Bucket",
         inputs: &[(IRON_INGOT, 3)],
         outputs: &[(BUCKET, 1)],
+    },
+    // Planks hewn and hung into a two-tall door that swings open and shut.
+    Recipe {
+        name: "Door",
+        inputs: &[(WOOD, 6)],
+        outputs: &[(DOOR, 1)],
     },
 ];
 

@@ -42,7 +42,10 @@ pub fn save(rgba: Vec<u8>, width: u32, height: u32) -> io::Result<PathBuf> {
     let jpg_path = dir.join(format!("screenshot-{stamp}.jpg"));
 
     let img = RgbaImage::from_raw(width, height, rgba).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "screenshot buffer size mismatch")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "screenshot buffer size mismatch",
+        )
     })?;
 
     // Full-quality PNG (format inferred from the .png extension).

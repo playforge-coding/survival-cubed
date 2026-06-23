@@ -1290,6 +1290,43 @@ impl Shared {
         }
         cleared
     }
+
+    /// Swing the door touching cell `(x, y)` open or shut. A door spans two cells:
+    /// a lower half and the upper half directly above it. Whichever half `(x, y)`
+    /// names, this flips both between their closed
+    /// ([`DOOR`](crate::block::DOOR)/[`DOOR_TOP`](crate::block::DOOR_TOP)) and open
+    /// ([`DOOR_OPEN`](crate::block::DOOR_OPEN)/[`DOOR_OPEN_TOP`](crate::block::DOOR_OPEN_TOP))
+    /// states. Returns the changed cells as `(x, y, block)` so the caller can
+    /// broadcast them, or empty if `(x, y)` is not a door.
+    fn toggle_door(&self, dim: Dimension, x: i32, y: i32) -> Vec<(i32, i32, BlockId)> {
+        let mut world = self.world(dim).lock();
+        let here = world.get(x, y);
+        if !crate::block::is_door(here) {
+            return Vec::new();
+        }
+        // Anchor on the lower half: if `(x, y)` is a top, the lower half is below.
+        let by = if crate::block::is_door_bottom(here) {
+            y
+        } else {
+            y + 1
+        };
+        let ty = by - 1; // the upper half sits directly above the lower half
+        // Closed exactly when the lower cell is the solid `DOOR`; otherwise open.
+        let opening = world.get(x, by) == crate::block::DOOR;
+        let (lower, upper) = if opening {
+            (crate::block::DOOR_OPEN, crate::block::DOOR_OPEN_TOP)
+        } else {
+            (crate::block::DOOR, crate::block::DOOR_TOP)
+        };
+        let mut changed = Vec::new();
+        if world.set(x, by, lower) {
+            changed.push((x, by, lower));
+        }
+        if world.set(x, ty, upper) {
+            changed.push((x, ty, upper));
+        }
+        changed
+    }
 }
 
 /// Number of overworld rows (counting up from the very bottom) that the descent
@@ -3724,6 +3761,33 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                 );
                             }
                         }
+                        // A door is two cells tall: breaking either half takes its
+                        // partner with it. The struck cell already dropped a single
+                        // door (above); the partner is cleared silently so a door
+                        // never yields two items.
+                        if crate::block::is_door(prev) {
+                            let other_y = if crate::block::is_door_bottom(prev) {
+                                y - 1 // struck the lower half: clear the top above
+                            } else {
+                                y + 1 // struck the upper half: clear the lower below
+                            };
+                            let cleared = {
+                                let mut w = shared.world(dim).lock();
+                                crate::block::is_door(w.get(x, other_y))
+                                    && w.set(x, other_y, crate::block::AIR)
+                            };
+                            if cleared {
+                                shared.broadcast_dim(
+                                    dim,
+                                    ServerMessage::BlockUpdate {
+                                        dim,
+                                        x,
+                                        y: other_y,
+                                        block: crate::block::AIR,
+                                    },
+                                );
+                            }
+                        }
                         // Mining wears the held tool: a pickaxe's intended job
                         // costs little, a sword or axe used to dig wears twice as fast.
                         shared.wear_tool(id, held, crate::block::mine_wear(held));
@@ -3827,6 +3891,52 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                             );
                                         }
                                     }
+                                } else if block == crate::block::DOOR {
+                                    // A door stands two cells tall: the lower half
+                                    // at the target and an upper half directly
+                                    // above. Both must be clear (the lower cell's
+                                    // emptiness and support were checked above; the
+                                    // cell above is checked here).
+                                    let placed = {
+                                        let mut world = shared.world(dim).lock();
+                                        crate::world::in_bounds(x, y - 1)
+                                            && world.get(x, y - 1) == crate::block::AIR
+                                            && world.set(x, y, crate::block::DOOR)
+                                            && {
+                                                world.set(x, y - 1, crate::block::DOOR_TOP);
+                                                true
+                                            }
+                                    };
+                                    if placed {
+                                        for (cy, b) in [
+                                            (y, crate::block::DOOR),
+                                            (y - 1, crate::block::DOOR_TOP),
+                                        ] {
+                                            shared.broadcast_dim(
+                                                dim,
+                                                ServerMessage::BlockUpdate {
+                                                    dim,
+                                                    x,
+                                                    y: cy,
+                                                    block: b,
+                                                },
+                                            );
+                                        }
+                                    } else {
+                                        // No room for the upper half: refund and
+                                        // resync the lower cell the client guessed.
+                                        shared.add_item(id, block);
+                                        let actual = shared.world(dim).lock().get(x, y);
+                                        shared.send_to(
+                                            id,
+                                            ServerMessage::BlockUpdate {
+                                                dim,
+                                                x,
+                                                y,
+                                                block: actual,
+                                            },
+                                        );
+                                    }
                                 } else if shared.world(dim).lock().set(x, y, block) {
                                     // Remember player-placed logs so an axe's
                                     // tree-felling spares what the player built.
@@ -3897,6 +4007,53 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             },
                         );
                         shared.send_inventory(id);
+                    }
+                }
+                ClientMessage::ToggleDoor { x, y } => {
+                    let dim = shared.dim_of(id);
+                    // Gated by the player's melee reach, the same limit governing
+                    // mining, placement, and bucket use.
+                    let in_reach = {
+                        let entities = shared.entities(dim).lock();
+                        entities.get(id).is_some_and(|p| {
+                            let (pw, ph) = p.size();
+                            aabb_gap(
+                                p.x,
+                                p.y,
+                                pw,
+                                ph,
+                                x as f32 * TILE_SIZE,
+                                y as f32 * TILE_SIZE,
+                                TILE_SIZE,
+                                TILE_SIZE,
+                            ) <= PLAYER_ATTACK_REACH
+                        })
+                    };
+                    if in_reach {
+                        for (cx, cy, block) in shared.toggle_door(dim, x, y) {
+                            shared.broadcast_dim(
+                                dim,
+                                ServerMessage::BlockUpdate {
+                                    dim,
+                                    x: cx,
+                                    y: cy,
+                                    block,
+                                },
+                            );
+                        }
+                    } else {
+                        // Out of range: resync the cell to undo the client's
+                        // optimistic toggle.
+                        let actual = shared.world(dim).lock().get(x, y);
+                        shared.send_to(
+                            id,
+                            ServerMessage::BlockUpdate {
+                                dim,
+                                x,
+                                y,
+                                block: actual,
+                            },
+                        );
                     }
                 }
                 ClientMessage::MoveItem { from, to } => {

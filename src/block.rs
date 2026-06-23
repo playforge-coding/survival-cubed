@@ -135,6 +135,20 @@ pub const TUNGSTEN_PICKAXE: BlockId = 40;
 pub const TUNGSTEN_SWORD: BlockId = 41;
 /// A tungsten axe. A tool item; stacks to one. The deadliest axe, out-hitting iron.
 pub const TUNGSTEN_AXE: BlockId = 42;
+/// A door (closed, lower half): both the crafted item the player holds and the
+/// placed lower cell of a two-tall door. A solid, placeable block — placing one
+/// raises a [`DOOR_TOP`] in the cell above, so the door stands two cells tall and
+/// blocks movement like a wall. Right-click it to swing it open ([`DOOR_OPEN`]).
+pub const DOOR: BlockId = 43;
+/// The upper half of a closed door. World-only (never held): set in the cell
+/// directly above a placed [`DOOR`]. Solid, like its lower half.
+pub const DOOR_TOP: BlockId = 44;
+/// The lower half of an open door. World-only and non-solid — the player steps
+/// through an open doorway. Right-click it to swing the door shut ([`DOOR`]).
+pub const DOOR_OPEN: BlockId = 45;
+/// The upper half of an open door. World-only and non-solid, paired with a
+/// [`DOOR_OPEN`] below.
+pub const DOOR_OPEN_TOP: BlockId = 46;
 
 /// Definition of a single block type.
 pub struct BlockDef {
@@ -231,6 +245,15 @@ impl BlockRegistry {
         r.register("tungsten_pickaxe", false, true, false, 0.0);
         r.register("tungsten_sword", false, true, false, 0.0);
         r.register("tungsten_axe", false, true, false, 0.0);
+        // A door: a two-tall barrier that swings open and shut. The lower half
+        // (`door`) is the crafted, held, placeable block; placing it raises a
+        // `door_top` above. The closed halves are solid; the open halves
+        // (`door_open`/`door_open_top`) are non-solid so the player steps through.
+        // Only the closed lower half is ever held, so the rest are world-only.
+        r.register("door", true, true, true, 0.6);
+        r.register("door_top", true, true, false, 0.6);
+        r.register("door_open", false, true, false, 0.6);
+        r.register("door_open_top", false, true, false, 0.6);
         r
     }
 
@@ -387,6 +410,18 @@ pub fn is_rope_ladder(block: BlockId) -> bool {
     block == ROPE_LADDER
 }
 
+/// Whether `block` is any part of a door — either half, open or closed. A door
+/// is two cells tall, so both halves carry this.
+pub fn is_door(block: BlockId) -> bool {
+    matches!(block, DOOR | DOOR_TOP | DOOR_OPEN | DOOR_OPEN_TOP)
+}
+
+/// Whether `block` is the *lower* half of a door (the cell a door is anchored to);
+/// its matching upper half sits in the cell directly above.
+pub fn is_door_bottom(block: BlockId) -> bool {
+    matches!(block, DOOR | DOOR_OPEN)
+}
+
 /// Whether `block` is water — the fluid the player swims through instead of
 /// walking on or mining.
 pub fn is_water(block: BlockId) -> bool {
@@ -502,6 +537,8 @@ pub fn mined_drop(block: BlockId) -> BlockId {
         TUNGSTEN_ORE => RAW_TUNGSTEN,
         COAL_ORE => COAL,
         CAMPFIRE_LIT => CAMPFIRE,
+        // Whichever half of a door is struck, it drops one (closed) door item.
+        DOOR_TOP | DOOR_OPEN | DOOR_OPEN_TOP => DOOR,
         other => other,
     }
 }
@@ -739,5 +776,34 @@ mod tests {
         assert!(is_campfire(CAMPFIRE));
         assert!(is_campfire(CAMPFIRE_LIT));
         assert!(!is_campfire(FORGE));
+    }
+
+    #[test]
+    fn doors_are_two_tall_and_swing_between_solid_and_passable() {
+        let reg = BlockRegistry::new();
+        // Every half of a door is recognized as a door.
+        for d in [DOOR, DOOR_TOP, DOOR_OPEN, DOOR_OPEN_TOP] {
+            assert!(is_door(d));
+        }
+        assert!(!is_door(STONE));
+        // Only the open/closed lower cells anchor a door; the tops do not.
+        assert!(is_door_bottom(DOOR));
+        assert!(is_door_bottom(DOOR_OPEN));
+        assert!(!is_door_bottom(DOOR_TOP));
+        assert!(!is_door_bottom(DOOR_OPEN_TOP));
+        // Closed halves block movement; open halves are stepped through.
+        assert!(reg.is_solid(DOOR));
+        assert!(reg.is_solid(DOOR_TOP));
+        assert!(!reg.is_solid(DOOR_OPEN));
+        assert!(!reg.is_solid(DOOR_OPEN_TOP));
+        // Only the closed lower half is held and placed; the rest are world-only.
+        assert!(reg.is_placeable(DOOR));
+        assert!(!reg.is_placeable(DOOR_TOP));
+        assert!(!reg.is_placeable(DOOR_OPEN));
+        assert!(!reg.is_placeable(DOOR_OPEN_TOP));
+        // Breaking any half drops a single closed door.
+        for d in [DOOR, DOOR_TOP, DOOR_OPEN, DOOR_OPEN_TOP] {
+            assert_eq!(mined_drop(d), DOOR);
+        }
     }
 }

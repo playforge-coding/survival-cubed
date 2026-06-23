@@ -36,7 +36,7 @@ pub struct Waypoint {
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -81,6 +81,12 @@ pub enum ClientMessage {
     /// [`water_bucket`](crate::block::WATER_BUCKET) pours its water into an empty
     /// cell (becoming empty again). Validated against the player's reach.
     UseBucket { x: i32, y: i32, slot: u8 },
+    /// Swing the door touching world cell `(x, y)` open or shut. A door spans two
+    /// cells; the server flips both halves between their closed
+    /// ([`crate::block::DOOR`]/[`crate::block::DOOR_TOP`]) and open
+    /// ([`crate::block::DOOR_OPEN`]/[`crate::block::DOOR_OPEN_TOP`]) states.
+    /// Validated against the player's reach; a no-op if `(x, y)` is not a door.
+    ToggleDoor { x: i32, y: i32 },
     /// Move/merge/swap the stack in inventory slot `from` onto slot `to`.
     MoveItem { from: u8, to: u8 },
     /// Drop the contents of inventory `slot` onto the ground at the player's feet

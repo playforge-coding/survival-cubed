@@ -2731,6 +2731,17 @@ fn ladder_supported(
         || (crate::block::is_rope_ladder(block) && reg.is_solid(game.world.get_block(tx, ty - 1)))
 }
 
+/// Whether a door may be placed at `(tx, ty)`: it stands two cells tall, so the
+/// cell directly above the target must also be empty and clear of the player.
+/// Non-door blocks are unaffected. Mirrors the authoritative check in
+/// [`crate::server`].
+fn door_clear_above(game: &GameState, block: BlockId, tx: i32, ty: i32) -> bool {
+    if block != crate::block::DOOR {
+        return true;
+    }
+    game.world.get_block(tx, ty - 1) == AIR && !overlaps_player(game, tx, ty - 1)
+}
+
 /// Whether the player's body currently overlaps any ladder cell — the condition
 /// for climbing instead of falling.
 fn player_on_ladder(game: &GameState) -> bool {
@@ -2875,6 +2886,34 @@ fn handle_block_actions(
         return;
     }
 
+    // Right-clicking a door swings it open or shut instead of placing a block.
+    // The door spans two cells; we flip both halves optimistically and let the
+    // server (authoritative over both) confirm or correct.
+    if input.placing
+        && game.action_timer <= 0.0
+        && crate::block::is_door(game.world.get_block(tx, ty))
+        && cell_in_reach(game, tx, ty)
+    {
+        // Anchor on the lower half: if the cursor is on a top, the lower half is
+        // the cell below. The upper half is always directly above the lower one.
+        let by = if crate::block::is_door_bottom(game.world.get_block(tx, ty)) {
+            ty
+        } else {
+            ty + 1
+        };
+        let opening = game.world.get_block(tx, by) == crate::block::DOOR;
+        let (lower, upper) = if opening {
+            (crate::block::DOOR_OPEN, crate::block::DOOR_OPEN_TOP)
+        } else {
+            (crate::block::DOOR, crate::block::DOOR_TOP)
+        };
+        game.world.set_block(tx, by, lower);
+        game.world.set_block(tx, by - 1, upper);
+        let _ = net.commands.send(NetCommand::ToggleDoor { x: tx, y: ty });
+        game.action_timer = ACTION_COOLDOWN;
+        return;
+    }
+
     // Right-clicking with a bucket scoops or pours water — a special use, not a
     // normal block placement. An empty bucket fills from a water cell; a water
     // bucket empties into an open cell. The server is authoritative over both the
@@ -2946,6 +2985,7 @@ fn handle_block_actions(
             && !overlaps_player(game, tx, ty)
             && cell_in_reach(game, tx, ty)
             && ladder_supported(game, reg, block, tx, ty)
+            && door_clear_above(game, block, tx, ty)
         {
             game.world.set_block(tx, ty, block);
             // Optimistically spend one; the server confirms (or corrects) with an

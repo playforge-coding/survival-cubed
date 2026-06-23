@@ -827,7 +827,11 @@ impl Gfx {
         slice.map_async(wgpu::MapMode::Read, move |res| {
             let _ = tx.send(res);
         });
-        if self.device.poll(wgpu::PollType::wait_indefinitely()).is_err() {
+        if self
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .is_err()
+        {
             return None;
         }
         if !matches!(rx.recv(), Ok(Ok(()))) {
