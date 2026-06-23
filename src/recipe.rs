@@ -10,8 +10,9 @@
 
 use crate::block::{
     BARK, BUCKET, CAMPFIRE, COOKED_MEAT, FORGE, IRON_AXE, IRON_INGOT, IRON_PICKAXE, IRON_SWORD,
-    LADDER, LOG, PICKAXE, RAW_IRON, RAW_MEAT, ROPE, ROPE_LADDER, STICK, STONE, STONE_AXE,
-    STONE_PICKAXE, STONE_SWORD, WOOD, WOOD_AXE, WOOD_SWORD,
+    LADDER, LOG, PICKAXE, RAW_IRON, RAW_MEAT, RAW_TUNGSTEN, ROPE, ROPE_LADDER, STICK, STONE,
+    STONE_AXE, STONE_PICKAXE, STONE_SWORD, TUNGSTEN_AXE, TUNGSTEN_INGOT, TUNGSTEN_PICKAXE,
+    TUNGSTEN_SWORD, WOOD, WOOD_AXE, WOOD_SWORD,
 };
 use crate::inventory::Inventory;
 use crate::protocol::BlockId;
@@ -52,6 +53,12 @@ pub const RECIPES: &[Recipe] = &[
         inputs: &[(IRON_INGOT, 3), (STICK, 2)],
         outputs: &[(IRON_PICKAXE, 1)],
     },
+    // Tungsten ingots bound to sticks: the strongest, fastest pickaxe of all.
+    Recipe {
+        name: "Tungsten Pickaxe",
+        inputs: &[(TUNGSTEN_INGOT, 3), (STICK, 2)],
+        outputs: &[(TUNGSTEN_PICKAXE, 1)],
+    },
     // A plank edge bound to a stick makes a crude wooden sword.
     Recipe {
         name: "Wood Sword",
@@ -69,6 +76,12 @@ pub const RECIPES: &[Recipe] = &[
         name: "Iron Sword",
         inputs: &[(IRON_INGOT, 2), (STICK, 1)],
         outputs: &[(IRON_SWORD, 1)],
+    },
+    // Forged tungsten on a stick: the deadliest blade in the world.
+    Recipe {
+        name: "Tungsten Sword",
+        inputs: &[(TUNGSTEN_INGOT, 2), (STICK, 1)],
+        outputs: &[(TUNGSTEN_SWORD, 1)],
     },
     // Stacked stone builds a forge for smelting.
     Recipe {
@@ -105,6 +118,12 @@ pub const RECIPES: &[Recipe] = &[
         name: "Iron Axe",
         inputs: &[(IRON_INGOT, 3), (STICK, 2)],
         outputs: &[(IRON_AXE, 1)],
+    },
+    // Forged tungsten makes the deadliest axe in the world.
+    Recipe {
+        name: "Tungsten Axe",
+        inputs: &[(TUNGSTEN_INGOT, 3), (STICK, 2)],
+        outputs: &[(TUNGSTEN_AXE, 1)],
     },
     // Strips of bark twist into a length of rope.
     Recipe {
@@ -149,6 +168,12 @@ pub const SMELT_RECIPES: &[Recipe] = &[
         name: "Iron Ingot",
         inputs: &[(RAW_IRON, 1)],
         outputs: &[(IRON_INGOT, 1)],
+    },
+    // Raw tungsten smelts into a refined ingot (one charge of fuel per smelt).
+    Recipe {
+        name: "Tungsten Ingot",
+        inputs: &[(RAW_TUNGSTEN, 1)],
+        outputs: &[(TUNGSTEN_INGOT, 1)],
     },
 ];
 

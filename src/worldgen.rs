@@ -9,7 +9,8 @@
 use fastnoise_lite::{FastNoiseLite, NoiseType};
 
 use crate::block::{
-    AIR, CHARRED_ROCK, COAL_ORE, DIRT, FIRE, GRASS, IRON_ORE, LEAVES, LOG, STONE, WATER,
+    AIR, CHARRED_ROCK, COAL_ORE, DIRT, FIRE, GRASS, IRON_ORE, LEAVES, LOG, STONE, TUNGSTEN_ORE,
+    WATER,
 };
 use crate::protocol::BlockId;
 use crate::world::{CHUNK_SIZE, Chunk, Dimension, WORLD_HEIGHT, to_chunk};
@@ -96,6 +97,12 @@ const UNDERWORLD_SURFACE_AMP: f32 = 4.0;
 /// below) sprouts a tongue of natural fire. Sparse, so the underworld glows with
 /// scattered flames rather than being a wall of fire.
 const UNDERWORLD_FIRE_CHANCE: u32 = 70;
+/// Tungsten ore only replaces charred rock at least this many cells below the
+/// underworld ceiling, keeping it out of the exposed surface the player lands on.
+const TUNGSTEN_ORE_MIN_DEPTH: i32 = 6;
+/// Tungsten-noise value above which a deep charred-rock cell becomes tungsten ore.
+/// High, so the strongest material stays a rare reward for delving the underworld.
+const TUNGSTEN_ORE_THRESHOLD: f32 = 0.6;
 
 /// A region of the world with its own terrain shape, block palette, and
 /// creatures. Selected per column by a low-frequency noise field.
@@ -128,6 +135,9 @@ pub struct WorldGen {
     /// tunnels, hollowing the otherwise solid charred rock into something
     /// explorable.
     uw_cave_noise: FastNoiseLite,
+    /// Vein field driving tungsten-ore placement in the underworld's charred rock,
+    /// on its own seed so the strongest ore isn't correlated with the caves.
+    tungsten_noise: FastNoiseLite,
 }
 
 impl WorldGen {
@@ -171,6 +181,11 @@ impl WorldGen {
         let mut uw_cave_noise = FastNoiseLite::with_seed(seed.wrapping_add(0x4CA7));
         uw_cave_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
         uw_cave_noise.set_frequency(Some(0.05));
+        // Tungsten veins through the charred rock: a compact, high-frequency field
+        // like the overworld ore veins, on its own seed.
+        let mut tungsten_noise = FastNoiseLite::with_seed(seed.wrapping_add(0x7079));
+        tungsten_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
+        tungsten_noise.set_frequency(Some(0.09));
         WorldGen {
             seed,
             height_noise,
@@ -181,6 +196,7 @@ impl WorldGen {
             cavern_noise,
             uw_height_noise,
             uw_cave_noise,
+            tungsten_noise,
         }
     }
 
@@ -402,6 +418,20 @@ impl WorldGen {
         world_y >= surface && !self.is_underworld_cave(world_x, world_y)
     }
 
+    /// Which block a solid underworld cell becomes: charred rock, or a vein of
+    /// [`TUNGSTEN_ORE`] where the tungsten field peaks well below the ceiling.
+    fn underworld_block(&self, world_x: i32, world_y: i32, surface: i32) -> BlockId {
+        if world_y - surface >= TUNGSTEN_ORE_MIN_DEPTH {
+            let v = self
+                .tungsten_noise
+                .get_noise_3d(world_x as f32, world_y as f32, 0.0); // -1..1
+            if v > TUNGSTEN_ORE_THRESHOLD {
+                return TUNGSTEN_ORE;
+            }
+        }
+        CHARRED_ROCK
+    }
+
     /// Generate one charred-rock chunk of the underworld. Charred rock fills every
     /// column from its ceiling down to the bedrock floor, riddled with caves, and a
     /// scattering of natural fire flickers on exposed floors (and along the ceiling
@@ -416,7 +446,7 @@ impl WorldGen {
             for ly in 0..CHUNK_SIZE {
                 let world_y = base_y + ly;
                 if self.underworld_solid(world_x, world_y, surface) {
-                    chunk.set(lx, ly, CHARRED_ROCK);
+                    chunk.set(lx, ly, self.underworld_block(world_x, world_y, surface));
                     continue;
                 }
                 // Open cell (cave or sky): kindle a flame on any floor it exposes —
@@ -661,7 +691,7 @@ mod tests {
     fn underworld_is_charred_rock_with_fire_and_a_floor() {
         use crate::world::Dimension;
         let worldgen = WorldGen::new(0xC0FFEE);
-        let (mut charred, mut fire, mut air) = (0u32, 0u32, 0u32);
+        let (mut charred, mut fire, mut air, mut tungsten) = (0u32, 0u32, 0u32, 0u32);
         for cx in -4..4 {
             for cy in 0..(WORLD_HEIGHT / CHUNK_SIZE) {
                 let chunk = worldgen.generate(Dimension::Underworld, cx, cy);
@@ -671,6 +701,7 @@ mod tests {
                             CHARRED_ROCK => charred += 1,
                             FIRE => fire += 1,
                             AIR => air += 1,
+                            TUNGSTEN_ORE => tungsten += 1,
                             other => panic!("unexpected underworld block {other}"),
                         }
                     }
@@ -680,17 +711,27 @@ mod tests {
         assert!(charred > 0, "expected charred rock to fill the underworld");
         assert!(fire > 0, "expected some natural fire in the underworld");
         assert!(air > 0, "expected open air (caves and the ceiling sky)");
+        // Tungsten ore is the underworld's reward: present, but rarer than its rock.
+        assert!(
+            tungsten > 0,
+            "expected tungsten ore veins in the underworld"
+        );
+        assert!(
+            tungsten < charred,
+            "tungsten ore should be rarer than charred rock"
+        );
         // Charred rock dominates: the underworld is mostly solid stone.
         assert!(charred > air, "underworld carved too hollow");
 
-        // The bottom rows are a solid charred floor — nothing opens into the void.
+        // The bottom rows are a solid floor — charred rock or a tungsten vein, but
+        // never carved open into the void.
         let bottom_cy = WORLD_HEIGHT / CHUNK_SIZE - 1;
         for cx in -4..4 {
             let chunk = worldgen.generate(Dimension::Underworld, cx, bottom_cy);
             for lx in 0..CHUNK_SIZE {
-                assert_eq!(
-                    chunk.get(lx, CHUNK_SIZE - 1),
-                    CHARRED_ROCK,
+                let cell = chunk.get(lx, CHUNK_SIZE - 1);
+                assert!(
+                    cell == CHARRED_ROCK || cell == TUNGSTEN_ORE,
                     "underworld floor carved open at chunk {cx}, column {lx}"
                 );
             }

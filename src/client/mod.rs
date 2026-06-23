@@ -1525,12 +1525,17 @@ impl App {
                 }
                 ui.add_space(8.0);
                 ui.weak(format!(
-                    "Raw iron: {}   ·   Wood: {}   ·   Coal: {}   ·   Bark: {}   ·   Iron ingots: {}",
+                    "Raw iron: {}   ·   Raw tungsten: {}   ·   Wood: {}   ·   Coal: {}   ·   Bark: {}",
                     inventory.count(crate::block::RAW_IRON),
+                    inventory.count(crate::block::RAW_TUNGSTEN),
                     inventory.count(crate::block::WOOD),
                     inventory.count(crate::block::COAL),
                     inventory.count(crate::block::BARK),
+                ));
+                ui.weak(format!(
+                    "Iron ingots: {}   ·   Tungsten ingots: {}",
                     inventory.count(crate::block::IRON_INGOT),
+                    inventory.count(crate::block::TUNGSTEN_INGOT),
                 ));
 
                 // Repair worn tools using their crafting material.

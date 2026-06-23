@@ -77,6 +77,12 @@ blocks!(
     "water_bucket",
     "charred_rock",
     "fire",
+    "tungsten_ore",
+    "raw_tungsten",
+    "tungsten_ingot",
+    "tungsten_pickaxe",
+    "tungsten_sword",
+    "tungsten_axe",
 );
 
 sprites!(

@@ -117,6 +117,24 @@ pub const CHARRED_ROCK: BlockId = 35;
 /// its prey. Standing in it burns the player (see [`is_fire`] and the server's fire
 /// tick). Walked through, not mined: it carries no breaking delay and drops nothing.
 pub const FIRE: BlockId = 36;
+/// Tungsten ore, generated only in the underworld's charred rock. A block; its
+/// stone is tough, so it yields [`RAW_TUNGSTEN`] only to an [`IRON_PICKAXE`] or
+/// better (see [`required_tier`]).
+pub const TUNGSTEN_ORE: BlockId = 37;
+/// Raw tungsten, dropped by [`TUNGSTEN_ORE`]. An item; smelted at a [`FORGE`] into
+/// a [`TUNGSTEN_INGOT`].
+pub const RAW_TUNGSTEN: BlockId = 38;
+/// A refined tungsten ingot, smelted from [`RAW_TUNGSTEN`]. An item; used to craft
+/// the strongest tools and weapons in the game.
+pub const TUNGSTEN_INGOT: BlockId = 39;
+/// A tungsten pickaxe. A tool item; stacks to one. The fastest, longest-lasting
+/// pickaxe — stronger than iron (see [`pickaxe_tier`] / [`max_durability`]).
+pub const TUNGSTEN_PICKAXE: BlockId = 40;
+/// A tungsten sword. A tool item; stacks to one. The deadliest melee weapon,
+/// out-hitting iron.
+pub const TUNGSTEN_SWORD: BlockId = 41;
+/// A tungsten axe. A tool item; stacks to one. The deadliest axe, out-hitting iron.
+pub const TUNGSTEN_AXE: BlockId = 42;
 
 /// Definition of a single block type.
 pub struct BlockDef {
@@ -205,6 +223,14 @@ impl BlockRegistry {
         // with), so it is registered unplaceable with no breaking delay.
         r.register("charred_rock", true, true, true, 1.3);
         r.register("fire", false, true, false, 0.0);
+        // Tungsten: the underworld's ore (tougher than iron ore to break), its raw
+        // drop, the smelted ingot, and the strongest tools forged from it.
+        r.register("tungsten_ore", true, true, true, 2.6);
+        r.register("raw_tungsten", false, true, false, 0.0);
+        r.register("tungsten_ingot", false, true, false, 0.0);
+        r.register("tungsten_pickaxe", false, true, false, 0.0);
+        r.register("tungsten_sword", false, true, false, 0.0);
+        r.register("tungsten_axe", false, true, false, 0.0);
         r
     }
 
@@ -263,8 +289,8 @@ impl Default for BlockRegistry {
 /// everything else uses the default [`STACK_MAX`](crate::inventory::STACK_MAX).
 pub fn max_stack(id: BlockId) -> u32 {
     match id {
-        PICKAXE | STONE_PICKAXE | IRON_PICKAXE | WOOD_SWORD | STONE_SWORD | IRON_SWORD
-        | WOOD_AXE | STONE_AXE | IRON_AXE => 1,
+        PICKAXE | STONE_PICKAXE | IRON_PICKAXE | TUNGSTEN_PICKAXE | WOOD_SWORD | STONE_SWORD
+        | IRON_SWORD | TUNGSTEN_SWORD | WOOD_AXE | STONE_AXE | IRON_AXE | TUNGSTEN_AXE => 1,
         // A water bucket carries a single load, so it never stacks.
         WATER_BUCKET => 1,
         _ => crate::inventory::STACK_MAX,
@@ -275,12 +301,14 @@ pub fn max_stack(id: BlockId) -> u32 {
 
 /// Mining tier of a held item: the strength of a pickaxe, or `0` for bare hands
 /// and anything that isn't a pickaxe. Higher tiers mine faster and can harvest
-/// tougher blocks (see [`required_tier`]). Wood `1` < stone `2` < iron `3`.
+/// tougher blocks (see [`required_tier`]). Wood `1` < stone `2` < iron `3` <
+/// tungsten `4`.
 pub fn pickaxe_tier(item: BlockId) -> u8 {
     match item {
         PICKAXE => 1,
         STONE_PICKAXE => 2,
         IRON_PICKAXE => 3,
+        TUNGSTEN_PICKAXE => 4,
         _ => 0,
     }
 }
@@ -294,6 +322,7 @@ pub fn required_tier(block: BlockId) -> u8 {
         CHARRED_ROCK => 1, // any pickaxe — the underworld's stone
         COAL_ORE => 1,     // any pickaxe
         IRON_ORE => 2,     // stone or iron pickaxe only
+        TUNGSTEN_ORE => 3, // iron pickaxe or better — the underworld's hardest ore
         _ => 0,
     }
 }
@@ -318,7 +347,8 @@ pub fn mine_speed_mult(block: BlockId, held: BlockId) -> f32 {
     match tier {
         1 => 0.6,
         2 => 0.3,
-        _ => 0.18, // iron (tier 3) and up
+        3 => 0.18, // iron
+        _ => 0.12, // tungsten (tier 4) and up: the fastest
     }
 }
 
@@ -340,6 +370,7 @@ pub fn max_durability(item: BlockId) -> u16 {
         PICKAXE | WOOD_SWORD | WOOD_AXE => 60,
         STONE_PICKAXE | STONE_SWORD | STONE_AXE => 132,
         IRON_PICKAXE | IRON_SWORD | IRON_AXE => 251,
+        TUNGSTEN_PICKAXE | TUNGSTEN_SWORD | TUNGSTEN_AXE => 480,
         _ => 0,
     }
 }
@@ -377,17 +408,20 @@ pub fn is_bucket(item: BlockId) -> bool {
 
 /// Whether `item` is a pickaxe (mining is its intended use).
 pub fn is_pickaxe(item: BlockId) -> bool {
-    matches!(item, PICKAXE | STONE_PICKAXE | IRON_PICKAXE)
+    matches!(
+        item,
+        PICKAXE | STONE_PICKAXE | IRON_PICKAXE | TUNGSTEN_PICKAXE
+    )
 }
 
 /// Whether `item` is a sword (attacking is its intended use).
 pub fn is_sword(item: BlockId) -> bool {
-    matches!(item, WOOD_SWORD | STONE_SWORD | IRON_SWORD)
+    matches!(item, WOOD_SWORD | STONE_SWORD | IRON_SWORD | TUNGSTEN_SWORD)
 }
 
 /// Whether `item` is an axe (felling trees and fighting are its uses).
 pub fn is_axe(item: BlockId) -> bool {
-    matches!(item, WOOD_AXE | STONE_AXE | IRON_AXE)
+    matches!(item, WOOD_AXE | STONE_AXE | IRON_AXE | TUNGSTEN_AXE)
 }
 
 /// Durability spent attacking with `item`. A sword's intended use costs `1`; a
@@ -423,6 +457,7 @@ pub fn repair_material(item: BlockId) -> Option<BlockId> {
         PICKAXE | WOOD_SWORD | WOOD_AXE => Some(WOOD),
         STONE_PICKAXE | STONE_SWORD | STONE_AXE => Some(STONE),
         IRON_PICKAXE | IRON_SWORD | IRON_AXE => Some(IRON_INGOT),
+        TUNGSTEN_PICKAXE | TUNGSTEN_SWORD | TUNGSTEN_AXE => Some(TUNGSTEN_INGOT),
         _ => None,
     }
 }
@@ -444,12 +479,15 @@ pub fn attack_damage(item: BlockId) -> i32 {
         WOOD_AXE => 10,
         STONE_AXE => 13,
         IRON_AXE => 16,
+        TUNGSTEN_AXE => 20,
         WOOD_SWORD => 8,
         STONE_SWORD => 11,
         IRON_SWORD => 14,
+        TUNGSTEN_SWORD => 18,
         PICKAXE => 4,
         STONE_PICKAXE => 5,
         IRON_PICKAXE => 6,
+        TUNGSTEN_PICKAXE => 8,
         _ => 3, // bare hands or any non-weapon item
     }
 }
@@ -461,6 +499,7 @@ pub fn attack_damage(item: BlockId) -> i32 {
 pub fn mined_drop(block: BlockId) -> BlockId {
     match block {
         IRON_ORE => RAW_IRON,
+        TUNGSTEN_ORE => RAW_TUNGSTEN,
         COAL_ORE => COAL,
         CAMPFIRE_LIT => CAMPFIRE,
         other => other,
@@ -584,6 +623,31 @@ mod tests {
         }
         // An axe is the fast tool for logs; bare hands aren't.
         assert!(mine_speed_mult(LOG, IRON_AXE) < mine_speed_mult(LOG, AIR));
+    }
+
+    #[test]
+    fn tungsten_outclasses_iron_across_every_tool() {
+        // Tungsten is the new top tier: it mines faster, lasts longer, and hits
+        // harder than iron in every tool family.
+        assert!(pickaxe_tier(TUNGSTEN_PICKAXE) > pickaxe_tier(IRON_PICKAXE));
+        assert!(mine_speed_mult(STONE, TUNGSTEN_PICKAXE) < mine_speed_mult(STONE, IRON_PICKAXE));
+        assert!(max_durability(TUNGSTEN_PICKAXE) > max_durability(IRON_PICKAXE));
+        assert!(attack_damage(TUNGSTEN_SWORD) > attack_damage(IRON_SWORD));
+        assert!(attack_damage(TUNGSTEN_AXE) > attack_damage(IRON_AXE));
+        assert!(attack_damage(TUNGSTEN_PICKAXE) > attack_damage(IRON_PICKAXE));
+        // Each tungsten tool behaves like a tool: stacks to one, has durability,
+        // and is mended at a forge with tungsten ingots.
+        for t in [TUNGSTEN_PICKAXE, TUNGSTEN_SWORD, TUNGSTEN_AXE] {
+            assert_eq!(max_stack(t), 1);
+            assert!(max_durability(t) > 0);
+            assert_eq!(repair_material(t), Some(TUNGSTEN_INGOT));
+        }
+        // Tungsten ore is the underworld's hardest dig: only an iron pickaxe or
+        // better frees it, and it yields raw tungsten when it does.
+        assert_eq!(required_tier(TUNGSTEN_ORE), 3);
+        assert!(!drops_when_mined(TUNGSTEN_ORE, STONE_PICKAXE));
+        assert!(drops_when_mined(TUNGSTEN_ORE, IRON_PICKAXE));
+        assert_eq!(mined_drop(TUNGSTEN_ORE), RAW_TUNGSTEN);
     }
 
     #[test]
