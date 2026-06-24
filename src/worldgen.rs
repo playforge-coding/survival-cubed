@@ -12,9 +12,10 @@ use crate::block::{
     AIR, ASH, CHARRED_ROCK, COAL_ORE, DIRT, FIRE, GRASS, IRON_ORE, LEAVES, LOG, SAND, STONE,
     TUNGSTEN_ORE, WATER,
 };
+use crate::entity::EntityKind;
 use crate::protocol::BlockId;
 use crate::structure::Structure;
-use crate::world::{CHUNK_SIZE, Chunk, Dimension, WORLD_HEIGHT, to_chunk};
+use crate::world::{CHUNK_SIZE, Chunk, Dimension, TILE_SIZE, WORLD_HEIGHT, to_chunk};
 
 /// A structure embedded in the binary and scattered across the overworld surface
 /// during generation. The bytes are the exact format creators save (see
@@ -700,9 +701,11 @@ impl WorldGen {
         self.column_rolls_structure(world_x) && !self.column_rolls_structure(world_x - 1)
     }
 
-    /// Stamp the embedded structure with its left edge at `root_x`, resting on the
-    /// surface and rising into the air. Clips to the chunk and only fills air, so
-    /// it never gouges terrain (matching [`place_tree`](Self::place_tree)).
+    /// Stamp the embedded structure's blocks with its left edge at `root_x`,
+    /// resting on the surface and rising into the air. Clips to the chunk and only
+    /// fills air, so it never gouges terrain (matching [`place_tree`](Self::place_tree)).
+    /// Block data only — terrain generation is pure, so any captured entities in
+    /// the structure are not spawned here (the embedded ruin has none).
     fn place_structure(&self, chunk: &mut Chunk, base_x: i32, base_y: i32, root_x: i32) {
         let Some(s) = &self.structure else {
             return;
@@ -712,6 +715,47 @@ impl WorldGen {
         for (dx, dy, b) in s.solid_offsets() {
             put_block(chunk, base_x, base_y, root_x + dx, top + dy, b);
         }
+    }
+
+    /// The creatures an embedded structure wants spawned in overworld chunk
+    /// `(cx, cy)`, each as `(world_x_px, world_y_px, root_x, kind)`. `root_x`
+    /// identifies the structure so the server can realize its creatures exactly
+    /// once. A root is reported only by the chunk holding the structure's base
+    /// row, so the creatures appear with the ruin (and near the player) rather
+    /// than when some far-off column chunk happens to load first. Empty when the
+    /// embedded structure carries no entities.
+    pub fn structure_entities_in_chunk(
+        &self,
+        cx: i32,
+        cy: i32,
+    ) -> Vec<(f32, f32, i32, EntityKind)> {
+        let mut out = Vec::new();
+        let Some(s) = &self.structure else {
+            return out;
+        };
+        if s.entities.is_empty() {
+            return out;
+        }
+        let base_x = cx * CHUNK_SIZE;
+        for root_x in base_x..base_x + CHUNK_SIZE {
+            if !self.structure_root_at(root_x) {
+                continue;
+            }
+            let surface = self.surface_height(root_x);
+            if surface > SEA_LEVEL || self.is_cave(root_x, surface, surface) {
+                continue;
+            }
+            if (surface - 1).div_euclid(CHUNK_SIZE) != cy {
+                continue;
+            }
+            let top = surface - s.height as i32;
+            let ox = root_x as f32 * TILE_SIZE;
+            let oy = top as f32 * TILE_SIZE;
+            for se in &s.entities {
+                out.push((ox + se.dx, oy + se.dy, root_x, se.kind.clone()));
+            }
+        }
+        out
     }
 }
 
@@ -899,6 +943,42 @@ mod tests {
             STONE,
             "ruin wall missing above the surface at column {root}"
         );
+    }
+
+    /// The embedded ruin carries a guardian slime, reported only by the chunk
+    /// holding the structure's base (so the server spawns it with the ruin).
+    #[test]
+    fn embedded_structure_reports_entities_for_its_base_chunk() {
+        use crate::world::to_chunk;
+
+        let worldgen = WorldGen::new(0xC0FFEE);
+        assert!(
+            worldgen
+                .structure
+                .as_ref()
+                .is_some_and(|s| !s.entities.is_empty()),
+            "embedded ruin should carry at least one creature"
+        );
+
+        let root = (-4000..4000)
+            .find(|&x| {
+                let s = worldgen.surface_height(x);
+                worldgen.structure_root_at(x) && s <= SEA_LEVEL && !worldgen.is_cave(x, s, s)
+            })
+            .expect("a ruin should root somewhere across 8000 columns");
+        let surface = worldgen.surface_height(root);
+        let ((ocx, ocy), _) = to_chunk(root, surface - 1);
+
+        // The base chunk reports the slime for this root.
+        let here = worldgen.structure_entities_in_chunk(ocx, ocy);
+        assert!(
+            here.iter()
+                .any(|(_, _, r, k)| *r == root && *k == EntityKind::Slime),
+            "base chunk should report the ruin's slime"
+        );
+        // A chunk well above the surface reports nothing for this root.
+        let above = worldgen.structure_entities_in_chunk(ocx, ocy - 3);
+        assert!(above.iter().all(|(_, _, r, _)| *r != root));
     }
 
     /// The underworld is built from charred rock — riddled with caves and dotted

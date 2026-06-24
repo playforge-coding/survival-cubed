@@ -2130,9 +2130,29 @@ impl App {
                 g.pos,
                 g.creator_tool,
                 selection_bounds(g),
-                g.pending_paste.as_ref().map(|s| (s.width, s.height)),
+                g.pending_paste
+                    .as_ref()
+                    .map(|s| (s.width, s.height, s.entities.len())),
             )
         };
+        // How many capturable creatures sit inside the current selection (shown so
+        // the creator knows the save will include them).
+        let sel_entities = sel.map(|(x0, y0, x1, y1)| {
+            let g = self.game.as_ref().unwrap();
+            let (ox, oy) = (x0 as f32 * TILE_SIZE, y0 as f32 * TILE_SIZE);
+            let rw = (x1 - x0 + 1) as f32 * TILE_SIZE;
+            let rh = (y1 - y0 + 1) as f32 * TILE_SIZE;
+            g.entities
+                .values()
+                .filter(|e| {
+                    !matches!(e.kind, EntityKind::Player { .. })
+                        && e.x >= ox
+                        && e.x < ox + rw
+                        && e.y >= oy
+                        && e.y < oy + rh
+                })
+                .count()
+        });
         let registry = self.registry.clone();
         // The item-giver input lives on `self`, but the window closure below
         // doesn't borrow `self`; pull the fields into locals and write them back.
@@ -2285,7 +2305,12 @@ impl App {
 
                 // Save the current selection.
                 if let Some((x0, y0, x1, y1)) = sel {
-                    ui.label(format!("Selection {}×{}", x1 - x0 + 1, y1 - y0 + 1));
+                    ui.label(format!(
+                        "Selection {}×{} · {} mob(s)",
+                        x1 - x0 + 1,
+                        y1 - y0 + 1,
+                        sel_entities.unwrap_or(0)
+                    ));
                     ui.horizontal(|ui| {
                         ui.add(
                             egui::TextEdit::singleline(&mut name_input)
@@ -2331,10 +2356,10 @@ impl App {
                         });
                 }
 
-                if let Some((w, h)) = pasting {
+                if let Some((w, h, n)) = pasting {
                     ui.colored_label(
                         egui::Color32::LIGHT_BLUE,
-                        format!("Placing {w}×{h}: LMB stamps · RMB cancels"),
+                        format!("Placing {w}×{h} · {n} mob(s): LMB stamps · RMB cancels"),
                     );
                     if ui.button("Cancel paste").clicked() {
                         cancel_paste = true;
@@ -2378,15 +2403,24 @@ impl App {
         if do_save && let Some((x0, y0, x1, y1)) = sel {
             let structure = {
                 let g = self.game.as_ref().unwrap();
-                Structure::from_region(x0, y0, x1, y1, |x, y| g.world.get_block(x, y))
+                // Capture every non-player creature in the region, as world-pixel
+                // positions; `from_region` offsets and clips them to the bounds.
+                let ents: Vec<(f32, f32, EntityKind)> = g
+                    .entities
+                    .values()
+                    .filter(|e| !matches!(e.kind, EntityKind::Player { .. }))
+                    .map(|e| (e.x, e.y, structure_entity_kind(&e.kind)))
+                    .collect();
+                Structure::from_region(x0, y0, x1, y1, |x, y| g.world.get_block(x, y), ents)
             };
             match crate::save::save_structure(&name_input, &structure) {
                 Ok(()) => {
                     self.structure_status = format!(
-                        "Saved '{}' ({}×{}).",
+                        "Saved '{}' ({}×{}, {} mob(s)).",
                         name_input.trim(),
                         structure.width,
-                        structure.height
+                        structure.height,
+                        structure.entities.len()
                     );
                     self.structure_list = crate::save::list_structures();
                     name_input.clear();
@@ -2398,11 +2432,12 @@ impl App {
         if let Some(nm) = load_name {
             match crate::save::load_structure(&nm) {
                 Ok(s) => {
-                    let (w, h) = (s.width, s.height);
+                    let (w, h, n) = (s.width, s.height, s.entities.len());
                     if let Some(g) = self.game.as_mut() {
                         g.pending_paste = Some(s);
                     }
-                    self.structure_status = format!("Loaded '{nm}' ({w}×{h}) — LMB to place.");
+                    self.structure_status =
+                        format!("Loaded '{nm}' ({w}×{h}, {n} mob(s)) — LMB to place.");
                 }
                 Err(e) => self.structure_status = format!("Load failed: {e:#}"),
             }
@@ -3629,6 +3664,17 @@ fn creator_structure_input(
                 }
                 let _ = net.commands.send(NetCommand::CreatorSetBlocks { cells });
             }
+            // Re-spawn the captured creatures relative to the stamp anchor (the
+            // cursor cell). The server owns entities, so just ask it to spawn each.
+            let anchor_x = tx as f32 * TILE_SIZE;
+            let anchor_y = ty as f32 * TILE_SIZE;
+            for se in &structure.entities {
+                let _ = net.commands.send(NetCommand::SpawnEntity {
+                    kind: se.kind.clone(),
+                    x: anchor_x + se.dx,
+                    y: anchor_y + se.dy,
+                });
+            }
         }
         return true;
     }
@@ -3650,6 +3696,19 @@ fn creator_structure_input(
             }
             true
         }
+    }
+}
+
+/// Normalize an entity kind for storage in a structure: a captured cat is set
+/// wild (owner cleared) so a pasted or worldgen copy doesn't belong to whoever
+/// tamed the original. Other kinds are taken as-is.
+fn structure_entity_kind(kind: &EntityKind) -> EntityKind {
+    match kind {
+        EntityKind::Cat { sitting, .. } => EntityKind::Cat {
+            owner: None,
+            sitting: *sitting,
+        },
+        other => other.clone(),
     }
 }
 

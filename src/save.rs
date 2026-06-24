@@ -40,7 +40,7 @@ const UNDERWORLD_CHUNKS_DIR: &str = "chunks_underworld";
 /// Magic prefix on `world.dat` ("SCWD" — Survival Cubed World Data).
 const MAGIC: u32 = 0x5343_5744;
 /// On-disk format version; bump on any incompatible layout change.
-const VERSION: u32 = 9;
+const VERSION: u32 = 10;
 
 /// Subdirectory name holding a dimension's chunks.
 fn chunks_dir_name(dim: Dimension) -> &'static str {
@@ -116,6 +116,11 @@ pub struct WorldMeta {
     /// the world is created and fixed thereafter.
     #[serde(default)]
     pub creator_server: bool,
+    /// Root columns (overworld `world_x`) of embedded worldgen structures whose
+    /// captured creatures have already been spawned, so they are realized exactly
+    /// once even as their chunk is re-streamed or the world is reloaded.
+    #[serde(default)]
+    pub spawned_structure_roots: Vec<i32>,
 }
 
 /// Reads and writes a single world's files under `dir`.
@@ -429,12 +434,14 @@ mod tests {
                 "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2g".into(),
             )],
             creator_server: true,
+            spawned_structure_roots: vec![-5, 42],
         };
         store.save_meta(&meta).unwrap();
 
         let got = store.load_meta().unwrap().expect("save exists");
         assert_eq!(got.seed, meta.seed);
         assert_eq!(got.creator_server, meta.creator_server);
+        assert_eq!(got.spawned_structure_roots, meta.spawned_structure_roots);
         assert_eq!(got.elapsed_secs, meta.elapsed_secs);
         assert_eq!(got.next_id, meta.next_id);
         assert_eq!(got.spawn, meta.spawn);

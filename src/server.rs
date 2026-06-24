@@ -501,6 +501,11 @@ struct Shared {
     /// them when picking a target, so monsters never attack a creator. Updated by
     /// [`ClientMessage::SetCreator`] and cleared on disconnect.
     creators: Mutex<HashSet<EntityId>>,
+    /// Root columns of embedded worldgen structures whose creatures have already
+    /// been spawned. Consulted the first time a structure's chunk is generated so
+    /// its creatures appear exactly once. Persisted in
+    /// [`WorldMeta::spawned_structure_roots`].
+    spawned_structure_roots: Mutex<HashSet<i32>>,
     /// Saved state of every player who has joined, keyed by name. A player is
     /// moved out of here (into a live entity) while connected and folded back in
     /// on disconnect, so it survives both reconnects and restarts.
@@ -681,6 +686,12 @@ impl Shared {
             .map(|(&(dim, x, y), &secs)| (dim, x, y, secs))
             .collect();
         let placed_logs = self.placed_logs.lock().iter().copied().collect();
+        let spawned_structure_roots = self
+            .spawned_structure_roots
+            .lock()
+            .iter()
+            .copied()
+            .collect();
 
         let meta = WorldMeta {
             seed,
@@ -699,6 +710,7 @@ impl Shared {
                 .map(|(name, hash)| (name.clone(), hash.clone()))
                 .collect(),
             creator_server: self.creator_world,
+            spawned_structure_roots,
         };
         if let Err(e) = self
             .world(Dimension::Overworld)
@@ -2266,6 +2278,7 @@ fn build_endpoint(
     let mut accounts = HashMap::new();
     let mut campfires = HashMap::new();
     let mut placed_logs = HashSet::new();
+    let mut spawned_structure_roots = HashSet::new();
     if let Some(m) = &saved {
         for e in &m.entities {
             overworld_entities.insert(e.clone());
@@ -2285,6 +2298,7 @@ fn build_endpoint(
         for &(dim, x, y) in &m.placed_logs {
             placed_logs.insert((dim, x, y));
         }
+        spawned_structure_roots.extend(m.spawned_structure_roots.iter().copied());
     }
 
     // One terrain world per dimension, each with its own generator (same seed) and
@@ -2325,6 +2339,7 @@ fn build_endpoint(
         creator_token,
         creator_world,
         creators: Mutex::new(HashSet::new()),
+        spawned_structure_roots: Mutex::new(spawned_structure_roots),
         saved_players: Mutex::new(saved_players),
         accounts: Mutex::new(accounts),
         inventories: Mutex::new(HashMap::new()),
@@ -2463,6 +2478,44 @@ fn maybe_spawn_in_chunk(shared: &Shared, cx: i32, cy: i32) {
     drop(world);
 
     for entity in spawned {
+        shared.broadcast_dim(Dimension::Overworld, ServerMessage::EntitySpawn { entity });
+    }
+}
+
+/// Spawn the creatures embedded in a worldgen structure when its overworld chunk
+/// first comes into existence — but only once per structure, ever. The root
+/// column is recorded in [`Shared::spawned_structure_roots`] (persisted), so a
+/// re-streamed chunk or a reloaded world never duplicates them.
+fn maybe_spawn_structure_entities(shared: &Shared, cx: i32, cy: i32) {
+    let candidates = {
+        let world = shared.world(Dimension::Overworld).lock();
+        world.generator.structure_entities_in_chunk(cx, cy)
+    };
+    if candidates.is_empty() {
+        return;
+    }
+
+    let mut spawned = Vec::new();
+    {
+        let mut done = shared.spawned_structure_roots.lock();
+        let mut entities = shared.entities(Dimension::Overworld).lock();
+        for (x, y, root_x, kind) in candidates {
+            // `contains` (not `insert`) here so every creature of a not-yet-done
+            // root spawns; the root is marked done after the loop.
+            if done.contains(&root_x) {
+                continue;
+            }
+            let id = shared.alloc_id();
+            let entity = Entity::new(id, kind, x, y);
+            entities.insert(entity.clone());
+            spawned.push((root_x, entity));
+        }
+        for (root_x, _) in &spawned {
+            done.insert(*root_x);
+        }
+    }
+
+    for (_, entity) in spawned {
         shared.broadcast_dim(Dimension::Overworld, ServerMessage::EntitySpawn { entity });
     }
 }
@@ -4675,6 +4728,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                 maybe_spawn_spiders(&shared, cx, cy);
                                 maybe_spawn_snakes(&shared, cx, cy);
                                 maybe_spawn_cats(&shared, cx, cy);
+                                maybe_spawn_structure_entities(&shared, cx, cy);
                             }
                             Dimension::Underworld => {
                                 maybe_spawn_charred_skeletons(&shared, cx, cy);
