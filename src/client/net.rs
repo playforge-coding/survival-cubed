@@ -258,14 +258,17 @@ pub struct NetHandle {
 
 /// Connect to `addr`. `host_label` keys the `known_hosts` store and is shown in
 /// prompts. `player_name` is the display name announced in `Hello` (used to
-/// restore saved state and to attribute chat). `trust`, if set, is a fingerprint
-/// to silently accept (used by the embedded singleplayer server). `dev_token`,
-/// if set, is the per-server dev secret presented in `Hello` to authorize dev
-/// mode (only the creator's own client holds it).
+/// restore saved state and to attribute chat). `password` authenticates that
+/// name with the server (registering it on first join, or matching the stored
+/// one thereafter). `trust`, if set, is a fingerprint to silently accept (used
+/// by the embedded singleplayer server). `dev_token`, if set, is the per-server
+/// dev secret presented in `Hello` to authorize dev mode (only the creator's own
+/// client holds it).
 pub fn connect(
     addr: SocketAddr,
     host_label: String,
     player_name: String,
+    password: String,
     trust: Option<[u8; 32]>,
     dev_token: Option<u64>,
 ) -> NetHandle {
@@ -293,6 +296,7 @@ pub fn connect(
                     addr,
                     host_label,
                     player_name,
+                    password,
                     trust,
                     dev_token,
                     &ev_for_thread,
@@ -318,6 +322,7 @@ async fn client_main(
     addr: SocketAddr,
     host_label: String,
     player_name: String,
+    password: String,
     trust: Option<[u8; 32]>,
     dev_token: Option<u64>,
     ev_tx: &Sender<NetEvent>,
@@ -349,6 +354,7 @@ async fn client_main(
         &mut send,
         &ClientMessage::Hello {
             name: player_name,
+            password,
             dev_token,
         },
     )

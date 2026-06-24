@@ -31,6 +31,8 @@ pub const SLIME_SIZE: (f32, f32) = (12.0, 12.0);
 pub const CHICKEN_SIZE: (f32, f32) = (12.0, 14.0);
 /// Collision/draw size (width, height) in pixels of a goat.
 pub const GOAT_SIZE: (f32, f32) = (16.0, 16.0);
+/// Collision/draw size (width, height) in pixels of a cat — a small, low critter.
+pub const CAT_SIZE: (f32, f32) = (15.0, 13.0);
 /// Collision/draw size (width, height) in pixels of a zombie.
 pub const ZOMBIE_SIZE: (f32, f32) = (14.0, 19.0);
 /// Collision/draw size (width, height) in pixels of a spider — low and wide.
@@ -60,6 +62,9 @@ pub const SLIME_MAX_HEALTH: i32 = 10;
 pub const CHICKEN_MAX_HEALTH: i32 = 8;
 /// Maximum health of a goat, in hit points. Sturdier than the surface critters.
 pub const GOAT_MAX_HEALTH: i32 = 16;
+/// Maximum health of a cat, in hit points. Frail — a tamed cat that dies simply
+/// returns to its owner's respawn point rather than being gone for good.
+pub const CAT_MAX_HEALTH: i32 = 8;
 /// Maximum health of a zombie, in hit points. Far tougher than anything else
 /// that walks the surface — it soaks up many hits before going down.
 pub const ZOMBIE_MAX_HEALTH: i32 = 40;
@@ -90,6 +95,17 @@ pub enum EntityKind {
     /// A sturdy mountain grazer that calmly roams the stone slopes. Native to
     /// the mountains biome. Server-simulated.
     Goat,
+    /// A small, peaceable critter that spawns rarely in the forest. A wild cat
+    /// (`owner` = `None`) just wanders; feeding it cooked meat tames it, stamping
+    /// the feeding player's **name** into `owner`. The name (not a volatile entity
+    /// id) is what's stored so the bond survives a server restart, where players
+    /// are re-allocated fresh ids but keep their names — the cat resolves its
+    /// owner's live id by name each tick it needs one. Players can never attack a
+    /// cat. A tamed cat that dies (to anything but fall damage, which never
+    /// touches a server creature) doesn't vanish — it reappears at its owner's
+    /// respawn point — and it never despawns for distance, teleporting to its
+    /// owner when they wander too far. Server-simulated.
+    Cat { owner: Option<String> },
     /// A slow, tough, hard-hitting undead that only roams at night and burns up
     /// in daylight (playing a death animation before despawning). Spawns in any
     /// biome after dark. Server-simulated.
@@ -132,6 +148,7 @@ impl EntityKind {
             EntityKind::Slime => SLIME_SIZE,
             EntityKind::Chicken => CHICKEN_SIZE,
             EntityKind::Goat => GOAT_SIZE,
+            EntityKind::Cat { .. } => CAT_SIZE,
             EntityKind::Zombie => ZOMBIE_SIZE,
             EntityKind::Spider => SPIDER_SIZE,
             EntityKind::Skeleton => SKELETON_SIZE,
@@ -152,6 +169,24 @@ impl EntityKind {
         matches!(self, EntityKind::DroppedItem { .. })
     }
 
+    /// Whether this is a cat (tamed or wild). Cats are special: immune to player
+    /// attacks, exempt from distance despawn, and (when tamed) respawn at their
+    /// owner's respawn point instead of being removed on death.
+    pub fn is_cat(&self) -> bool {
+        matches!(self, EntityKind::Cat { .. })
+    }
+
+    /// The name of the player who has tamed this entity, if any. Only a tamed
+    /// [`EntityKind::Cat`] has an owner; everything else returns `None`. Callers
+    /// resolve this name to a live entity id on demand (see
+    /// [`crate::server`]'s `find_player_by_name`).
+    pub fn owner(&self) -> Option<&str> {
+        match self {
+            EntityKind::Cat { owner } => owner.as_deref(),
+            _ => None,
+        }
+    }
+
     /// Full health for this kind of entity. Players cap at
     /// [`PLAYER_MAX_HEALTH`]; other creatures have their own (see the
     /// constants above).
@@ -161,6 +196,7 @@ impl EntityKind {
             EntityKind::Slime => SLIME_MAX_HEALTH,
             EntityKind::Chicken => CHICKEN_MAX_HEALTH,
             EntityKind::Goat => GOAT_MAX_HEALTH,
+            EntityKind::Cat { .. } => CAT_MAX_HEALTH,
             EntityKind::Zombie => ZOMBIE_MAX_HEALTH,
             EntityKind::Spider => SPIDER_MAX_HEALTH,
             EntityKind::Skeleton => SKELETON_MAX_HEALTH,

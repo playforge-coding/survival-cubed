@@ -20,6 +20,7 @@ use quinn::Endpoint;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use tokio::sync::mpsc;
 
+use crate::auth;
 use crate::block::BlockRegistry;
 use crate::daylight;
 use crate::entity::{BONE_SIZE, Entities, Entity, EntityId, EntityKind, ITEM_SIZE, PLAYER_SIZE};
@@ -44,6 +45,15 @@ const CHICKEN_FLEE_SPEED: f32 = 70.0;
 const CHICKEN_FLEE_TIME: f32 = 4.0;
 /// Unhurried wander speed of a goat, in pixels/second.
 const GOAT_SPEED: f32 = 18.0;
+/// Padding wander speed of a cat, in pixels/second.
+const CAT_SPEED: f32 = 24.0;
+/// Percent chance that a fresh forest surface chunk seeds a cat. Deliberately
+/// tiny — cats are a rare forest find, not a common critter.
+const CAT_CHUNK_CHANCE: u32 = 6;
+/// Distance (px) past which a tamed cat teleports to its owner instead of
+/// padding along on the ground. Set beyond a screen's reach so a cat keeping
+/// pace stays put, and only a cat the player has truly left behind warps to them.
+const CAT_TELEPORT_DIST: f32 = 320.0;
 /// Shambling speed of a zombie, in pixels/second — noticeably slower than a
 /// slime, so a player can outrun one but is in trouble if cornered.
 const ZOMBIE_SPEED: f32 = 16.0;
@@ -224,6 +234,16 @@ const MAX_CHAT_LEN: usize = 256;
 /// rejections can be told apart on the wire; the accompanying reason carries the
 /// human-readable explanation the client surfaces.
 const BANNED_CLOSE: u32 = 2;
+
+/// QUIC application close code the server uses to reject a failed login (a name
+/// already in use, a wrong password, or a malformed/missing `Hello`). Distinct
+/// from the version and ban close codes; the accompanying reason carries the
+/// human-readable explanation the client shows the player.
+const AUTH_FAILED_CLOSE: u32 = 3;
+
+/// Longest player name the server accepts at login, in characters. Keeps names
+/// to a sane width for chat attribution and the on-screen label.
+const MAX_NAME_LEN: usize = 24;
 
 /// Pseudo-sender attributed to server-originated chat lines: admin command
 /// feedback and ban announcements. Distinct from any real player name.
@@ -445,6 +465,14 @@ struct Shared {
     /// moved out of here (into a live entity) while connected and folded back in
     /// on disconnect, so it survives both reconnects and restarts.
     saved_players: Mutex<HashMap<String, SavedPlayer>>,
+    /// Account credentials keyed by player name: the encoded, salted password
+    /// hash (see [`crate::auth`]) for everyone who has registered on this world.
+    /// Consulted at handshake time to authenticate a `Hello`, and added to when a
+    /// new name first joins. Unlike [`Self::saved_players`], an entry is *not*
+    /// removed while the player is connected — it is the durable record of who
+    /// owns a name. Persisted in [`WorldMeta::accounts`] so logins survive
+    /// restarts.
+    accounts: Mutex<HashMap<String, String>>,
     /// Slot inventory of every currently-connected player, keyed by entity id.
     /// Authoritative: placements consume from it and pickups add to it. Folded
     /// into [`SavedPlayer`] on disconnect so it persists.
@@ -624,6 +652,12 @@ impl Shared {
             players: players.into_values().collect(),
             campfires,
             placed_logs,
+            accounts: self
+                .accounts
+                .lock()
+                .iter()
+                .map(|(name, hash)| (name.clone(), hash.clone()))
+                .collect(),
         };
         if let Err(e) = self
             .world(Dimension::Overworld)
@@ -669,6 +703,51 @@ impl Shared {
             from: SERVER_CHAT_FROM.to_string(),
             text: text.into(),
         });
+    }
+
+    /// Authenticate a `Hello`'s `name`/`password` before the player is admitted.
+    /// Returns `Ok(())` to allow the join, or `Err(reason)` with a player-facing
+    /// explanation to reject it. Enforces three things:
+    ///
+    /// 1. The name is non-empty and not absurdly long.
+    /// 2. No other *connected* player is already using that name — so two people
+    ///    can never be online under the same identity at once.
+    /// 3. The password registers a brand-new account (first join under this name)
+    ///    or matches the salted hash stored for an existing one — so nobody can
+    ///    take over someone else's name without their password.
+    ///
+    /// A new account's hash is recorded here, so the credential exists from the
+    /// moment the player joins (it is persisted on the next save).
+    fn authenticate(&self, name: &str, password: &str) -> Result<(), String> {
+        if name.is_empty() {
+            return Err("Please choose a name.".to_string());
+        }
+        if name.chars().count() > MAX_NAME_LEN {
+            return Err(format!("Name is too long (max {MAX_NAME_LEN} characters)."));
+        }
+        if password.is_empty() {
+            return Err("A password is required to join this server.".to_string());
+        }
+        // Refuse a name that someone is currently connected under.
+        if self.find_player_by_name(name).is_some() {
+            return Err("That name is already in use by another player.".to_string());
+        }
+        // Register a new account, or verify the password of an existing one.
+        let mut accounts = self.accounts.lock();
+        match accounts.get(name) {
+            Some(stored) => {
+                if auth::verify_password(password, stored) {
+                    Ok(())
+                } else {
+                    Err("Incorrect password for that name.".to_string())
+                }
+            }
+            None => {
+                accounts.insert(name.to_string(), auth::hash_password(password));
+                log::info!("registered new account '{name}'");
+                Ok(())
+            }
+        }
     }
 
     /// Find the connected player whose name matches `name` (case-insensitively),
@@ -1172,6 +1251,68 @@ impl Shared {
                 None,
             )
         }
+    }
+
+    /// React to player `id` swinging at the cat entity `target` while holding
+    /// `held`. Players can never *hurt* a cat (what a monster that would be), so a
+    /// swing's only possible effect is to feed it: one [`COOKED_MEAT`] tames a
+    /// *wild* cat — stamping `id` as its owner and topping it up to full health —
+    /// at the cost of that serving. Anything else (a different held item, an
+    /// out-of-reach swing, an already-tamed cat, or an empty pantry) is a harmless
+    /// no-op. Locks inventories before entities, matching [`Self::eat`].
+    fn try_feed_cat(&self, id: EntityId, target: EntityId, held: BlockId, dim: Dimension) {
+        if held != crate::block::COOKED_MEAT {
+            return;
+        }
+        let tamed = {
+            let mut invs = self.inventories.lock();
+            let mut entities = self.entities(dim).lock();
+            // The target must still be a wild cat within the feeder's reach, and
+            // the feeder must have a name to stamp (an unidentified player can't
+            // tame, since the bond is stored by name). Capture that name here.
+            let owner_name = match (entities.get(id), entities.get(target)) {
+                (Some(a), Some(b))
+                    if matches!(b.kind, EntityKind::Cat { owner: None })
+                        && aabb_gap(
+                            a.x,
+                            a.y,
+                            a.size().0,
+                            a.size().1,
+                            b.x,
+                            b.y,
+                            b.size().0,
+                            b.size().1,
+                        ) <= PLAYER_ATTACK_REACH =>
+                {
+                    match &a.kind {
+                        EntityKind::Player { name } if !name.is_empty() => name.clone(),
+                        _ => return,
+                    }
+                }
+                _ => return,
+            };
+            // Spend one cooked meat; bail (without taming) if they hold none.
+            let Some(inv) = invs.get_mut(&id) else {
+                return;
+            };
+            if inv.count(crate::block::COOKED_MEAT) == 0 {
+                return;
+            }
+            inv.remove(crate::block::COOKED_MEAT, 1);
+            // Stamp the feeder as owner and send the now-happy cat to full health.
+            entities.get_mut(target).map(|e| {
+                e.kind = EntityKind::Cat {
+                    owner: Some(owner_name),
+                };
+                e.health = e.max_health;
+                e.clone()
+            })
+        };
+        // Resync the cat's full (now owned) description and the player's pantry.
+        if let Some(entity) = tamed {
+            self.broadcast_dim(dim, ServerMessage::EntitySpawn { entity });
+        }
+        self.send_inventory(id);
     }
 
     /// Feed one unit of `fuel` to the campfire at cell `(x, y)` for player `id`:
@@ -2020,6 +2161,7 @@ fn build_endpoint(
     let mut overworld_entities = Entities::new();
     let mut underworld_entities = Entities::new();
     let mut saved_players = HashMap::new();
+    let mut accounts = HashMap::new();
     let mut campfires = HashMap::new();
     let mut placed_logs = HashSet::new();
     if let Some(m) = &saved {
@@ -2031,6 +2173,9 @@ fn build_endpoint(
         }
         for p in &m.players {
             saved_players.insert(p.name.clone(), p.clone());
+        }
+        for (name, hash) in &m.accounts {
+            accounts.insert(name.clone(), hash.clone());
         }
         for &(dim, x, y, secs) in &m.campfires {
             campfires.insert((dim, x, y), secs);
@@ -2077,6 +2222,7 @@ fn build_endpoint(
         start: Mutex::new(start),
         dev_token,
         saved_players: Mutex::new(saved_players),
+        accounts: Mutex::new(accounts),
         inventories: Mutex::new(HashMap::new()),
         respawn_points: Mutex::new(HashMap::new()),
         waypoints: Mutex::new(HashMap::new()),
@@ -2215,6 +2361,48 @@ fn maybe_spawn_in_chunk(shared: &Shared, cx: i32, cy: i32) {
     for entity in spawned {
         shared.broadcast_dim(Dimension::Overworld, ServerMessage::EntitySpawn { entity });
     }
+}
+
+/// Possibly seed a single wild cat into a freshly generated forest surface chunk.
+/// Cats are a rare forest find, so the per-chunk chance is deliberately tiny and
+/// at most one appears. Like the other surface critters it only spawns in the
+/// chunk that actually holds this column's grass line, and the decision is
+/// deterministic per chunk via [`chunk_hash`] on its own salt range so exploring
+/// the same terrain never double-spawns. A fresh cat is wild (`owner: None`).
+fn maybe_spawn_cats(shared: &Shared, cx: i32, cy: i32) {
+    let world = shared.world(Dimension::Overworld).lock();
+    let seed = world.generator.seed();
+    if chunk_hash(seed, cx, cy, 300) % 100 >= CAT_CHUNK_CHANCE {
+        return;
+    }
+
+    let base_x = cx * CHUNK_SIZE;
+    let chunk_top = cy * CHUNK_SIZE;
+    let chunk_bottom = chunk_top + CHUNK_SIZE;
+    let (_, h) = EntityKind::Cat { owner: None }.size();
+
+    // Drop the cat onto the grass of one scattered column, but only where this
+    // chunk holds the surface and the column is forest.
+    let lx = chunk_hash(seed, cx, cy, 301) % CHUNK_SIZE as u32;
+    let cell_x = base_x + lx as i32;
+    let surface = world.surface(cell_x);
+    if world.biome(cell_x) != Biome::Forest || surface < chunk_top || surface >= chunk_bottom {
+        return;
+    }
+    let id = shared.alloc_id();
+    let entity = Entity::new(
+        id,
+        EntityKind::Cat { owner: None },
+        cell_x as f32 * TILE_SIZE,
+        surface as f32 * TILE_SIZE - h,
+    );
+    drop(world);
+
+    shared
+        .entities(Dimension::Overworld)
+        .lock()
+        .insert(entity.clone());
+    shared.broadcast_dim(Dimension::Overworld, ServerMessage::EntitySpawn { entity });
 }
 
 /// Possibly seed charred skeletons into a freshly generated underworld chunk.
@@ -2604,6 +2792,17 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         .map(|e| (e.id, e.x, e.y))
         .collect();
 
+    // Named snapshot of this dimension's players (id + position keyed by name), so
+    // a tamed cat can resolve its owner — stored by name, not by a volatile id —
+    // to a live entity without re-locking the entities map mid-tick.
+    let named_players: Vec<(String, EntityId, f32, f32)> = entities
+        .values()
+        .filter_map(|e| match &e.kind {
+            EntityKind::Player { name } if !name.is_empty() => Some((name.clone(), e.id, e.x, e.y)),
+            _ => None,
+        })
+        .collect();
+
     // Cull any non-player entity that has drifted beyond DESPAWN_DIST of every
     // player, removing it before it is simulated this tick. This keeps the world
     // from accumulating creatures and stray items in terrain nobody is near
@@ -2615,7 +2814,10 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     } else {
         entities
             .values()
-            .filter(|e| !e.kind.is_player())
+            // Players are authoritative on their clients; cats never despawn for
+            // distance (they teleport to their owner instead). Everything else is
+            // culled once it drifts beyond DESPAWN_DIST of every player.
+            .filter(|e| !e.kind.is_player() && !e.kind.is_cat())
             .filter(|e| {
                 let (w, h) = e.size();
                 nearest_player(&players, e.x + w * 0.5, e.y + h * 0.5, DESPAWN_DIST).is_none()
@@ -2640,6 +2842,11 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     let goat_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::Goat))
+        .map(|e| e.id)
+        .collect();
+    let cat_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| e.kind.is_cat())
         .map(|e| e.id)
         .collect();
     let zombie_ids: Vec<EntityId> = entities
@@ -2874,6 +3081,63 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         let home = *e.home_x.get_or_insert(e.x);
         let dir = wander_dir(scx, e.vx, home);
         let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, GOAT_SPEED, false);
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: m.vx,
+            vy: m.vy,
+        });
+    }
+
+    // Cats: peaceable forest critters that simply pad around their home patch,
+    // negotiating one-block steps and turning back at walls and ledges like a
+    // goat. A *tamed* cat additionally keeps up with its owner: when the owner
+    // strays beyond CAT_TELEPORT_DIST it warps to them (and re-anchors its home
+    // there) instead of being left behind — cats never despawn, so this is how a
+    // cat follows its player across the world.
+    for id in cat_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+
+        // A tamed cat whose owner (resolved by name to a live player in this
+        // dimension) has wandered too far teleports onto them. Cloned to an owned
+        // name first so no borrow of `e` is held across the reposition below.
+        let owner = e.kind.owner().map(str::to_owned);
+        if let Some(owner) = &owner
+            && let Some(&(_, _, ox, oy)) = named_players.iter().find(|(n, ..)| n == owner)
+            && (((ox + PLAYER_SIZE.0 * 0.5) - scx).powi(2)
+                + ((oy + PLAYER_SIZE.1 * 0.5) - scy).powi(2))
+                > CAT_TELEPORT_DIST * CAT_TELEPORT_DIST
+        {
+            // Land at the owner's feet and treat that as its new home anchor so it
+            // loiters around them rather than drifting back toward where it spawned.
+            e.x = ox;
+            e.y = oy;
+            e.vx = 0.0;
+            e.vy = 0.0;
+            e.home_x = Some(ox);
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: ox,
+                y: oy,
+                vx: 0.0,
+                vy: 0.0,
+            });
+            continue;
+        }
+
+        let home = *e.home_x.get_or_insert(e.x);
+        let dir = wander_dir(scx, e.vx, home);
+        let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, CAT_SPEED, false);
         e.x = m.x;
         e.y = m.y;
         e.vx = m.vx;
@@ -3304,17 +3568,31 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         broadcasts.push(ServerMessage::EntityMoved { id, x, y, vx, vy });
     }
 
-    // Fire damage: a player whose body overlaps a burning cell is singed on a
-    // steady interval. Detected while the world lock is still held; applied below.
+    // Fire damage: a player (or a cat — its one mortal hazard, since a server
+    // creature never takes fall damage) whose body overlaps a burning cell is
+    // singed on a steady interval. Detected while the world lock is still held;
+    // applied below.
     let mut fire_hits: Vec<EntityId> = Vec::new();
     {
         let mut cds = shared.fire_cd.lock();
         for &(pid, px, py) in &players {
             let cd = cds.entry(pid).or_insert(0.0);
             *cd = (*cd - TICK_DT).max(0.0);
-            if *cd <= 0.0 && player_in_fire(&mut world, px, py) {
+            if *cd <= 0.0 && body_in_fire(&mut world, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1) {
                 *cd = FIRE_DAMAGE_INTERVAL;
                 fire_hits.push(pid);
+            }
+        }
+        for e in entities.values() {
+            if !e.kind.is_cat() {
+                continue;
+            }
+            let (w, h) = e.size();
+            let cd = cds.entry(e.id).or_insert(0.0);
+            *cd = (*cd - TICK_DT).max(0.0);
+            if *cd <= 0.0 && body_in_fire(&mut world, e.x, e.y, w, h) {
+                *cd = FIRE_DAMAGE_INTERVAL;
+                fire_hits.push(e.id);
             }
         }
     }
@@ -3338,15 +3616,24 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             respawns.push(r);
         }
     }
-    for pid in fire_hits {
-        let (msgs, respawn) = apply_damage(
-            &mut entities,
-            pid,
-            FIRE_DAMAGE,
-            (0.0, 0.0),
-            dim,
-            shared.respawn_target(pid),
-        );
+    for eid in fire_hits {
+        // A cat returns to *its owner's* respawn point; a player to their own. The
+        // owner is stored by name, so resolve it to a live player's id via the
+        // tick's name snapshot (no entities re-lock); an absent/offline owner falls
+        // back to world spawn.
+        let owner = entities
+            .get(eid)
+            .and_then(|e| e.kind.owner().map(str::to_owned));
+        let target = match owner {
+            Some(name) => named_players
+                .iter()
+                .find(|(n, ..)| *n == name)
+                .map(|&(_, oid, _, _)| shared.respawn_target(oid))
+                .unwrap_or((Dimension::Overworld, shared.spawn.0, shared.spawn.1)),
+            None => shared.respawn_target(eid),
+        };
+        let (msgs, respawn) =
+            apply_damage(&mut entities, eid, FIRE_DAMAGE, (0.0, 0.0), dim, target);
         broadcasts.extend(msgs);
         if let Some(r) = respawn {
             respawns.push(r);
@@ -3369,13 +3656,13 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     }
 }
 
-/// Whether the player AABB at `(px, py)` overlaps any burning cell. Mirrors
-/// [`body_in_water`] for fire, so a player standing in flame takes damage.
-fn player_in_fire(world: &mut ServerWorld, px: f32, py: f32) -> bool {
-    let x0 = (px / TILE_SIZE).floor() as i32;
-    let x1 = ((px + PLAYER_SIZE.0 - EPS) / TILE_SIZE).floor() as i32;
-    let y0 = (py / TILE_SIZE).floor() as i32;
-    let y1 = ((py + PLAYER_SIZE.1 - EPS) / TILE_SIZE).floor() as i32;
+/// Whether the AABB at `(x, y)` of size `(w, h)` overlaps any burning cell, so an
+/// entity standing in flame takes damage. Mirrors `body_in_water` for fire.
+fn body_in_fire(world: &mut ServerWorld, x: f32, y: f32, w: f32, h: f32) -> bool {
+    let x0 = (x / TILE_SIZE).floor() as i32;
+    let x1 = ((x + w - EPS) / TILE_SIZE).floor() as i32;
+    let y0 = (y / TILE_SIZE).floor() as i32;
+    let y1 = ((y + h - EPS) / TILE_SIZE).floor() as i32;
     (y0..=y1).any(|ty| (x0..=x1).any(|tx| crate::block::is_fire(world.get(tx, ty))))
 }
 
@@ -3492,6 +3779,34 @@ fn apply_damage(
                 y: ry,
             }),
         )
+    } else if e.kind.owner().is_some() {
+        // A tamed cat doesn't die for good: it reappears at its owner's respawn
+        // point, healed and re-anchoring its wander there, rather than being
+        // removed from the world. (Repositioned within the current dimension —
+        // owner respawn points are effectively always the overworld surface a cat
+        // roams, so a cross-dimension respawn is not worth shuttling it for.)
+        let (_, rx, ry) = respawn;
+        e.health = e.max_health;
+        e.x = rx;
+        e.y = ry;
+        e.vx = 0.0;
+        e.vy = 0.0;
+        e.home_x = Some(rx);
+        let health = e.health;
+        let max_health = e.max_health;
+        msgs.push(ServerMessage::EntityMoved {
+            id,
+            x: rx,
+            y: ry,
+            vx: 0.0,
+            vy: 0.0,
+        });
+        msgs.push(ServerMessage::EntityHealth {
+            id,
+            health,
+            max_health,
+        });
+        (msgs, None)
     } else {
         entities.remove(id);
         msgs.push(ServerMessage::EntityDespawn { id });
@@ -3807,6 +4122,43 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
         return Ok(());
     }
 
+    // The first message must be `Hello`; authenticate it before admitting the
+    // player. Anything else (or a dropped stream) ends the connection here,
+    // before any entity, client handle, or other state is registered — so a
+    // rejected login leaves nothing to clean up.
+    let (name, password, dev_token) = match read_msg::<ClientMessage>(&mut recv).await {
+        Ok(ClientMessage::Hello {
+            name,
+            password,
+            dev_token,
+        }) => (name.trim().to_string(), password, dev_token),
+        Ok(_) => {
+            connection.close(AUTH_FAILED_CLOSE.into(), b"expected a login first");
+            return Ok(());
+        }
+        Err(e) => {
+            log::debug!("connection from {peer_ip} closed before login: {e:#}");
+            return Ok(());
+        }
+    };
+
+    // Validate the name, reject a duplicate of an already-connected player, and
+    // either register a new account or verify the password of an existing one. On
+    // any rejection, close with a human-readable reason the client surfaces (the
+    // same path the version and ban checks use).
+    if let Err(reason) = shared.authenticate(&name, &password) {
+        log::info!("rejecting login from {peer_ip} as '{name}': {reason}");
+        connection.close(AUTH_FAILED_CLOSE.into(), reason.as_bytes());
+        return Ok(());
+    }
+
+    // Authorized. This connection may use dev-mode commands only if it presented
+    // the correct per-server dev token (the creator's own client holds it).
+    let is_dev = dev_token == Some(shared.dev_token);
+    if is_dev {
+        log::info!("login '{name}' authorized for dev mode");
+    }
+
     let id = shared.alloc_id();
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerMessage>();
 
@@ -3820,7 +4172,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
         let _ = send.finish();
     });
 
-    // Register the player and welcome them.
+    // Welcome the now-authenticated player.
     let (sx, sy) = shared.spawn;
     let _ = tx.send(ServerMessage::Welcome {
         entity_id: id,
@@ -3839,17 +4191,10 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
     });
 
     // Send the newcomer a snapshot of every existing entity, then register and
-    // announce their own player entity to everyone else.
-    let player = Entity::new(
-        id,
-        EntityKind::Player {
-            name: String::new(),
-        },
-        sx,
-        sy,
-    );
-    // Fresh connections begin in the overworld; a returning player may be moved
-    // to the underworld on `Hello` if that's where they left off.
+    // announce their own (already-named) player entity to everyone else. Fresh
+    // connections begin in the overworld; a returning player may be moved to the
+    // underworld by the state restore below if that's where they left off.
+    let player = Entity::new(id, EntityKind::Player { name: name.clone() }, sx, sy);
     shared.client_dim.lock().insert(id, Dimension::Overworld);
     {
         let mut entities = shared.entities(Dimension::Overworld).lock();
@@ -3871,83 +4216,75 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
         id,
         ServerMessage::EntitySpawn { entity: player },
     );
-    // Start with an empty inventory; a returning player gets theirs restored on
-    // Hello. Either way the owner is told its contents.
+    // Start with an empty inventory; a returning player gets theirs restored
+    // below. Either way the owner is told its contents.
     shared.inventories.lock().insert(id, Inventory::new());
     shared.send_inventory(id);
-    log::info!("player {id} connected");
+    log::info!("player {id} ('{name}') connected");
 
-    // Whether this connection is authorized for dev-mode commands. Set only when
-    // the client presents the correct per-server dev token in `Hello`, which the
-    // creator's own client is the only one to hold.
-    let mut is_dev = false;
+    // Restore any saved state for this name: position, health, inventory, last
+    // campfire respawn point, waypoints, and the dimension they logged out in. A
+    // brand-new account simply has none of this.
+    {
+        let restored = shared.saved_players.lock().remove(&name);
+        if let Some(sp) = &restored
+            && let Some(e) = shared.entities(Dimension::Overworld).lock().get_mut(id)
+        {
+            e.x = sp.x;
+            e.y = sp.y;
+            e.health = sp.health;
+        }
+        if let Some(sp) = restored {
+            if let Some(rp) = sp.respawn {
+                shared.respawn_points.lock().insert(id, rp);
+            }
+            shared.inventories.lock().insert(id, sp.inventory.clone());
+            shared.send_inventory(id);
+            shared.waypoints.lock().insert(id, sp.waypoints.clone());
+            if sp.dim == Dimension::Overworld {
+                // Teleport the owner's avatar and resync its health. This is a
+                // reconnect, not a death, so no death marker drops.
+                let _ = tx.send(ServerMessage::Respawn {
+                    x: sp.x,
+                    y: sp.y,
+                    died: false,
+                });
+                shared.broadcast_dim_except(
+                    Dimension::Overworld,
+                    id,
+                    ServerMessage::EntityMoved {
+                        id,
+                        x: sp.x,
+                        y: sp.y,
+                        vx: 0.0,
+                        vy: 0.0,
+                    },
+                );
+            } else {
+                // They logged out in the underworld: move the avatar there (this
+                // clears and re-streams the client's world).
+                shared.enter_dimension(id, sp.dim, sp.x, sp.y);
+            }
+            shared.broadcast_all(ServerMessage::EntityHealth {
+                id,
+                health: sp.health,
+                max_health: crate::entity::PLAYER_MAX_HEALTH,
+            });
+        }
+        // Sync waypoints + home now that any saved state is restored (a fresh
+        // player just gets an empty list and the world spawn).
+        shared.send_waypoints(id);
+    }
 
     // Reader loop.
     let read_result: Result<()> = async {
         loop {
             let msg: ClientMessage = read_msg(&mut recv).await?;
             match msg {
-                ClientMessage::Hello { name, dev_token } => {
-                    is_dev = dev_token == Some(shared.dev_token);
-                    if is_dev {
-                        log::info!("player {id} authorized for dev mode");
-                    }
-                    log::info!("player {id} is '{name}'");
-                    // If this name has saved state, move them back into it.
-                    let restored = shared.saved_players.lock().remove(&name);
-                    // The avatar currently lives in the overworld collection it was
-                    // registered into; set its name (and overworld-relative state).
-                    if let Some(e) = shared.entities(Dimension::Overworld).lock().get_mut(id) {
-                        e.kind = EntityKind::Player { name };
-                        if let Some(sp) = &restored {
-                            e.x = sp.x;
-                            e.y = sp.y;
-                            e.health = sp.health;
-                        }
-                    }
-                    if let Some(sp) = restored {
-                        // Restore their last campfire respawn point, if any.
-                        if let Some(rp) = sp.respawn {
-                            shared.respawn_points.lock().insert(id, rp);
-                        }
-                        // Restore their saved inventory and push it to them.
-                        shared.inventories.lock().insert(id, sp.inventory.clone());
-                        shared.send_inventory(id);
-                        // Restore their personal waypoints.
-                        shared.waypoints.lock().insert(id, sp.waypoints.clone());
-                        if sp.dim == Dimension::Overworld {
-                            // Teleport the owner's avatar and resync its health. This
-                            // is a reconnect, not a death, so no death marker drops.
-                            let _ = tx.send(ServerMessage::Respawn {
-                                x: sp.x,
-                                y: sp.y,
-                                died: false,
-                            });
-                            shared.broadcast_dim_except(
-                                Dimension::Overworld,
-                                id,
-                                ServerMessage::EntityMoved {
-                                    id,
-                                    x: sp.x,
-                                    y: sp.y,
-                                    vx: 0.0,
-                                    vy: 0.0,
-                                },
-                            );
-                        } else {
-                            // They logged out in the underworld: move the avatar
-                            // there (this clears and re-streams the client's world).
-                            shared.enter_dimension(id, sp.dim, sp.x, sp.y);
-                        }
-                        shared.broadcast_all(ServerMessage::EntityHealth {
-                            id,
-                            health: sp.health,
-                            max_health: crate::entity::PLAYER_MAX_HEALTH,
-                        });
-                    }
-                    // Sync waypoints + home now that any saved state is restored
-                    // (a fresh player just gets an empty list and the world spawn).
-                    shared.send_waypoints(id);
+                // The login was consumed and authenticated above; a second Hello
+                // mid-session is unexpected and ignored.
+                ClientMessage::Hello { .. } => {
+                    log::debug!("ignoring repeat Hello from player {id}");
                 }
                 ClientMessage::RequestChunk { dim, cx, cy } => {
                     // Only serve chunks for the dimension the player is actually in;
@@ -3970,6 +4307,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             Dimension::Overworld => {
                                 maybe_spawn_in_chunk(&shared, cx, cy);
                                 maybe_spawn_spiders(&shared, cx, cy);
+                                maybe_spawn_cats(&shared, cx, cy);
                             }
                             Dimension::Underworld => {
                                 maybe_spawn_charred_skeletons(&shared, cx, cy);
@@ -4496,6 +4834,18 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 }
                 ClientMessage::Attack { target, held } => {
                     let dim = shared.dim_of(id);
+                    // Cats are sacrosanct: a swing at one never deals damage. It
+                    // can only feed the cat (cooked meat tames a wild one); either
+                    // way the attack path below is skipped entirely.
+                    let target_is_cat = shared
+                        .entities(dim)
+                        .lock()
+                        .get(target)
+                        .is_some_and(|e| e.kind.is_cat());
+                    if target_is_cat {
+                        shared.try_feed_cat(id, target, held, dim);
+                        continue;
+                    }
                     // Validate reach and, if good, compute the knockback shoving
                     // the target away from the attacker.
                     let knockback = {

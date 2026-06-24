@@ -22,6 +22,7 @@ use crate::daylight;
 use crate::discovery::{DiscoveredServer, LanBrowser};
 use crate::entity::{Entities, EntityId, EntityKind, PLAYER_MAX_HEALTH};
 use crate::inventory::{HOTBAR_SLOTS, Inventory, STORAGE_SLOTS, Slot};
+use crate::net::Credentials;
 use crate::protocol::{BlockId, Waypoint};
 use crate::server::{self, RunningServer};
 use crate::world::{CHUNK_SIZE, Dimension, TILE_SIZE, WORLD_HEIGHT, World, to_chunk};
@@ -319,6 +320,18 @@ struct App {
     /// Display name announced to servers; attributes this client's chat and keys
     /// its saved state on the server.
     name_input: String,
+    /// Password typed in the menu to authenticate the chosen name. May be left
+    /// blank when a password is already remembered for the target server (see
+    /// [`Self::credentials`]).
+    password_input: String,
+    /// Saved passwords per `(server, name)`, so a returning player needn't retype
+    /// one each time. Loaded once at startup and updated on a successful join.
+    credentials: Credentials,
+    /// Credential awaiting confirmation that the connection was accepted, as
+    /// `(server label, name, password)`. Saved to [`Self::credentials`] on
+    /// `Connected` and discarded if the connection is refused (e.g. wrong
+    /// password), so only working passwords are ever remembered.
+    pending_credential: Option<(String, String, String)>,
     address_input: String,
     port_input: String,
     /// Name typed in the "New world" form.
@@ -376,6 +389,9 @@ impl App {
             screen: Screen::Menu,
             status: String::new(),
             name_input: "player".to_string(),
+            password_input: String::new(),
+            credentials: Credentials::load(),
+            pending_credential: None,
             address_input: "127.0.0.1:5000".to_string(),
             port_input: "5000".to_string(),
             world_name_input: "world".to_string(),
@@ -466,6 +482,9 @@ impl App {
 
     /// Start an embedded server for a singleplayer world and connect to it.
     fn start_world(&mut self, name: String, seed: i32) {
+        let Some(password) = self.resolve_password(&name) else {
+            return;
+        };
         let save_dir = crate::save::world_dir(&name);
         match server::start_server(server::local_bind(), seed, save_dir) {
             Ok(srv) => {
@@ -473,6 +492,7 @@ impl App {
                     srv.addr,
                     name.clone(),
                     self.player_name(),
+                    password,
                     Some(srv.fingerprint),
                     Some(srv.dev_token),
                 );
@@ -487,6 +507,9 @@ impl App {
 
     /// Start a LAN-advertised server for `name` on `port` and connect to it.
     fn start_host_world(&mut self, name: String, seed: i32, port: u16) {
+        let Some(password) = self.resolve_password(&name) else {
+            return;
+        };
         let save_dir = crate::save::world_dir(&name);
         match server::start_server(server::host_bind(port), seed, save_dir) {
             Ok(mut srv) => {
@@ -496,6 +519,7 @@ impl App {
                     addr,
                     name.clone(),
                     self.player_name(),
+                    password,
                     Some(srv.fingerprint),
                     Some(srv.dev_token),
                 );
@@ -519,6 +543,27 @@ impl App {
         }
     }
 
+    /// Resolve the password to authenticate with `host`: the one typed in the
+    /// menu, or — if that's blank — any previously saved for this `(host, name)`.
+    /// Returns `None` (and shows a status message) when neither exists, since
+    /// every server requires a password. On success the chosen credential is
+    /// stashed in [`Self::pending_credential`] to be remembered once the server
+    /// accepts the connection.
+    fn resolve_password(&mut self, host: &str) -> Option<String> {
+        let name = self.player_name();
+        let typed = self.password_input.trim();
+        let password = if !typed.is_empty() {
+            typed.to_string()
+        } else if let Some(saved) = self.credentials.get(host, &name) {
+            saved.to_string()
+        } else {
+            self.status = "Enter a password to join.".to_string();
+            return None;
+        };
+        self.pending_credential = Some((host.to_string(), name, password.clone()));
+        Some(password)
+    }
+
     fn start_connect(&mut self) {
         let label = self.address_input.trim().to_string();
         let addr = match label.parse::<std::net::SocketAddr>() {
@@ -528,7 +573,17 @@ impl App {
                 return;
             }
         };
-        let handle = connect(addr, label.clone(), self.player_name(), None, None);
+        let Some(password) = self.resolve_password(&label) else {
+            return;
+        };
+        let handle = connect(
+            addr,
+            label.clone(),
+            self.player_name(),
+            password,
+            None,
+            None,
+        );
         self.net = Some(handle);
         self.screen = Screen::Connecting;
         self.status = format!("Connecting to {label}...");
@@ -537,10 +592,15 @@ impl App {
     /// Join a server discovered on the LAN. Its advertised fingerprint is passed
     /// as a pre-trusted cert, so a LAN join needs no TOFU prompt.
     fn start_join_lan(&mut self, server: DiscoveredServer) {
+        let label = server.addr.to_string();
+        let Some(password) = self.resolve_password(&label) else {
+            return;
+        };
         let handle = connect(
             server.addr,
-            server.addr.to_string(),
+            label,
             self.player_name(),
+            password,
             server.fingerprint,
             None,
         );
@@ -557,6 +617,7 @@ impl App {
         self.server = None; // dropping closes the embedded server
         self.game = None;
         self.pending_tofu = None;
+        self.pending_credential = None;
         self.input = Input::default();
         self.screen = Screen::Menu;
     }
@@ -591,6 +652,14 @@ impl App {
                 spawn_x,
                 spawn_y,
             } => {
+                // The login was accepted: remember the password for this server so
+                // it needn't be retyped next time.
+                if let Some((host, name, password)) = self.pending_credential.take()
+                    && !password.is_empty()
+                    && let Err(e) = self.credentials.add_and_save(&host, &name, &password)
+                {
+                    log::warn!("could not save login: {e:#}");
+                }
                 let mut game = GameState::new(entity_id, Vec2::new(spawn_x, spawn_y));
                 // Dev mode only applies to the creator of the server: it requires
                 // both the unlock toggle and an embedded server we own (the dev
@@ -777,6 +846,9 @@ impl App {
                 self.server = None;
                 self.game = None;
                 self.pending_tofu = None;
+                // The connection was refused or dropped: don't remember a password
+                // that may have been rejected.
+                self.pending_credential = None;
                 self.screen = Screen::Menu;
             }
         }
@@ -935,6 +1007,16 @@ impl App {
                                 .hint_text("player"),
                         );
                     });
+                    ui.horizontal(|ui| {
+                        ui.label("Password:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.password_input)
+                                .desired_width(160.0)
+                                .password(true)
+                                .hint_text("required"),
+                        );
+                    });
+                    ui.weak("Set on first join; remembered after that.");
                 });
                 ui.add_space(8.0);
 
@@ -1932,6 +2014,9 @@ impl App {
                     }
                     if ui.button("Goat").clicked() {
                         spawn = Some(EntityKind::Goat);
+                    }
+                    if ui.button("Cat").clicked() {
+                        spawn = Some(EntityKind::Cat { owner: None });
                     }
                     if ui.button("Zombie").clicked() {
                         spawn = Some(EntityKind::Zombie);

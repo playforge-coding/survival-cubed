@@ -57,6 +57,15 @@ pub static GOAT_SPRITE: SpriteDef = SpriteDef {
     fps: 6.0,
 };
 
+/// Cat: a small forest critter that pads along, tail swaying, when it moves.
+pub static CAT_SPRITE: SpriteDef = SpriteDef {
+    name: "cat",
+    frame_w: 15,
+    frame_h: 13,
+    frames: 4,
+    fps: 8.0,
+};
+
 /// Zombie: a shambling undead that lurches along, arms out.
 pub static ZOMBIE_SPRITE: SpriteDef = SpriteDef {
     name: "zombie",
@@ -115,12 +124,13 @@ pub static BONE_SPRITE: SpriteDef = SpriteDef {
 };
 
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 10] {
+pub fn all() -> [&'static SpriteDef; 11] {
     [
         &PLAYER_SPRITE,
         &SLIME_SPRITE,
         &CHICKEN_SPRITE,
         &GOAT_SPRITE,
+        &CAT_SPRITE,
         &ZOMBIE_SPRITE,
         &ZOMBIE_DEATH_SPRITE,
         &SPIDER_SPRITE,
@@ -137,6 +147,7 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         EntityKind::Slime => &SLIME_SPRITE,
         EntityKind::Chicken => &CHICKEN_SPRITE,
         EntityKind::Goat => &GOAT_SPRITE,
+        EntityKind::Cat { .. } => &CAT_SPRITE,
         EntityKind::Zombie => &ZOMBIE_SPRITE,
         EntityKind::Spider => &SPIDER_SPRITE,
         EntityKind::Skeleton => &SKELETON_SPRITE,

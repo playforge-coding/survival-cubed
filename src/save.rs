@@ -40,7 +40,7 @@ const UNDERWORLD_CHUNKS_DIR: &str = "chunks_underworld";
 /// Magic prefix on `world.dat` ("SCWD" — Survival Cubed World Data).
 const MAGIC: u32 = 0x5343_5744;
 /// On-disk format version; bump on any incompatible layout change.
-const VERSION: u32 = 7;
+const VERSION: u32 = 8;
 
 /// Subdirectory name holding a dimension's chunks.
 fn chunks_dir_name(dim: Dimension) -> &'static str {
@@ -105,6 +105,12 @@ pub struct WorldMeta {
     /// axe's tree-felling spares logs the player built with (see [`crate::server`]).
     #[serde(default)]
     pub placed_logs: Vec<(Dimension, i32, i32)>,
+    /// Per-account password records as `(player name, encoded hash)` — see
+    /// [`crate::auth`]. Holds the authentication credentials for everyone who has
+    /// registered on this world, so logins are verified across restarts. Passwords
+    /// are stored only as salted Argon2id hashes, never in the clear.
+    #[serde(default)]
+    pub accounts: Vec<(String, String)>,
 }
 
 /// Reads and writes a single world's files under `dir`.
@@ -337,6 +343,10 @@ mod tests {
                 (Dimension::Underworld, -8, 2, 30.0),
             ],
             placed_logs: vec![(Dimension::Overworld, 1, 2), (Dimension::Underworld, -3, 4)],
+            accounts: vec![(
+                "ada".into(),
+                "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2g".into(),
+            )],
         };
         store.save_meta(&meta).unwrap();
 
@@ -360,6 +370,7 @@ mod tests {
         assert_eq!(got.underworld_entities[0].id, 8);
         assert_eq!(got.campfires, meta.campfires);
         assert_eq!(got.placed_logs, meta.placed_logs);
+        assert_eq!(got.accounts, meta.accounts);
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! server that prints its certificate fingerprint for clients to verify.
 
 mod assets;
+mod auth;
 mod block;
 mod client;
 mod daylight;

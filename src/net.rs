@@ -137,6 +137,92 @@ impl KnownHosts {
     }
 }
 
+// --- Saved login credentials --------------------------------------------
+
+/// Path to the persistent saved-passwords file under the user config dir.
+fn credentials_path() -> Option<PathBuf> {
+    let mut p = dirs::config_dir()?;
+    p.push("survival-cubed");
+    Some(p.join("credentials"))
+}
+
+/// Remembers the password used for each `(server, name)` pair so a returning
+/// player doesn't have to retype it every time. Stored locally in the user
+/// config dir; this is a convenience cache, so passwords are kept in the clear
+/// (like a browser's saved logins) rather than encrypted.
+///
+/// The on-disk format is one `key<TAB>password` line per entry, where the key is
+/// `"<host label>\0<player name>"`. A tab separates key from value and neither
+/// the server label nor the name can contain one, so parsing is unambiguous.
+#[derive(Default)]
+pub struct Credentials {
+    entries: HashMap<String, String>,
+}
+
+impl Credentials {
+    /// Build the lookup key for a `(server label, player name)` pair.
+    fn key(host: &str, name: &str) -> String {
+        format!("{host}\u{0}{name}")
+    }
+
+    /// Load from disk, returning an empty store if the file is absent.
+    pub fn load() -> Self {
+        let mut creds = Credentials::default();
+        let Some(path) = credentials_path() else {
+            return creds;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return creds;
+        };
+        for line in text.lines() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((key, password)) = line.split_once('\t') {
+                creds.entries.insert(key.to_string(), password.to_string());
+            }
+        }
+        creds
+    }
+
+    /// The saved password for `(host, name)`, if any.
+    pub fn get(&self, host: &str, name: &str) -> Option<&str> {
+        self.entries.get(&Self::key(host, name)).map(String::as_str)
+    }
+
+    /// Remember `password` for `(host, name)` and persist the store. A password
+    /// equal to one already stored is a no-op (avoids a pointless rewrite).
+    pub fn add_and_save(&mut self, host: &str, name: &str, password: &str) -> Result<()> {
+        let key = Self::key(host, name);
+        if self.entries.get(&key).map(String::as_str) == Some(password) {
+            return Ok(());
+        }
+        self.entries.insert(key, password.to_string());
+        self.save()
+    }
+
+    fn save(&self) -> Result<()> {
+        let path = credentials_path().ok_or_else(|| anyhow!("no config dir"))?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut out =
+            String::from("# survival-cubed saved logins (\"<server>\\0<name>\\t<password>\")\n");
+        for (key, password) in &self.entries {
+            // Skip any entry whose value would break the line-based format.
+            if password.contains('\t') || password.contains('\n') || key.contains('\n') {
+                continue;
+            }
+            out.push_str(key);
+            out.push('\t');
+            out.push_str(password);
+            out.push('\n');
+        }
+        std::fs::write(&path, out)?;
+        Ok(())
+    }
+}
+
 pub fn parse_fingerprint(hex: &str) -> Option<[u8; 32]> {
     let bytes: Vec<&str> = hex.split(':').collect();
     if bytes.len() != 32 {

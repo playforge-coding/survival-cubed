@@ -36,7 +36,7 @@ pub struct Waypoint {
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -49,12 +49,19 @@ pub const ALPN: &[u8] = b"survival-cubed/1";
 /// Sent from client to server over the single bidirectional stream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
-    /// First message after the stream opens. `dev_token` is the per-server dev
-    /// secret: present (and matching) only for the client that created/hosted the
-    /// server, which authorizes that connection for dev-mode commands. Remote
-    /// joiners send `None` and are never dev-authorized.
+    /// First message after the stream opens. The server authenticates this
+    /// before admitting the player: `name` must not already be in use by another
+    /// connected player, and `password` either registers a brand-new account (on
+    /// first join under this name) or must match the one stored for an existing
+    /// account. A failed check closes the connection with an explanatory reason.
+    ///
+    /// `dev_token` is the per-server dev secret: present (and matching) only for
+    /// the client that created/hosted the server, which authorizes that
+    /// connection for dev-mode commands. Remote joiners send `None` and are never
+    /// dev-authorized.
     Hello {
         name: String,
+        password: String,
         dev_token: Option<u64>,
     },
     /// Ask the server for the contents of a chunk in dimension `dim`. The server
