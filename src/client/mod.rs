@@ -2235,6 +2235,12 @@ impl App {
                             sitting: false,
                         });
                     }
+                    if ui.button("Puppy").clicked() {
+                        spawn = Some(EntityKind::Puppy {
+                            owner: None,
+                            sitting: false,
+                        });
+                    }
                     if ui.button("Zombie").clicked() {
                         spawn = Some(EntityKind::Zombie);
                     }
@@ -2643,6 +2649,12 @@ impl App {
                 let progress = 1.0 - (e.lunge / crate::entity::SNAKE_LUNGE_TIME).clamp(0.0, 1.0);
                 let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
                 (d, frame)
+            } else if matches!(e.kind, EntityKind::Puppy { sitting: true, .. }) {
+                // A sitting puppy loops its idle sheet off the shared clock even
+                // though it's standing still (frame_index would otherwise freeze a
+                // motionless entity on frame 0).
+                let d = &sprite::PUPPY_SIT_SPRITE;
+                (d, sprite::frame_index(true, self.anim_time, d))
             } else {
                 let def = sprite::sprite_for(&e.kind);
                 (
@@ -3699,12 +3711,16 @@ fn creator_structure_input(
     }
 }
 
-/// Normalize an entity kind for storage in a structure: a captured cat is set
-/// wild (owner cleared) so a pasted or worldgen copy doesn't belong to whoever
-/// tamed the original. Other kinds are taken as-is.
+/// Normalize an entity kind for storage in a structure: a captured pet (cat or
+/// puppy) is set wild (owner cleared) so a pasted or worldgen copy doesn't belong
+/// to whoever tamed the original. Other kinds are taken as-is.
 fn structure_entity_kind(kind: &EntityKind) -> EntityKind {
     match kind {
         EntityKind::Cat { sitting, .. } => EntityKind::Cat {
+            owner: None,
+            sitting: *sitting,
+        },
+        EntityKind::Puppy { sitting, .. } => EntityKind::Puppy {
             owner: None,
             sitting: *sitting,
         },

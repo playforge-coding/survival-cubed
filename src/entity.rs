@@ -33,6 +33,9 @@ pub const CHICKEN_SIZE: (f32, f32) = (12.0, 14.0);
 pub const GOAT_SIZE: (f32, f32) = (16.0, 16.0);
 /// Collision/draw size (width, height) in pixels of a cat — a small, low critter.
 pub const CAT_SIZE: (f32, f32) = (15.0, 13.0);
+/// Collision/draw size (width, height) in pixels of a puppy — a small, low critter
+/// a touch longer than the cat, matching its art's proportions.
+pub const PUPPY_SIZE: (f32, f32) = (18.0, 13.0);
 /// Collision/draw size (width, height) in pixels of a zombie.
 pub const ZOMBIE_SIZE: (f32, f32) = (14.0, 19.0);
 /// Collision/draw size (width, height) in pixels of a spider — low and wide.
@@ -78,6 +81,10 @@ pub const GOAT_MAX_HEALTH: i32 = 16;
 /// Maximum health of a cat, in hit points. Frail — a tamed cat that dies simply
 /// returns to its owner's respawn point rather than being gone for good.
 pub const CAT_MAX_HEALTH: i32 = 8;
+/// Maximum health of a puppy, in hit points. Hardier than the cat — it picks
+/// fights with skeletons and chickens — but, like the cat, a tamed puppy that
+/// dies simply returns to its owner's respawn point rather than being gone for good.
+pub const PUPPY_MAX_HEALTH: i32 = 14;
 /// Maximum health of a zombie, in hit points. Far tougher than anything else
 /// that walks the surface — it soaks up many hits before going down.
 pub const ZOMBIE_MAX_HEALTH: i32 = 40;
@@ -125,6 +132,21 @@ pub enum EntityKind {
     /// and stops follow-teleporting — until clicked again to stand back up.
     /// Server-simulated.
     Cat {
+        owner: Option<String>,
+        sitting: bool,
+    },
+    /// A small, loyal critter that spawns rarely in the forest like the cat, but
+    /// unlike the placid cat it is a hunter: it chases down nearby skeletons and
+    /// chickens, biting them, then trots over to any raw meat that drops and eats
+    /// it. Taming, sitting, respawning and never-despawning all work exactly as for
+    /// the [`EntityKind::Cat`] — a wild puppy (`owner` = `None`) just wanders and
+    /// hunts; feeding it cooked meat tames it, stamping the feeder's **name** into
+    /// `owner` (stored by name so the bond survives a server restart). Players can
+    /// never attack a puppy. A tamed puppy that dies reappears at its owner's
+    /// respawn point, never despawns for distance (teleporting to its owner when
+    /// they wander too far), and `sitting` is toggled by the owner clicking it.
+    /// Server-simulated.
+    Puppy {
         owner: Option<String>,
         sitting: bool,
     },
@@ -176,6 +198,7 @@ impl EntityKind {
             EntityKind::Chicken => CHICKEN_SIZE,
             EntityKind::Goat => GOAT_SIZE,
             EntityKind::Cat { .. } => CAT_SIZE,
+            EntityKind::Puppy { .. } => PUPPY_SIZE,
             EntityKind::Zombie => ZOMBIE_SIZE,
             EntityKind::Spider => SPIDER_SIZE,
             EntityKind::Snake => SNAKE_SIZE,
@@ -204,19 +227,35 @@ impl EntityKind {
         matches!(self, EntityKind::Cat { .. })
     }
 
-    /// Whether this is a cat that has been told to sit (by its owner clicking it).
-    /// A sitting cat holds its position rather than wandering or following.
-    pub fn is_sitting(&self) -> bool {
-        matches!(self, EntityKind::Cat { sitting: true, .. })
+    /// Whether this is a puppy (tamed or wild).
+    pub fn is_puppy(&self) -> bool {
+        matches!(self, EntityKind::Puppy { .. })
     }
 
-    /// The name of the player who has tamed this entity, if any. Only a tamed
-    /// [`EntityKind::Cat`] has an owner; everything else returns `None`. Callers
-    /// resolve this name to a live entity id on demand (see
+    /// Whether this is a tameable companion (a cat or a puppy). Pets share a bundle
+    /// of special rules: immune to player attacks, exempt from distance despawn,
+    /// singed by fire (their one mortal hazard), and — once tamed — respawning at
+    /// their owner's respawn point and teleporting to a far-strayed owner.
+    pub fn is_pet(&self) -> bool {
+        matches!(self, EntityKind::Cat { .. } | EntityKind::Puppy { .. })
+    }
+
+    /// Whether this is a pet that has been told to sit (by its owner clicking it).
+    /// A sitting pet holds its position rather than wandering, hunting or following.
+    pub fn is_sitting(&self) -> bool {
+        matches!(
+            self,
+            EntityKind::Cat { sitting: true, .. } | EntityKind::Puppy { sitting: true, .. }
+        )
+    }
+
+    /// The name of the player who has tamed this entity, if any. Only a tamed pet (a
+    /// [`EntityKind::Cat`] or [`EntityKind::Puppy`]) has an owner; everything else
+    /// returns `None`. Callers resolve this name to a live entity id on demand (see
     /// [`crate::server`]'s `find_player_by_name`).
     pub fn owner(&self) -> Option<&str> {
         match self {
-            EntityKind::Cat { owner, .. } => owner.as_deref(),
+            EntityKind::Cat { owner, .. } | EntityKind::Puppy { owner, .. } => owner.as_deref(),
             _ => None,
         }
     }
@@ -231,6 +270,7 @@ impl EntityKind {
             EntityKind::Chicken => CHICKEN_MAX_HEALTH,
             EntityKind::Goat => GOAT_MAX_HEALTH,
             EntityKind::Cat { .. } => CAT_MAX_HEALTH,
+            EntityKind::Puppy { .. } => PUPPY_MAX_HEALTH,
             EntityKind::Zombie => ZOMBIE_MAX_HEALTH,
             EntityKind::Spider => SPIDER_MAX_HEALTH,
             EntityKind::Snake => SNAKE_MAX_HEALTH,

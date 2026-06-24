@@ -76,6 +76,27 @@ pub static CAT_SIT_SPRITE: SpriteDef = SpriteDef {
     fps: 1.0,
 };
 
+/// Puppy: a small forest critter that trots along on its four-frame walk cycle.
+pub static PUPPY_SPRITE: SpriteDef = SpriteDef {
+    name: "puppy",
+    frame_w: 20,
+    frame_h: 14,
+    frames: 4,
+    fps: 8.0,
+};
+
+/// Puppy (sitting): an eight-frame looping idle played while a puppy has been told
+/// to sit (it breathes/looks around in place). Lives in the `puppy/sit`
+/// subdirectory (its `name` doubles as that path). Unlike a walk sheet it loops on
+/// the shared clock even while the puppy is stationary (see the scene builder).
+pub static PUPPY_SIT_SPRITE: SpriteDef = SpriteDef {
+    name: "puppy/sit",
+    frame_w: 18,
+    frame_h: 14,
+    frames: 8,
+    fps: 6.0,
+};
+
 /// Zombie: a shambling undead that lurches along, arms out.
 pub static ZOMBIE_SPRITE: SpriteDef = SpriteDef {
     name: "zombie",
@@ -165,7 +186,7 @@ pub static BONE_SPRITE: SpriteDef = SpriteDef {
 };
 
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 15] {
+pub fn all() -> [&'static SpriteDef; 17] {
     [
         &PLAYER_SPRITE,
         &SLIME_SPRITE,
@@ -173,6 +194,8 @@ pub fn all() -> [&'static SpriteDef; 15] {
         &GOAT_SPRITE,
         &CAT_SPRITE,
         &CAT_SIT_SPRITE,
+        &PUPPY_SPRITE,
+        &PUPPY_SIT_SPRITE,
         &ZOMBIE_SPRITE,
         &ZOMBIE_DEATH_SPRITE,
         &SPIDER_SPRITE,
@@ -195,6 +218,9 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         // A sitting cat shows its one-frame resting pose; otherwise the walk sheet.
         EntityKind::Cat { sitting: true, .. } => &CAT_SIT_SPRITE,
         EntityKind::Cat { .. } => &CAT_SPRITE,
+        // A sitting puppy shows its one-frame resting pose; otherwise the walk sheet.
+        EntityKind::Puppy { sitting: true, .. } => &PUPPY_SIT_SPRITE,
+        EntityKind::Puppy { .. } => &PUPPY_SPRITE,
         EntityKind::Zombie => &ZOMBIE_SPRITE,
         EntityKind::Spider => &SPIDER_SPRITE,
         // A snake's striking pose is handled by the scene builder off its lunge

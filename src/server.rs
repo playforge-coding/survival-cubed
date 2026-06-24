@@ -54,6 +54,27 @@ const CAT_CHUNK_CHANCE: u32 = 6;
 /// padding along on the ground. Set beyond a screen's reach so a cat keeping
 /// pace stays put, and only a cat the player has truly left behind warps to them.
 const CAT_TELEPORT_DIST: f32 = 320.0;
+/// Trotting speed of a puppy, in pixels/second — quicker than a cat so it can
+/// run down the skeletons and chickens it hunts.
+const PUPPY_SPEED: f32 = 34.0;
+/// Percent chance that a fresh forest surface chunk seeds a puppy. As rare a
+/// forest find as the cat.
+const PUPPY_CHUNK_CHANCE: u32 = 6;
+/// Distance (px) past which a tamed puppy teleports to its owner instead of
+/// trotting along on the ground — same leash as the cat's.
+const PUPPY_TELEPORT_DIST: f32 = 320.0;
+/// How far (px) a puppy notices a skeleton/chicken to hunt, or raw meat to eat.
+const PUPPY_AGGRO: f32 = 220.0;
+/// Maximum gap (px between AABBs) at which a puppy lands a bite on its prey.
+const PUPPY_ATTACK_RANGE: f32 = 4.0;
+/// Maximum gap (px between AABBs) at which a puppy reaches a meat drop to eat it.
+const PUPPY_EAT_REACH: f32 = 3.0;
+/// Damage a puppy deals per bite.
+const PUPPY_DAMAGE: i32 = 6;
+/// Seconds a puppy waits between bites.
+const PUPPY_ATTACK_INTERVAL: f32 = 0.8;
+/// Hit points a puppy recovers each time it eats a dropped piece of raw meat.
+const PUPPY_EAT_HEAL: i32 = 3;
 /// Shambling speed of a zombie, in pixels/second — noticeably slower than a
 /// slime, so a player can outrun one but is in trouble if cornered.
 const ZOMBIE_SPEED: f32 = 16.0;
@@ -1306,36 +1327,38 @@ impl Shared {
         }
     }
 
-    /// React to player `id` swinging at the cat entity `target` while holding
-    /// `held`. Players can never *hurt* a cat (what a monster that would be), so a
-    /// swing's only possible effect is to feed it: one [`COOKED_MEAT`] tames a
-    /// *wild* cat — stamping `id` as its owner and topping it up to full health —
-    /// at the cost of that serving. Anything else (a different held item, an
-    /// out-of-reach swing, an already-tamed cat, or an empty pantry) is a harmless
-    /// no-op. Locks inventories before entities, matching [`Self::eat`].
-    fn try_feed_cat(&self, id: EntityId, target: EntityId, held: BlockId, dim: Dimension) {
+    /// React to player `id` swinging at the pet (cat or puppy) `target` while
+    /// holding `held`. Players can never *hurt* a pet (what a monster that would
+    /// be), so a swing's only possible effect is to feed it: one [`COOKED_MEAT`]
+    /// tames a *wild* pet — stamping `id` as its owner and topping it up to full
+    /// health — at the cost of that serving. Anything else (a different held item,
+    /// an out-of-reach swing, an already-tamed pet, or an empty pantry) is a
+    /// harmless no-op. Locks inventories before entities, matching [`Self::eat`].
+    fn try_feed_pet(&self, id: EntityId, target: EntityId, held: BlockId, dim: Dimension) {
         if held != crate::block::COOKED_MEAT {
             return;
         }
         let tamed = {
             let mut invs = self.inventories.lock();
             let mut entities = self.entities(dim).lock();
-            // The target must still be a wild cat within the feeder's reach, and
+            // The target must still be a wild pet within the feeder's reach, and
             // the feeder must have a name to stamp (an unidentified player can't
             // tame, since the bond is stored by name). Capture that name here.
             let owner_name = match (entities.get(id), entities.get(target)) {
                 (Some(a), Some(b))
-                    if matches!(b.kind, EntityKind::Cat { owner: None, .. })
-                        && aabb_gap(
-                            a.x,
-                            a.y,
-                            a.size().0,
-                            a.size().1,
-                            b.x,
-                            b.y,
-                            b.size().0,
-                            b.size().1,
-                        ) <= PLAYER_ATTACK_REACH =>
+                    if matches!(
+                        b.kind,
+                        EntityKind::Cat { owner: None, .. } | EntityKind::Puppy { owner: None, .. }
+                    ) && aabb_gap(
+                        a.x,
+                        a.y,
+                        a.size().0,
+                        a.size().1,
+                        b.x,
+                        b.y,
+                        b.size().0,
+                        b.size().1,
+                    ) <= PLAYER_ATTACK_REACH =>
                 {
                     match &a.kind {
                         EntityKind::Player { name } if !name.is_empty() => name.clone(),
@@ -1352,30 +1375,34 @@ impl Shared {
                 return;
             }
             inv.remove(crate::block::COOKED_MEAT, 1);
-            // Stamp the feeder as owner and send the now-happy cat to full health.
+            // Stamp the feeder as owner and send the now-happy pet to full health,
+            // preserving which kind of pet it is.
             entities.get_mut(target).map(|e| {
-                e.kind = EntityKind::Cat {
-                    owner: Some(owner_name),
-                    sitting: false,
-                };
+                match &mut e.kind {
+                    EntityKind::Cat { owner, sitting } | EntityKind::Puppy { owner, sitting } => {
+                        *owner = Some(owner_name);
+                        *sitting = false;
+                    }
+                    _ => {}
+                }
                 e.health = e.max_health;
                 e.clone()
             })
         };
-        // Resync the cat's full (now owned) description and the player's pantry.
+        // Resync the pet's full (now owned) description and the player's pantry.
         if let Some(entity) = tamed {
             self.broadcast_dim(dim, ServerMessage::EntitySpawn { entity });
         }
         self.send_inventory(id);
     }
 
-    /// React to player `id` clicking the *tamed* cat `target`: if `id` is the cat's
+    /// React to player `id` clicking the *tamed* pet `target`: if `id` is the pet's
     /// owner and within reach, flip whether it's sitting (sit it down, or stand it
-    /// back up). A sitting cat stays put — the cat tick stops wandering and stops
+    /// back up). A sitting pet stays put — its tick stops wandering and stops
     /// follow-teleporting it — until it's stood up again. A click from anyone but
     /// the owner, or from out of reach, is a harmless no-op. The bond is stored by
     /// player *name* (see [`EntityKind::Cat`]), so ownership is checked by name.
-    fn toggle_cat_sit(&self, id: EntityId, target: EntityId, dim: Dimension) {
+    fn toggle_pet_sit(&self, id: EntityId, target: EntityId, dim: Dimension) {
         let updated = {
             let mut entities = self.entities(dim).lock();
             // Capture the clicker's name and reach box; an unnamed player can't own.
@@ -1394,12 +1421,15 @@ impl Shared {
                     let (bw, bh) = b.size();
                     let owns = matches!(
                         &b.kind,
-                        EntityKind::Cat { owner: Some(o), .. } if *o == name
+                        EntityKind::Cat { owner: Some(o), .. }
+                            | EntityKind::Puppy { owner: Some(o), .. } if *o == name
                     );
                     if !owns || aabb_gap(ax, ay, aw, ah, b.x, b.y, bw, bh) > PLAYER_ATTACK_REACH {
                         return;
                     }
-                    if let EntityKind::Cat { sitting, .. } = &mut b.kind {
+                    if let EntityKind::Cat { sitting, .. } | EntityKind::Puppy { sitting, .. } =
+                        &mut b.kind
+                    {
                         *sitting = !*sitting;
                     }
                     // Settle it in place so it doesn't keep its last walk velocity.
@@ -2569,6 +2599,56 @@ fn maybe_spawn_cats(shared: &Shared, cx: i32, cy: i32) {
     shared.broadcast_dim(Dimension::Overworld, ServerMessage::EntitySpawn { entity });
 }
 
+/// Possibly seed a single wild puppy into a freshly generated forest surface
+/// chunk. Like the cat, puppies are a rare forest find, so the per-chunk chance is
+/// deliberately tiny and at most one appears, only in the chunk that holds this
+/// column's grass line. The decision is deterministic per chunk via [`chunk_hash`]
+/// on its own salt range (distinct from the cat's) so exploring the same terrain
+/// never double-spawns and the two run independently. A fresh puppy is wild
+/// (`owner: None`).
+fn maybe_spawn_puppies(shared: &Shared, cx: i32, cy: i32) {
+    let world = shared.world(Dimension::Overworld).lock();
+    let seed = world.generator.seed();
+    if chunk_hash(seed, cx, cy, 400) % 100 >= PUPPY_CHUNK_CHANCE {
+        return;
+    }
+
+    let base_x = cx * CHUNK_SIZE;
+    let chunk_top = cy * CHUNK_SIZE;
+    let chunk_bottom = chunk_top + CHUNK_SIZE;
+    let (_, h) = EntityKind::Puppy {
+        owner: None,
+        sitting: false,
+    }
+    .size();
+
+    // Drop the puppy onto the grass of one scattered column, but only where this
+    // chunk holds the surface and the column is forest.
+    let lx = chunk_hash(seed, cx, cy, 401) % CHUNK_SIZE as u32;
+    let cell_x = base_x + lx as i32;
+    let surface = world.surface(cell_x);
+    if world.biome(cell_x) != Biome::Forest || surface < chunk_top || surface >= chunk_bottom {
+        return;
+    }
+    let id = shared.alloc_id();
+    let entity = Entity::new(
+        id,
+        EntityKind::Puppy {
+            owner: None,
+            sitting: false,
+        },
+        cell_x as f32 * TILE_SIZE,
+        surface as f32 * TILE_SIZE - h,
+    );
+    drop(world);
+
+    shared
+        .entities(Dimension::Overworld)
+        .lock()
+        .insert(entity.clone());
+    shared.broadcast_dim(Dimension::Overworld, ServerMessage::EntitySpawn { entity });
+}
+
 /// Possibly seed snakes into a freshly generated chunk. Snakes are the desert's
 /// predators: they drop onto the sand of a **desert** surface chunk that actually
 /// holds this column's surface line, like the other surface critters. The
@@ -3041,10 +3121,11 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     } else {
         entities
             .values()
-            // Players are authoritative on their clients; cats never despawn for
-            // distance (they teleport to their owner instead). Everything else is
-            // culled once it drifts beyond DESPAWN_DIST of every player.
-            .filter(|e| !e.kind.is_player() && !e.kind.is_cat())
+            // Players are authoritative on their clients; pets (cats and puppies)
+            // never despawn for distance (they teleport to their owner instead).
+            // Everything else is culled once it drifts beyond DESPAWN_DIST of
+            // every player.
+            .filter(|e| !e.kind.is_player() && !e.kind.is_pet())
             .filter(|e| {
                 let (w, h) = e.size();
                 nearest_player(&players, e.x + w * 0.5, e.y + h * 0.5, DESPAWN_DIST).is_none()
@@ -3074,6 +3155,11 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     let cat_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| e.kind.is_cat())
+        .map(|e| e.id)
+        .collect();
+    let puppy_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| e.kind.is_puppy())
         .map(|e| e.id)
         .collect();
     let zombie_ids: Vec<EntityId> = entities
@@ -3123,6 +3209,12 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     // player, the knockback `(vx, vy)` to shove it away from the attacker, and
     // the damage dealt (slimes nip, zombies hit hard).
     let mut bites: Vec<(EntityId, (f32, f32), i32)> = Vec::new();
+    // Prey (skeletons/chickens) a puppy bit this tick: the victim id, the knockback
+    // to shove it away from the puppy, and the damage. Applied after the movement
+    // loops alongside `bites` so we never hold two mutable entity borrows at once.
+    let mut creature_hits: Vec<(EntityId, (f32, f32), i32)> = Vec::new();
+    // Raw-meat drops a puppy ate this tick, removed from the world after the loop.
+    let mut meat_eaten: Vec<EntityId> = Vec::new();
     // Cells where a chasing charred skeleton laid a tongue of fire this tick,
     // registered with the trail-fire tracker once the world lock is released.
     let mut new_trail_fires: Vec<(i32, i32)> = Vec::new();
@@ -3556,6 +3648,171 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         });
     }
 
+    // Puppies: loyal little hunters that pad around their home patch like a cat,
+    // but break off to chase down any nearby skeleton or chicken, biting it, then
+    // trot over to any raw meat that falls and gobble it up. A *tamed* puppy also
+    // keeps up with its owner, teleporting to them when they stray beyond
+    // PUPPY_TELEPORT_DIST (puppies, like cats, never despawn for distance).
+    //
+    // Snapshot the prey it can hunt and the raw meat it can eat before the loop, so
+    // it can pick a target without re-borrowing the entities map while one puppy is
+    // mutably held. (Skeletons move later this tick, so their positions are a tick
+    // stale — close enough for a chase heading.)
+    let prey: Vec<(EntityId, f32, f32, f32, f32)> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Chicken | EntityKind::Skeleton))
+        .map(|e| {
+            let (w, h) = e.size();
+            (e.id, e.x, e.y, w, h)
+        })
+        .collect();
+    let meat_items: Vec<(EntityId, f32, f32, f32, f32)> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::DroppedItem { block, .. } if block == crate::block::RAW_MEAT))
+        .map(|e| {
+            let (w, h) = e.size();
+            (e.id, e.x, e.y, w, h)
+        })
+        .collect();
+    for id in puppy_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+
+        // A puppy told to sit stays where its owner left it: no wandering, hunting
+        // or follow-teleport. It still obeys gravity (dir 0) so it drops rather
+        // than hangs if the ground beneath it is mined away.
+        if e.kind.is_sitting() {
+            let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, 0.0, PUPPY_SPEED, false);
+            e.x = m.x;
+            e.y = m.y;
+            e.vx = m.vx;
+            e.vy = m.vy;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: m.x,
+                y: m.y,
+                vx: m.vx,
+                vy: m.vy,
+            });
+            continue;
+        }
+
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+
+        // 1. Raw meat on the ground takes priority: trot to it and eat it (healing
+        //    a little). Eat it outright once within reach.
+        if let Some((mid, mx, my, mw, mh)) = nearest_of(&meat_items, scx, scy, PUPPY_AGGRO) {
+            if aabb_gap(e.x, e.y, w, h, mx, my, mw, mh) <= PUPPY_EAT_REACH {
+                meat_eaten.push(mid);
+                e.health = (e.health + PUPPY_EAT_HEAL).min(e.max_health);
+                e.vx = 0.0;
+                broadcasts.push(ServerMessage::EntityHealth {
+                    id,
+                    health: e.health,
+                    max_health: e.max_health,
+                });
+                broadcasts.push(ServerMessage::EntityMoved {
+                    id,
+                    x: e.x,
+                    y: e.y,
+                    vx: 0.0,
+                    vy: e.vy,
+                });
+                continue;
+            }
+            let dir = if mx + mw * 0.5 < scx { -1.0 } else { 1.0 };
+            let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, PUPPY_SPEED, true);
+            e.x = m.x;
+            e.y = m.y;
+            e.vx = m.vx;
+            e.vy = m.vy;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: m.x,
+                y: m.y,
+                vx: m.vx,
+                vy: m.vy,
+            });
+            continue;
+        }
+
+        // 2. Otherwise hunt the nearest skeleton or chicken: charge it and bite
+        //    when in reach and off cooldown.
+        if let Some((tid, tx, ty, tw, th)) = nearest_of(&prey, scx, scy, PUPPY_AGGRO) {
+            if e.attack_cd <= 0.0 && aabb_gap(e.x, e.y, w, h, tx, ty, tw, th) <= PUPPY_ATTACK_RANGE
+            {
+                e.attack_cd = PUPPY_ATTACK_INTERVAL;
+                let kdir = if tx + tw * 0.5 >= scx { 1.0 } else { -1.0 };
+                creature_hits.push((tid, (kdir * KNOCKBACK_X, -KNOCKBACK_Y), PUPPY_DAMAGE));
+            }
+            let dir = if tx + tw * 0.5 < scx { -1.0 } else { 1.0 };
+            let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, PUPPY_SPEED, true);
+            e.x = m.x;
+            e.y = m.y;
+            e.vx = m.vx;
+            e.vy = m.vy;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: m.x,
+                y: m.y,
+                vx: m.vx,
+                vy: m.vy,
+            });
+            continue;
+        }
+
+        // 3. Nothing to hunt: a tamed puppy whose owner (resolved by name to a live
+        //    player) has wandered too far teleports onto them, re-anchoring its home
+        //    there — exactly like the cat.
+        let owner = e.kind.owner().map(str::to_owned);
+        if let Some(owner) = &owner
+            && let Some(&(_, _, ox, oy)) = named_players.iter().find(|(n, ..)| n == owner)
+            && (((ox + PLAYER_SIZE.0 * 0.5) - scx).powi(2)
+                + ((oy + PLAYER_SIZE.1 * 0.5) - scy).powi(2))
+                > PUPPY_TELEPORT_DIST * PUPPY_TELEPORT_DIST
+        {
+            e.x = ox;
+            e.y = oy;
+            e.vx = 0.0;
+            e.vy = 0.0;
+            e.home_x = Some(ox);
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: ox,
+                y: oy,
+                vx: 0.0,
+                vy: 0.0,
+            });
+            continue;
+        }
+
+        // 4. Default: amble around the home patch like a cat.
+        let home = *e.home_x.get_or_insert(e.x);
+        let dir = wander_dir(scx, e.vx, home);
+        let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, PUPPY_SPEED, false);
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: m.vx,
+            vy: m.vy,
+        });
+    }
+    // Remove the raw-meat drops the puppies ate this tick.
+    for mid in meat_eaten {
+        if entities.remove(mid).is_some() {
+            broadcasts.push(ServerMessage::EntityDespawn { id: mid });
+        }
+    }
+
     // Zombies: slow, relentless night hunters that hit hard. When day breaks
     // they crumble where they stand, playing a death animation before despawning.
     // Ids whose death animation finished this tick and must be removed below.
@@ -3973,7 +4230,7 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         broadcasts.push(ServerMessage::EntityMoved { id, x, y, vx, vy });
     }
 
-    // Fire damage: a player (or a cat — its one mortal hazard, since a server
+    // Fire damage: a player (or a pet — its one mortal hazard, since a server
     // creature never takes fall damage) whose body overlaps a burning cell is
     // singed on a steady interval. Detected while the world lock is still held;
     // applied below.
@@ -3989,7 +4246,7 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             }
         }
         for e in entities.values() {
-            if !e.kind.is_cat() {
+            if !e.kind.is_pet() {
                 continue;
             }
             let (w, h) = e.size();
@@ -4021,6 +4278,21 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             respawns.push(r);
         }
     }
+    // Puppy bites on prey: apply the damage, and remember any creature that died
+    // (and where) so we can spill its loot — raw meat for the puppy to eat — once
+    // the entities lock is released (spawn_drop relocks it). The respawn arg is
+    // unused for non-players, so a dummy is fine here.
+    let mut puppy_kills: Vec<(EntityKind, f32, f32)> = Vec::new();
+    for (tid, kb, damage) in creature_hits {
+        let victim = entities.get(tid).map(|e| (e.kind.clone(), e.x, e.y));
+        let (msgs, _) = apply_damage(&mut entities, tid, damage, kb, dim, (dim, 0.0, 0.0));
+        broadcasts.extend(msgs);
+        if let Some(v) = victim
+            && entities.get(tid).is_none()
+        {
+            puppy_kills.push(v);
+        }
+    }
     for eid in fire_hits {
         // A cat returns to *its owner's* respawn point; a player to their own. The
         // owner is stored by name, so resolve it to a live player's id via the
@@ -4045,6 +4317,19 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         }
     }
     drop(entities);
+
+    // Spill the loot of any prey a puppy killed (a chicken leaves raw meat, which
+    // the puppy will trot back and eat). Done after the entities lock is released
+    // since spawn_drop relocks it.
+    for (kind, kx, ky) in puppy_kills {
+        let cx = (kx / TILE_SIZE) as i32;
+        let cy = (ky / TILE_SIZE) as i32;
+        for &(item, n) in creature_loot(&kind) {
+            for _ in 0..n {
+                spawn_drop(shared, dim, cx, cy, item);
+            }
+        }
+    }
 
     // Register the tongues of fire laid this tick so they burn out shortly.
     if !new_trail_fires.is_empty() {
@@ -4089,6 +4374,27 @@ fn nearest_player(
         }
     }
     best.map(|(pid, px, py, _)| (pid, px, py))
+}
+
+/// Nearest entity from `list` (each `(id, x, y, w, h)`) whose center lies within
+/// `range` of `(x, y)`, or `None` if none are close enough. Used by the puppy to
+/// pick the nearest prey to hunt or scrap of meat to eat.
+fn nearest_of(
+    list: &[(EntityId, f32, f32, f32, f32)],
+    x: f32,
+    y: f32,
+    range: f32,
+) -> Option<(EntityId, f32, f32, f32, f32)> {
+    let mut best: Option<(EntityId, f32, f32, f32, f32, f32)> = None;
+    for &(id, ex, ey, ew, eh) in list {
+        let dx = (ex + ew * 0.5) - x;
+        let dy = (ey + eh * 0.5) - y;
+        let d2 = dx * dx + dy * dy;
+        if d2 <= range * range && best.is_none_or(|(.., bd)| d2 < bd) {
+            best = Some((id, ex, ey, ew, eh, d2));
+        }
+    }
+    best.map(|(id, ex, ey, ew, eh, _)| (id, ex, ey, ew, eh))
 }
 
 /// Smallest gap (px) between two AABBs; `0.0` when they overlap.
@@ -4191,10 +4497,10 @@ fn apply_damage(
             }),
         )
     } else if e.kind.owner().is_some() {
-        // A tamed cat doesn't die for good: it reappears at its owner's respawn
+        // A tamed pet doesn't die for good: it reappears at its owner's respawn
         // point, healed and re-anchoring its wander there, rather than being
         // removed from the world. (Repositioned within the current dimension —
-        // owner respawn points are effectively always the overworld surface a cat
+        // owner respawn points are effectively always the overworld surface a pet
         // roams, so a cross-dimension respawn is not worth shuttling it for.)
         let (_, rx, ry) = respawn;
         e.health = e.max_health;
@@ -4203,9 +4509,9 @@ fn apply_damage(
         e.vx = 0.0;
         e.vy = 0.0;
         e.home_x = Some(rx);
-        // A respawned cat reappears sitting at its owner's campfire — waiting there
+        // A respawned pet reappears sitting at its owner's campfire — waiting there
         // patiently rather than wandering off — regardless of how it was before.
-        if let EntityKind::Cat { sitting, .. } = &mut e.kind {
+        if let EntityKind::Cat { sitting, .. } | EntityKind::Puppy { sitting, .. } = &mut e.kind {
             *sitting = true;
         }
         // Resync the whole entity (a plain EntityMoved/EntityHealth pair wouldn't
@@ -4728,6 +5034,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                 maybe_spawn_spiders(&shared, cx, cy);
                                 maybe_spawn_snakes(&shared, cx, cy);
                                 maybe_spawn_cats(&shared, cx, cy);
+                                maybe_spawn_puppies(&shared, cx, cy);
                                 maybe_spawn_structure_entities(&shared, cx, cy);
                             }
                             Dimension::Underworld => {
@@ -5255,22 +5562,25 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 }
                 ClientMessage::Attack { target, held } => {
                     let dim = shared.dim_of(id);
-                    // Cats are sacrosanct: a swing at one never deals damage. A
-                    // wild cat can only be fed (cooked meat tames it); a player's
-                    // own cat is sat down or stood up by the click; anyone else's
-                    // cat ignores the swing. Either way the damage path is skipped.
-                    let cat_owner = shared
+                    // Pets (cats and puppies) are sacrosanct: a swing at one never
+                    // deals damage. A wild pet can only be fed (cooked meat tames
+                    // it); a player's own pet is sat down or stood up by the click;
+                    // anyone else's pet ignores the swing. Either way the damage
+                    // path is skipped.
+                    let pet_owner = shared
                         .entities(dim)
                         .lock()
                         .get(target)
                         .and_then(|e| match &e.kind {
-                            EntityKind::Cat { owner, .. } => Some(owner.clone()),
+                            EntityKind::Cat { owner, .. } | EntityKind::Puppy { owner, .. } => {
+                                Some(owner.clone())
+                            }
                             _ => None,
                         });
-                    if let Some(owner) = cat_owner {
+                    if let Some(owner) = pet_owner {
                         match owner {
-                            None => shared.try_feed_cat(id, target, held, dim),
-                            Some(_) => shared.toggle_cat_sit(id, target, dim),
+                            None => shared.try_feed_pet(id, target, held, dim),
+                            Some(_) => shared.toggle_pet_sit(id, target, dim),
                         }
                         continue;
                     }
