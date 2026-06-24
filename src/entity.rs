@@ -104,8 +104,14 @@ pub enum EntityKind {
     /// cat. A tamed cat that dies (to anything but fall damage, which never
     /// touches a server creature) doesn't vanish — it reappears at its owner's
     /// respawn point — and it never despawns for distance, teleporting to its
-    /// owner when they wander too far. Server-simulated.
-    Cat { owner: Option<String> },
+    /// owner when they wander too far. `sitting` is toggled by the owner clicking
+    /// their own cat: a sitting cat stays put where it was left — it stops wandering
+    /// and stops follow-teleporting — until clicked again to stand back up.
+    /// Server-simulated.
+    Cat {
+        owner: Option<String>,
+        sitting: bool,
+    },
     /// A slow, tough, hard-hitting undead that only roams at night and burns up
     /// in daylight (playing a death animation before despawning). Spawns in any
     /// biome after dark. Server-simulated.
@@ -176,13 +182,19 @@ impl EntityKind {
         matches!(self, EntityKind::Cat { .. })
     }
 
+    /// Whether this is a cat that has been told to sit (by its owner clicking it).
+    /// A sitting cat holds its position rather than wandering or following.
+    pub fn is_sitting(&self) -> bool {
+        matches!(self, EntityKind::Cat { sitting: true, .. })
+    }
+
     /// The name of the player who has tamed this entity, if any. Only a tamed
     /// [`EntityKind::Cat`] has an owner; everything else returns `None`. Callers
     /// resolve this name to a live entity id on demand (see
     /// [`crate::server`]'s `find_player_by_name`).
     pub fn owner(&self) -> Option<&str> {
         match self {
-            EntityKind::Cat { owner } => owner.as_deref(),
+            EntityKind::Cat { owner, .. } => owner.as_deref(),
             _ => None,
         }
     }

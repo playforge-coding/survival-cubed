@@ -1272,7 +1272,7 @@ impl Shared {
             // tame, since the bond is stored by name). Capture that name here.
             let owner_name = match (entities.get(id), entities.get(target)) {
                 (Some(a), Some(b))
-                    if matches!(b.kind, EntityKind::Cat { owner: None })
+                    if matches!(b.kind, EntityKind::Cat { owner: None, .. })
                         && aabb_gap(
                             a.x,
                             a.y,
@@ -1303,6 +1303,7 @@ impl Shared {
             entities.get_mut(target).map(|e| {
                 e.kind = EntityKind::Cat {
                     owner: Some(owner_name),
+                    sitting: false,
                 };
                 e.health = e.max_health;
                 e.clone()
@@ -1313,6 +1314,52 @@ impl Shared {
             self.broadcast_dim(dim, ServerMessage::EntitySpawn { entity });
         }
         self.send_inventory(id);
+    }
+
+    /// React to player `id` clicking the *tamed* cat `target`: if `id` is the cat's
+    /// owner and within reach, flip whether it's sitting (sit it down, or stand it
+    /// back up). A sitting cat stays put — the cat tick stops wandering and stops
+    /// follow-teleporting it — until it's stood up again. A click from anyone but
+    /// the owner, or from out of reach, is a harmless no-op. The bond is stored by
+    /// player *name* (see [`EntityKind::Cat`]), so ownership is checked by name.
+    fn toggle_cat_sit(&self, id: EntityId, target: EntityId, dim: Dimension) {
+        let updated = {
+            let mut entities = self.entities(dim).lock();
+            // Capture the clicker's name and reach box; an unnamed player can't own.
+            let (name, ax, ay, aw, ah) = match entities.get(id) {
+                Some(a) => match &a.kind {
+                    EntityKind::Player { name } if !name.is_empty() => {
+                        let (aw, ah) = a.size();
+                        (name.clone(), a.x, a.y, aw, ah)
+                    }
+                    _ => return,
+                },
+                None => return,
+            };
+            match entities.get_mut(target) {
+                Some(b) => {
+                    let (bw, bh) = b.size();
+                    let owns = matches!(
+                        &b.kind,
+                        EntityKind::Cat { owner: Some(o), .. } if *o == name
+                    );
+                    if !owns || aabb_gap(ax, ay, aw, ah, b.x, b.y, bw, bh) > PLAYER_ATTACK_REACH {
+                        return;
+                    }
+                    if let EntityKind::Cat { sitting, .. } = &mut b.kind {
+                        *sitting = !*sitting;
+                    }
+                    // Settle it in place so it doesn't keep its last walk velocity.
+                    b.vx = 0.0;
+                    b.vy = 0.0;
+                    b.clone()
+                }
+                None => return,
+            }
+        };
+        // Resync the cat's full description (the flipped `sitting` flag rides along
+        // in its `kind`) so every client renders the new pose and stance.
+        self.broadcast_dim(dim, ServerMessage::EntitySpawn { entity: updated });
     }
 
     /// Feed one unit of `fuel` to the campfire at cell `(x, y)` for player `id`:
@@ -2379,7 +2426,11 @@ fn maybe_spawn_cats(shared: &Shared, cx: i32, cy: i32) {
     let base_x = cx * CHUNK_SIZE;
     let chunk_top = cy * CHUNK_SIZE;
     let chunk_bottom = chunk_top + CHUNK_SIZE;
-    let (_, h) = EntityKind::Cat { owner: None }.size();
+    let (_, h) = EntityKind::Cat {
+        owner: None,
+        sitting: false,
+    }
+    .size();
 
     // Drop the cat onto the grass of one scattered column, but only where this
     // chunk holds the surface and the column is forest.
@@ -2392,7 +2443,10 @@ fn maybe_spawn_cats(shared: &Shared, cx: i32, cy: i32) {
     let id = shared.alloc_id();
     let entity = Entity::new(
         id,
-        EntityKind::Cat { owner: None },
+        EntityKind::Cat {
+            owner: None,
+            sitting: false,
+        },
         cell_x as f32 * TILE_SIZE,
         surface as f32 * TILE_SIZE - h,
     );
@@ -3105,6 +3159,26 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             continue;
         };
         let (w, h) = e.size();
+
+        // A cat told to sit stays where its owner left it: no wandering, no
+        // follow-teleport. It still obeys gravity (dir 0) so it drops rather than
+        // hangs if the ground beneath it is mined away.
+        if e.kind.is_sitting() {
+            let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, 0.0, CAT_SPEED, false);
+            e.x = m.x;
+            e.y = m.y;
+            e.vx = m.vx;
+            e.vy = m.vy;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: m.x,
+                y: m.y,
+                vx: m.vx,
+                vy: m.vy,
+            });
+            continue;
+        }
+
         let scx = e.x + w * 0.5;
         let scy = e.y + h * 0.5;
 
@@ -3792,20 +3866,14 @@ fn apply_damage(
         e.vx = 0.0;
         e.vy = 0.0;
         e.home_x = Some(rx);
-        let health = e.health;
-        let max_health = e.max_health;
-        msgs.push(ServerMessage::EntityMoved {
-            id,
-            x: rx,
-            y: ry,
-            vx: 0.0,
-            vy: 0.0,
-        });
-        msgs.push(ServerMessage::EntityHealth {
-            id,
-            health,
-            max_health,
-        });
+        // A respawned cat reappears sitting at its owner's campfire — waiting there
+        // patiently rather than wandering off — regardless of how it was before.
+        if let EntityKind::Cat { sitting, .. } = &mut e.kind {
+            *sitting = true;
+        }
+        // Resync the whole entity (a plain EntityMoved/EntityHealth pair wouldn't
+        // carry the flipped `sitting` flag, which rides along in `kind`).
+        msgs.push(ServerMessage::EntitySpawn { entity: e.clone() });
         (msgs, None)
     } else {
         entities.remove(id);
@@ -4834,16 +4902,23 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 }
                 ClientMessage::Attack { target, held } => {
                     let dim = shared.dim_of(id);
-                    // Cats are sacrosanct: a swing at one never deals damage. It
-                    // can only feed the cat (cooked meat tames a wild one); either
-                    // way the attack path below is skipped entirely.
-                    let target_is_cat = shared
+                    // Cats are sacrosanct: a swing at one never deals damage. A
+                    // wild cat can only be fed (cooked meat tames it); a player's
+                    // own cat is sat down or stood up by the click; anyone else's
+                    // cat ignores the swing. Either way the damage path is skipped.
+                    let cat_owner = shared
                         .entities(dim)
                         .lock()
                         .get(target)
-                        .is_some_and(|e| e.kind.is_cat());
-                    if target_is_cat {
-                        shared.try_feed_cat(id, target, held, dim);
+                        .and_then(|e| match &e.kind {
+                            EntityKind::Cat { owner, .. } => Some(owner.clone()),
+                            _ => None,
+                        });
+                    if let Some(owner) = cat_owner {
+                        match owner {
+                            None => shared.try_feed_cat(id, target, held, dim),
+                            Some(_) => shared.toggle_cat_sit(id, target, dim),
+                        }
                         continue;
                     }
                     // Validate reach and, if good, compute the knockback shoving

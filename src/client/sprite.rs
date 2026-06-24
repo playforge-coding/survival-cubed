@@ -66,6 +66,16 @@ pub static CAT_SPRITE: SpriteDef = SpriteDef {
     fps: 8.0,
 };
 
+/// Cat (sitting): a one-frame resting pose shown while a cat has been told to sit.
+/// Lives in the `cat/sit` subdirectory (its `name` doubles as that path).
+pub static CAT_SIT_SPRITE: SpriteDef = SpriteDef {
+    name: "cat/sit",
+    frame_w: 15,
+    frame_h: 13,
+    frames: 1,
+    fps: 1.0,
+};
+
 /// Zombie: a shambling undead that lurches along, arms out.
 pub static ZOMBIE_SPRITE: SpriteDef = SpriteDef {
     name: "zombie",
@@ -124,13 +134,14 @@ pub static BONE_SPRITE: SpriteDef = SpriteDef {
 };
 
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 11] {
+pub fn all() -> [&'static SpriteDef; 12] {
     [
         &PLAYER_SPRITE,
         &SLIME_SPRITE,
         &CHICKEN_SPRITE,
         &GOAT_SPRITE,
         &CAT_SPRITE,
+        &CAT_SIT_SPRITE,
         &ZOMBIE_SPRITE,
         &ZOMBIE_DEATH_SPRITE,
         &SPIDER_SPRITE,
@@ -147,6 +158,8 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         EntityKind::Slime => &SLIME_SPRITE,
         EntityKind::Chicken => &CHICKEN_SPRITE,
         EntityKind::Goat => &GOAT_SPRITE,
+        // A sitting cat shows its one-frame resting pose; otherwise the walk sheet.
+        EntityKind::Cat { sitting: true, .. } => &CAT_SIT_SPRITE,
         EntityKind::Cat { .. } => &CAT_SPRITE,
         EntityKind::Zombie => &ZOMBIE_SPRITE,
         EntityKind::Spider => &SPIDER_SPRITE,

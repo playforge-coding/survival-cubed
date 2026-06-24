@@ -98,6 +98,7 @@ sprites!(
     "chicken" => [0, 1, 2, 3],
     "goat" => [0, 1, 2, 3],
     "cat" => [0, 1, 2, 3],
+    "cat/sit" => [0],
     "zombie" => [0, 1, 2, 3],
     "zombie/death" => [0, 1, 2, 3],
     "spider" => [0, 1, 2, 3],

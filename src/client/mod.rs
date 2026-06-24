@@ -2016,7 +2016,10 @@ impl App {
                         spawn = Some(EntityKind::Goat);
                     }
                     if ui.button("Cat").clicked() {
-                        spawn = Some(EntityKind::Cat { owner: None });
+                        spawn = Some(EntityKind::Cat {
+                            owner: None,
+                            sitting: false,
+                        });
                     }
                     if ui.button("Zombie").clicked() {
                         spawn = Some(EntityKind::Zombie);
