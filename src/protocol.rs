@@ -55,14 +55,14 @@ pub enum ClientMessage {
     /// first join under this name) or must match the one stored for an existing
     /// account. A failed check closes the connection with an explanatory reason.
     ///
-    /// `dev_token` is the per-server dev secret: present (and matching) only for
-    /// the client that created/hosted the server, which authorizes that
-    /// connection for dev-mode commands. Remote joiners send `None` and are never
-    /// dev-authorized.
+    /// `creator_token` is the per-server admin secret: present (and matching) only
+    /// for the client that created/hosted the server, which authorizes that
+    /// connection as the server admin (admin commands, and creator mode even on a
+    /// survival server). Remote joiners send `None` and are never admins.
     Hello {
         name: String,
         password: String,
-        dev_token: Option<u64>,
+        creator_token: Option<u64>,
     },
     /// Ask the server for the contents of a chunk in dimension `dim`. The server
     /// answers from whichever dimension the player currently occupies; `dim` lets a
@@ -165,18 +165,25 @@ pub enum ClientMessage {
     /// Report fall damage the client computed from its own landing. The server
     /// is authoritative over the resulting health.
     FallDamage { amount: i32 },
-    /// Debug: jump the world clock to normalized time of day `t` in `[0, 1)`.
+    /// Toggle this player's creator mode on or off. Only honored from a connection
+    /// the server has authorized for creator mode (see [`Self::Hello`]). A creator
+    /// is ignored by hostile creatures.
+    SetCreator { on: bool },
+    /// Creator: jump the world clock to normalized time of day `t` in `[0, 1)`.
     /// The server adjusts its authoritative clock and rebroadcasts the time.
     SetTime { t: f32 },
-    /// Debug: spawn a creature of `kind` at world pixel `(x, y)`. Player kinds
+    /// Creator: spawn a creature of `kind` at world pixel `(x, y)`. Player kinds
     /// are ignored by the server.
     SpawnEntity { kind: EntityKind, x: f32, y: f32 },
-    /// Debug: set the block at a world cell directly, with no inventory cost or
-    /// adjacency requirement (used by dev mode's infinite-block placement).
-    DebugSetBlock { x: i32, y: i32, block: BlockId },
-    /// Debug: drop `count` of item `item` straight into the dev's inventory (the
-    /// item-giver UI). The server validates `item` is a real id and stacks it in,
-    /// then resyncs the inventory.
+    /// Creator: set the block at a world cell directly, with no inventory cost or
+    /// adjacency requirement (used by creator mode's infinite-block placement).
+    CreatorSetBlock { x: i32, y: i32, block: BlockId },
+    /// Creator: set many cells at once (used when stamping a saved structure).
+    /// Each entry is `(x, y, block)`; the server applies and rebroadcasts them.
+    CreatorSetBlocks { cells: Vec<(i32, i32, BlockId)> },
+    /// Creator: drop `count` of item `item` straight into the player's inventory
+    /// (the item-giver UI). The server validates `item` is a real id and stacks it
+    /// in, then resyncs the inventory.
     GiveItem { item: BlockId, count: u32 },
     /// Send a line of chat. The server attributes it to this connection's
     /// player name and rebroadcasts it to everyone (see [`ServerMessage::Chat`]).
@@ -192,6 +199,9 @@ pub enum ServerMessage {
         entity_id: EntityId,
         spawn_x: f32,
         spawn_y: f32,
+        /// Whether this connection may enter creator mode: always true for the
+        /// admin (host), and true for everyone on a creator-type server.
+        creator_allowed: bool,
     },
     /// Full contents of a chunk (row-major, `CHUNK_AREA` entries) in dimension
     /// `dim`. The client ignores chunks for a dimension it is no longer in.
@@ -208,6 +218,12 @@ pub enum ServerMessage {
         x: i32,
         y: i32,
         block: BlockId,
+    },
+    /// Many cells changed at once in dimension `dim` (a stamped structure). The
+    /// client applies each `(x, y, block)` it can, ignoring other dimensions.
+    BlocksUpdate {
+        dim: Dimension,
+        cells: Vec<(i32, i32, BlockId)>,
     },
     /// Move the owning client into dimension `dim` at world pixel `(x, y)`: it
     /// clears its mirrored world and entities, switches dimension, and repositions

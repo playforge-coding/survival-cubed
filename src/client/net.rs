@@ -35,6 +35,8 @@ pub enum NetEvent {
         entity_id: EntityId,
         spawn_x: f32,
         spawn_y: f32,
+        /// Whether this client may enter creator mode on this server.
+        creator_allowed: bool,
     },
     Chunk {
         dim: Dimension,
@@ -47,6 +49,10 @@ pub enum NetEvent {
         x: i32,
         y: i32,
         block: BlockId,
+    },
+    BlocksUpdate {
+        dim: Dimension,
+        cells: Vec<(i32, i32, BlockId)>,
     },
     /// Move into a new dimension at world pixel `(x, y)`: the client clears its
     /// world and entities and re-streams the new dimension.
@@ -225,26 +231,34 @@ pub enum NetCommand {
     FallDamage {
         amount: i32,
     },
-    /// Dev mode: jump the world clock to time of day `t` in `[0, 1)`.
+    /// Creator mode: toggle this player's creator mode on or off.
+    SetCreator {
+        on: bool,
+    },
+    /// Creator mode: jump the world clock to time of day `t` in `[0, 1)`.
     SetTime {
         t: f32,
     },
-    /// Dev mode: spawn a creature of `kind` at world pixel `(x, y)`.
+    /// Creator mode: spawn a creature of `kind` at world pixel `(x, y)`.
     SpawnEntity {
         kind: EntityKind,
         x: f32,
         y: f32,
     },
-    /// Dev mode: drop `count` of item `item` straight into the dev's inventory.
+    /// Creator mode: drop `count` of item `item` straight into the inventory.
     GiveItem {
         item: BlockId,
         count: u32,
     },
-    /// Dev mode: place `block` at a world cell for free (infinite blocks).
-    DebugSetBlock {
+    /// Creator mode: place `block` at a world cell for free (infinite blocks).
+    CreatorSetBlock {
         x: i32,
         y: i32,
         block: BlockId,
+    },
+    /// Creator mode: place many cells at once (stamping a saved structure).
+    CreatorSetBlocks {
+        cells: Vec<(i32, i32, BlockId)>,
     },
     /// Send a line of chat to the server for rebroadcast.
     Chat {
@@ -264,16 +278,16 @@ pub struct NetHandle {
 /// restore saved state and to attribute chat). `password` authenticates that
 /// name with the server (registering it on first join, or matching the stored
 /// one thereafter). `trust`, if set, is a fingerprint to silently accept (used
-/// by the embedded singleplayer server). `dev_token`, if set, is the per-server
-/// dev secret presented in `Hello` to authorize dev mode (only the creator's own
-/// client holds it).
+/// by the embedded singleplayer server). `creator_token`, if set, is the
+/// per-server admin secret presented in `Hello` to authorize the host (only the
+/// host's own client holds it).
 pub fn connect(
     addr: SocketAddr,
     host_label: String,
     player_name: String,
     password: String,
     trust: Option<[u8; 32]>,
-    dev_token: Option<u64>,
+    creator_token: Option<u64>,
 ) -> NetHandle {
     let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<NetEvent>();
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<NetCommand>();
@@ -301,7 +315,7 @@ pub fn connect(
                     player_name,
                     password,
                     trust,
-                    dev_token,
+                    creator_token,
                     &ev_for_thread,
                     cmd_rx,
                 )
@@ -327,7 +341,7 @@ async fn client_main(
     player_name: String,
     password: String,
     trust: Option<[u8; 32]>,
-    dev_token: Option<u64>,
+    creator_token: Option<u64>,
     ev_tx: &Sender<NetEvent>,
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<NetCommand>,
 ) -> anyhow::Result<()> {
@@ -358,7 +372,7 @@ async fn client_main(
         &ClientMessage::Hello {
             name: player_name,
             password,
-            dev_token,
+            creator_token,
         },
     )
     .await?;
@@ -448,10 +462,14 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::AddWaypoint { x, y, color } => ClientMessage::AddWaypoint { x, y, color },
         NetCommand::RemoveWaypoint { x, y } => ClientMessage::RemoveWaypoint { x, y },
         NetCommand::FallDamage { amount } => ClientMessage::FallDamage { amount },
+        NetCommand::SetCreator { on } => ClientMessage::SetCreator { on },
         NetCommand::SetTime { t } => ClientMessage::SetTime { t },
         NetCommand::SpawnEntity { kind, x, y } => ClientMessage::SpawnEntity { kind, x, y },
         NetCommand::GiveItem { item, count } => ClientMessage::GiveItem { item, count },
-        NetCommand::DebugSetBlock { x, y, block } => ClientMessage::DebugSetBlock { x, y, block },
+        NetCommand::CreatorSetBlock { x, y, block } => {
+            ClientMessage::CreatorSetBlock { x, y, block }
+        }
+        NetCommand::CreatorSetBlocks { cells } => ClientMessage::CreatorSetBlocks { cells },
         NetCommand::Chat { text } => ClientMessage::Chat { text },
         NetCommand::Disconnect => unreachable!("handled before conversion"),
     }
@@ -463,10 +481,12 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
             entity_id,
             spawn_x,
             spawn_y,
+            creator_allowed,
         } => NetEvent::Connected {
             entity_id,
             spawn_x,
             spawn_y,
+            creator_allowed,
         },
         ServerMessage::Chunk {
             dim,
@@ -482,6 +502,7 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
         ServerMessage::BlockUpdate { dim, x, y, block } => {
             NetEvent::BlockUpdate { dim, x, y, block }
         }
+        ServerMessage::BlocksUpdate { dim, cells } => NetEvent::BlocksUpdate { dim, cells },
         ServerMessage::EnterDimension { dim, x, y } => NetEvent::EnterDimension { dim, x, y },
         ServerMessage::EntitySpawn { entity } => NetEvent::EntitySpawn { entity },
         ServerMessage::EntityMoved { id, x, y, vx, vy } => {

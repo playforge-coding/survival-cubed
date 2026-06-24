@@ -13,7 +13,17 @@ use crate::block::{
     TUNGSTEN_ORE, WATER,
 };
 use crate::protocol::BlockId;
+use crate::structure::Structure;
 use crate::world::{CHUNK_SIZE, Chunk, Dimension, WORLD_HEIGHT, to_chunk};
+
+/// A structure embedded in the binary and scattered across the overworld surface
+/// during generation. The bytes are the exact format creators save (see
+/// [`crate::structure`]), so a hand-built ruin can be dropped in here.
+const EMBEDDED_RUIN: &[u8] = include_bytes!("../assets/structures/ruin.scst");
+
+/// Per-mille chance a lowland column roots an embedded ruin — rare, so they read
+/// as occasional landmarks rather than clutter.
+const STRUCTURE_CHANCE: u32 = 4;
 
 /// Average surface row (cells from the top of the world).
 const SURFACE_BASE: i32 = WORLD_HEIGHT / 2;
@@ -186,6 +196,9 @@ pub struct WorldGen {
     /// Vein field driving tungsten-ore placement in the underworld's charred rock,
     /// on its own seed so the strongest ore isn't correlated with the caves.
     tungsten_noise: FastNoiseLite,
+    /// The embedded structure scattered across the surface, parsed once. `None`
+    /// if the embedded bytes fail to parse (then no structures are placed).
+    structure: Option<Structure>,
 }
 
 impl WorldGen {
@@ -252,6 +265,9 @@ impl WorldGen {
             uw_height_noise,
             uw_cave_noise,
             tungsten_noise,
+            structure: Structure::from_bytes(EMBEDDED_RUIN)
+                .ok()
+                .filter(|s| !s.is_empty()),
         }
     }
 
@@ -439,6 +455,22 @@ impl WorldGen {
                     block = self.ore_at(world_x, world_y, surface, biome);
                 }
                 chunk.set(lx, ly, block);
+            }
+        }
+        // Rare embedded ruins rest on the surface, placed before trees so a stone
+        // ruin takes precedence and trees grow around it (both fill only air).
+        // Scan a margin wide enough to catch any whose footprint reaches into this
+        // chunk from the left, and clip like trees. Skip submerged or cave-mouth
+        // columns so a ruin never floats over water or a hole.
+        if let Some(struct_w) = self.structure.as_ref().map(|s| s.width as i32) {
+            for world_x in (base_x - struct_w)..(base_x + CHUNK_SIZE) {
+                let surface = self.surface_height(world_x);
+                if self.structure_root_at(world_x)
+                    && surface <= SEA_LEVEL
+                    && !self.is_cave(world_x, surface, surface)
+                {
+                    self.place_structure(&mut chunk, base_x, base_y, world_x);
+                }
             }
         }
         // Trees grow upward from the surface and can lean their canopies across
@@ -654,6 +686,33 @@ impl WorldGen {
             }
         }
     }
+
+    /// Whether a lowland column rolls an embedded structure. Restricted to the
+    /// grassy biomes, on its own hash salt so it's independent of tree placement.
+    fn column_rolls_structure(&self, world_x: i32) -> bool {
+        matches!(self.biome_at(world_x), Biome::Plains | Biome::Forest)
+            && self.col_hash(world_x, 0x57) % 1000 < STRUCTURE_CHANCE
+    }
+
+    /// Whether a structure is rooted (anchored at its left edge) at this column.
+    /// Suppressed if the left neighbour also rolled, so two never overlap edges.
+    fn structure_root_at(&self, world_x: i32) -> bool {
+        self.column_rolls_structure(world_x) && !self.column_rolls_structure(world_x - 1)
+    }
+
+    /// Stamp the embedded structure with its left edge at `root_x`, resting on the
+    /// surface and rising into the air. Clips to the chunk and only fills air, so
+    /// it never gouges terrain (matching [`place_tree`](Self::place_tree)).
+    fn place_structure(&self, chunk: &mut Chunk, base_x: i32, base_y: i32, root_x: i32) {
+        let Some(s) = &self.structure else {
+            return;
+        };
+        let surface = self.surface_height(root_x);
+        let top = surface - s.height as i32; // bottom row sits just above the ground
+        for (dx, dy, b) in s.solid_offsets() {
+            put_block(chunk, base_x, base_y, root_x + dx, top + dy, b);
+        }
+    }
 }
 
 /// Set a world cell within a chunk, ignoring writes that fall outside the chunk
@@ -809,6 +868,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The embedded ruin parses and is actually stamped onto the surface: the
+    /// first rooted column over open land has a stone wall sitting in what would
+    /// otherwise be air above the natural ground.
+    #[test]
+    fn embedded_structures_are_placed_on_the_surface() {
+        use crate::block::STONE;
+        use crate::world::to_chunk;
+
+        let worldgen = WorldGen::new(0xC0FFEE);
+        assert!(worldgen.structure.is_some(), "embedded ruin should parse");
+
+        // Find an open lowland column that roots a ruin, scanning a wide span.
+        let root = (-4000..4000)
+            .find(|&x| {
+                let s = worldgen.surface_height(x);
+                worldgen.structure_root_at(x) && s <= SEA_LEVEL && !worldgen.is_cave(x, s, s)
+            })
+            .expect("a ruin should root somewhere across 8000 columns");
+
+        // The ruin's left wall is stone; a cell two rows above the surface is in
+        // the air for natural terrain, so finding stone there proves it was placed.
+        let probe_y = worldgen.surface_height(root) - 2;
+        let ((cx, cy), (lx, ly)) = to_chunk(root, probe_y);
+        let chunk = worldgen.generate_chunk(cx, cy);
+        assert_eq!(
+            chunk.get(lx, ly),
+            STONE,
+            "ruin wall missing above the surface at column {root}"
+        );
     }
 
     /// The underworld is built from charred rock — riddled with caves and dotted

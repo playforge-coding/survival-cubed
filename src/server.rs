@@ -290,9 +290,9 @@ const BANS_FILE: &str = "bans.txt";
 pub struct RunningServer {
     pub addr: SocketAddr,
     pub fingerprint: [u8; 32],
-    /// The dev secret this server will accept in `Hello` to authorize dev mode.
-    /// Passed to the creator's own client so only it can use dev tools.
-    pub dev_token: u64,
+    /// The admin secret this server will accept in `Hello` to authorize the host.
+    /// Passed to the host's own client so only it is treated as admin.
+    pub creator_token: u64,
     // Keeping the endpoint alive keeps the server listening; dropping it (when
     // this handle is dropped) closes the server.
     _endpoint: Endpoint,
@@ -486,13 +486,21 @@ struct Shared {
     spawn: (f32, f32),
     /// Reference instant the day/night clock counts from. Offset back in time on
     /// load so a resumed world keeps the time of day it was saved at, and movable
-    /// at runtime by dev mode's `SetTime` (hence the `Mutex`).
+    /// at runtime by creator mode's `SetTime` (hence the `Mutex`).
     start: Mutex<Instant>,
-    /// Per-server dev secret. Handed only to the creator's in-process client (via
-    /// [`RunningServer::dev_token`]); a connection that presents it in `Hello` is
-    /// authorized for dev-mode commands. Never sent to other clients, so a remote
-    /// joiner cannot guess it and grant itself dev powers.
-    dev_token: u64,
+    /// Per-server admin secret. Handed only to the host's in-process client (via
+    /// [`RunningServer::creator_token`]); a connection that presents it in `Hello`
+    /// is the server admin. Never sent to other clients, so a remote joiner cannot
+    /// guess it and grant itself admin powers.
+    creator_token: u64,
+    /// Whether this is a creator-type server: every player may enter creator mode.
+    /// On a survival server (`false`), only the admin/host may. Set at world
+    /// creation and persisted in [`WorldMeta::creator_server`].
+    creator_world: bool,
+    /// Entity ids of players currently in creator mode. Hostile creatures ignore
+    /// them when picking a target, so monsters never attack a creator. Updated by
+    /// [`ClientMessage::SetCreator`] and cleared on disconnect.
+    creators: Mutex<HashSet<EntityId>>,
     /// Saved state of every player who has joined, keyed by name. A player is
     /// moved out of here (into a live entity) while connected and folded back in
     /// on disconnect, so it survives both reconnects and restarts.
@@ -690,6 +698,7 @@ impl Shared {
                 .iter()
                 .map(|(name, hash)| (name.clone(), hash.clone()))
                 .collect(),
+            creator_server: self.creator_world,
         };
         if let Err(e) = self
             .world(Dimension::Overworld)
@@ -842,8 +851,8 @@ impl Shared {
         }
     }
 
-    /// Handle a `/`-prefixed chat line from an admin (a dev-authorized
-    /// connection). Returns nothing; all outcomes are reported back to the admin
+    /// Handle a `/`-prefixed chat line from the admin (the host connection that
+    /// presented the token). Returns nothing; all outcomes are reported to the admin
     /// (or broadcast) as `Server` chat. Unknown commands get a hint.
     fn handle_admin_command(&self, admin: EntityId, line: &str) {
         let mut parts = line[1..].split_whitespace();
@@ -2051,7 +2060,12 @@ fn creature_loot(kind: &EntityKind) -> &'static [(BlockId, u32)] {
 /// Start a server on a background thread. `bind` of port 0 picks an ephemeral
 /// port (used for the embedded singleplayer server). Returns once the endpoint
 /// is listening, with its actual address and certificate fingerprint.
-pub fn start_server(bind: SocketAddr, seed: i32, save_dir: PathBuf) -> Result<RunningServer> {
+pub fn start_server(
+    bind: SocketAddr,
+    seed: i32,
+    save_dir: PathBuf,
+    creator_world: bool,
+) -> Result<RunningServer> {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Ready>();
 
     std::thread::Builder::new()
@@ -2068,7 +2082,7 @@ pub fn start_server(bind: SocketAddr, seed: i32, save_dir: PathBuf) -> Result<Ru
                 }
             };
             rt.block_on(async move {
-                let shared = match setup(bind, seed, save_dir, &ready_tx).await {
+                let shared = match setup(bind, seed, save_dir, creator_world, &ready_tx).await {
                     Some(s) => s,
                     None => return,
                 };
@@ -2083,7 +2097,7 @@ pub fn start_server(bind: SocketAddr, seed: i32, save_dir: PathBuf) -> Result<Ru
         Ok((addr, fp, endpoint, shared)) => Ok(RunningServer {
             addr,
             fingerprint: fp,
-            dev_token: shared.dev_token,
+            creator_token: shared.creator_token,
             _endpoint: endpoint,
             shared,
             _discovery: None,
@@ -2102,9 +2116,10 @@ async fn setup(
     bind: SocketAddr,
     seed: i32,
     save_dir: PathBuf,
+    creator_world: bool,
     ready_tx: &std::sync::mpsc::Sender<Ready>,
 ) -> Option<AcceptCtx> {
-    match build_endpoint(bind, seed, save_dir) {
+    match build_endpoint(bind, seed, save_dir, creator_world) {
         Ok((endpoint, fp, shared)) => {
             let addr = match endpoint.local_addr() {
                 Ok(a) => a,
@@ -2178,6 +2193,7 @@ fn build_endpoint(
     bind: SocketAddr,
     seed: i32,
     save_dir: PathBuf,
+    creator_world: bool,
 ) -> Result<(Endpoint, [u8; 32], Arc<Shared>)> {
     // Self-signed certificate for "localhost", persisted so the fingerprint is
     // stable across restarts.
@@ -2225,15 +2241,22 @@ fn build_endpoint(
     };
     let next_id = saved.as_ref().map(|m| m.next_id.max(1)).unwrap_or(1);
 
-    // Mint a per-server dev secret from the wall clock (mixed with next_id so two
-    // servers started in the same instant still differ). It is never broadcast,
-    // so a remote client can't learn it; only the creator's in-process client is
-    // handed it via RunningServer.
-    let dev_token = std::time::SystemTime::now()
+    // Mint a per-server admin secret from the wall clock (mixed with next_id so
+    // two servers started in the same instant still differ). It is never
+    // broadcast, so a remote client can't learn it; only the host's in-process
+    // client is handed it via RunningServer.
+    let creator_token = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0xD157_C0DE)
         ^ (next_id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+
+    // A creator-type world is fixed at creation; a resumed world keeps whatever it
+    // was saved as, ignoring the freshly requested flag.
+    let creator_world = saved
+        .as_ref()
+        .map(|m| m.creator_server)
+        .unwrap_or(creator_world);
 
     // Restore saved creatures into each dimension's live world; players go to the
     // saved set.
@@ -2299,7 +2322,9 @@ fn build_endpoint(
         next_id: AtomicU32::new(next_id),
         spawn,
         start: Mutex::new(start),
-        dev_token,
+        creator_token,
+        creator_world,
+        creators: Mutex::new(HashSet::new()),
         saved_players: Mutex::new(saved_players),
         accounts: Mutex::new(accounts),
         inventories: Mutex::new(HashMap::new()),
@@ -2929,6 +2954,18 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         .map(|e| (e.id, e.x, e.y))
         .collect();
 
+    // The subset hostile creatures may target: players not currently in creator
+    // mode. Monsters never attack a creator, so they pick targets from this list
+    // (spawning and despawning still consider every player, creators included).
+    let hostile_players: Vec<(EntityId, f32, f32)> = {
+        let creators = shared.creators.lock();
+        players
+            .iter()
+            .copied()
+            .filter(|(pid, _, _)| !creators.contains(pid))
+            .collect()
+    };
+
     // Named snapshot of this dimension's players (id + position keyed by name), so
     // a tamed cat can resolve its owner — stored by name, not by a volatile id —
     // to a live entity without re-locking the entities map mid-tick.
@@ -3049,7 +3086,7 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         let scx = e.x + w * 0.5;
         let scy = e.y + h * 0.5;
         let target = if night {
-            nearest_player(&players, scx, scy, SLIME_AGGRO)
+            nearest_player(&hostile_players, scx, scy, SLIME_AGGRO)
         } else {
             None
         };
@@ -3117,7 +3154,7 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         let scx = e.x + w * 0.5;
         let scy = e.y + h * 0.5;
 
-        let target = nearest_player(&players, scx, scy, SPIDER_AGGRO);
+        let target = nearest_player(&hostile_players, scx, scy, SPIDER_AGGRO);
         let chasing = target.is_some();
         let dir = match target {
             Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -1.0,
@@ -3231,9 +3268,12 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             // The strike connects on the tick the wind-up ends, if a player is
             // within the (generous) lunge reach.
             if was_winding && striking {
-                if let Some((pid, px, py)) =
-                    nearest_player(&players, m.x + w * 0.5, m.y + h * 0.5, f32::INFINITY)
-                {
+                if let Some((pid, px, py)) = nearest_player(
+                    &hostile_players,
+                    m.x + w * 0.5,
+                    m.y + h * 0.5,
+                    f32::INFINITY,
+                ) {
                     if aabb_gap(m.x, m.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1)
                         <= SNAKE_LUNGE_REACH
                     {
@@ -3251,7 +3291,7 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
 
         let scx = e.x + w * 0.5;
         let scy = e.y + h * 0.5;
-        let target = nearest_player(&players, scx, scy, SNAKE_AGGRO);
+        let target = nearest_player(&hostile_players, scx, scy, SNAKE_AGGRO);
 
         // In range and off cooldown: commit to a wind-up lunge. Lock the heading
         // toward the player now and hold still — the strike springs this way even
@@ -3509,7 +3549,7 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         let home = *e.home_x.get_or_insert(e.x);
         let scx = e.x + w * 0.5;
         let scy = e.y + h * 0.5;
-        let target = nearest_player(&players, scx, scy, ZOMBIE_AGGRO);
+        let target = nearest_player(&hostile_players, scx, scy, ZOMBIE_AGGRO);
         let chasing = target.is_some();
         let dir = match target {
             Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -1.0,
@@ -3581,7 +3621,7 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         let home = *e.home_x.get_or_insert(e.x);
         let scx = e.x + w * 0.5;
         let scy = e.y + h * 0.5;
-        let target = nearest_player(&players, scx, scy, SKELETON_AGGRO);
+        let target = nearest_player(&hostile_players, scx, scy, SKELETON_AGGRO);
         let chasing = target.is_some();
 
         // Kiting heading: close in when out of throwing range, back off when the
@@ -3692,7 +3732,7 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         let scx = e.x + w * 0.5;
         let scy = e.y + h * 0.5;
 
-        let target = nearest_player(&players, scx, scy, CHARRED_SKELETON_AGGRO);
+        let target = nearest_player(&hostile_players, scx, scy, CHARRED_SKELETON_AGGRO);
         let chasing = target.is_some();
         let dir = match target {
             Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -1.0,
@@ -4448,12 +4488,12 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
     // player. Anything else (or a dropped stream) ends the connection here,
     // before any entity, client handle, or other state is registered — so a
     // rejected login leaves nothing to clean up.
-    let (name, password, dev_token) = match read_msg::<ClientMessage>(&mut recv).await {
+    let (name, password, creator_token) = match read_msg::<ClientMessage>(&mut recv).await {
         Ok(ClientMessage::Hello {
             name,
             password,
-            dev_token,
-        }) => (name.trim().to_string(), password, dev_token),
+            creator_token,
+        }) => (name.trim().to_string(), password, creator_token),
         Ok(_) => {
             connection.close(AUTH_FAILED_CLOSE.into(), b"expected a login first");
             return Ok(());
@@ -4474,11 +4514,14 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
         return Ok(());
     }
 
-    // Authorized. This connection may use dev-mode commands only if it presented
-    // the correct per-server dev token (the creator's own client holds it).
-    let is_dev = dev_token == Some(shared.dev_token);
-    if is_dev {
-        log::info!("login '{name}' authorized for dev mode");
+    // Authorized. This connection is the server admin only if it presented the
+    // correct per-server token (the host's own client holds it). Admin powers
+    // (admin commands) are reserved for it. Creator mode is broader: it is allowed
+    // for the admin always, and for everyone on a creator-type server.
+    let is_admin = creator_token == Some(shared.creator_token);
+    let creator_allowed = shared.creator_world || is_admin;
+    if is_admin {
+        log::info!("login '{name}' authorized as admin");
     }
 
     let id = shared.alloc_id();
@@ -4500,6 +4543,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
         entity_id: id,
         spawn_x: sx,
         spawn_y: sy,
+        creator_allowed,
     });
     // Tell the owner its starting health (its own avatar is never mirrored via
     // EntitySpawn) and the current time of day.
@@ -5264,9 +5308,9 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     // to a generic label before they've identified via Hello), cap
                     // its length, and fan it out to everyone — sender included.
                     let trimmed = text.trim();
-                    // A `/`-prefixed line from an admin (a dev-authorized connection)
-                    // is a moderation command, handled here instead of broadcast.
-                    if is_dev && trimmed.starts_with('/') {
+                    // A `/`-prefixed line from the admin (the host) is a moderation
+                    // command, handled here instead of broadcast.
+                    if is_admin && trimmed.starts_with('/') {
                         shared.handle_admin_command(id, trimmed);
                     } else if !trimmed.is_empty() {
                         let text: String = trimmed.chars().take(MAX_CHAT_LEN).collect();
@@ -5284,8 +5328,17 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         shared.broadcast_all(ServerMessage::Chat { from, text });
                     }
                 }
-                // --- Dev-mode commands: honored only for the authorized creator.
-                ClientMessage::SetTime { t } if is_dev => {
+                // Toggle the sender's creator mode. Tracked so hostile creatures
+                // skip creators when choosing a target.
+                ClientMessage::SetCreator { on } if creator_allowed => {
+                    if on {
+                        shared.creators.lock().insert(id);
+                    } else {
+                        shared.creators.lock().remove(&id);
+                    }
+                }
+                // --- Creator-mode commands: honored only when creator-allowed.
+                ClientMessage::SetTime { t } if creator_allowed => {
                     let t = t.rem_euclid(1.0);
                     // Rewind the clock's origin so `elapsed()` now reads `t` of a day.
                     let elapsed = Duration::from_secs_f32(t * daylight::DAY_LENGTH_SECS);
@@ -5295,10 +5348,10 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     *shared.start.lock() = new_start;
                     shared.broadcast_all(ServerMessage::TimeOfDay { t });
                 }
-                ClientMessage::SpawnEntity { kind, x, y } if is_dev => {
-                    // Never let dev spawn a player avatar (those are owned by a
-                    // connection); only server-simulated creatures, into the
-                    // dimension the dev is currently in.
+                ClientMessage::SpawnEntity { kind, x, y } if creator_allowed => {
+                    // Never let a creator spawn a player avatar (those are owned by
+                    // a connection); only server-simulated creatures, into the
+                    // dimension the creator is currently in.
                     if !kind.is_player() {
                         let dim = shared.dim_of(id);
                         let eid = shared.alloc_id();
@@ -5307,13 +5360,34 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         shared.broadcast_dim(dim, ServerMessage::EntitySpawn { entity });
                     }
                 }
-                ClientMessage::DebugSetBlock { x, y, block } if is_dev => {
+                ClientMessage::CreatorSetBlock { x, y, block } if creator_allowed => {
                     let dim = shared.dim_of(id);
                     if shared.world(dim).lock().set(x, y, block) {
                         shared.broadcast_dim(dim, ServerMessage::BlockUpdate { dim, x, y, block });
                     }
                 }
-                ClientMessage::GiveItem { item, count } if is_dev => {
+                ClientMessage::CreatorSetBlocks { cells } if creator_allowed => {
+                    // Stamp a structure: apply every cell that lands in a loaded
+                    // chunk, then rebroadcast just those so all clients mirror it.
+                    let dim = shared.dim_of(id);
+                    let applied: Vec<(i32, i32, BlockId)> = {
+                        let mut world = shared.world(dim).lock();
+                        cells
+                            .into_iter()
+                            .filter(|&(x, y, block)| world.set(x, y, block))
+                            .collect()
+                    };
+                    if !applied.is_empty() {
+                        shared.broadcast_dim(
+                            dim,
+                            ServerMessage::BlocksUpdate {
+                                dim,
+                                cells: applied,
+                            },
+                        );
+                    }
+                }
+                ClientMessage::GiveItem { item, count } if creator_allowed => {
                     // Reject unknown ids (and air) so a typo can't inject a bogus
                     // stack; the registry treats out-of-range ids as air.
                     let known = {
@@ -5331,12 +5405,14 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         shared.send_inventory(id);
                     }
                 }
-                // Unauthorized dev commands from a non-creator are ignored.
-                ClientMessage::SetTime { .. }
+                // Creator commands from a player without creator access are ignored.
+                ClientMessage::SetCreator { .. }
+                | ClientMessage::SetTime { .. }
                 | ClientMessage::SpawnEntity { .. }
                 | ClientMessage::GiveItem { .. }
-                | ClientMessage::DebugSetBlock { .. } => {
-                    log::debug!("ignoring dev command from unauthorized player {id}");
+                | ClientMessage::CreatorSetBlock { .. }
+                | ClientMessage::CreatorSetBlocks { .. } => {
+                    log::debug!("ignoring creator command from unauthorized player {id}");
                 }
             }
         }
@@ -5349,6 +5425,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
     shared.client_dim.lock().remove(&id);
     shared.fire_cd.lock().remove(&id);
     shared.spectate_return.lock().remove(&id);
+    shared.creators.lock().remove(&id);
     let removed = shared.entities(dim).lock().remove(id);
     let inventory = shared.inventories.lock().remove(&id).unwrap_or_default();
     let respawn = shared.respawn_points.lock().remove(&id);

@@ -111,6 +111,11 @@ pub struct WorldMeta {
     /// are stored only as salted Argon2id hashes, never in the clear.
     #[serde(default)]
     pub accounts: Vec<(String, String)>,
+    /// Whether this is a creator-type server, on which every player may enter
+    /// creator mode (on a survival server, only the admin/host may). Chosen when
+    /// the world is created and fixed thereafter.
+    #[serde(default)]
+    pub creator_server: bool,
 }
 
 /// Reads and writes a single world's files under `dir`.
@@ -285,6 +290,82 @@ pub fn list_worlds() -> Vec<WorldInfo> {
     worlds
 }
 
+/// Directory holding the player's saved structures, shared across all worlds:
+/// `~/.local/share/survival-cubed/structures`. Falls back to `./structures`.
+fn structures_dir() -> PathBuf {
+    let mut p = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
+    p.push("survival-cubed");
+    p.push("structures");
+    p
+}
+
+/// File extension for a saved structure ("Survival Cubed STructure").
+const STRUCTURE_EXT: &str = "scst";
+
+/// Reduce a user-typed structure name to a safe file stem (letters, numbers,
+/// spaces, `-` and `_`), or `None` if nothing usable remains. Mirrors the world
+/// name rules so a structure can't escape its directory or collide with metadata.
+pub fn sanitize_structure_name(input: &str) -> Option<String> {
+    let cleaned: String = input
+        .trim()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_'))
+        .collect();
+    let cleaned = cleaned.trim().to_string();
+    (!cleaned.is_empty() && cleaned.len() <= 64).then_some(cleaned)
+}
+
+/// Save `structure` under `name`, overwriting any existing one. The name is
+/// sanitized first; an unusable name is an error.
+pub fn save_structure(name: &str, structure: &crate::structure::Structure) -> Result<()> {
+    let name = sanitize_structure_name(name).context("invalid structure name")?;
+    let dir = structures_dir();
+    fs::create_dir_all(&dir)?;
+    write_atomic(
+        &dir.join(format!("{name}.{STRUCTURE_EXT}")),
+        &structure.to_bytes(),
+    )
+}
+
+/// Load the saved structure named `name`, or an error if it is missing or
+/// unreadable.
+pub fn load_structure(name: &str) -> Result<crate::structure::Structure> {
+    let path = structures_dir().join(format!("{name}.{STRUCTURE_EXT}"));
+    let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    crate::structure::Structure::from_bytes(&bytes)
+}
+
+/// Permanently delete a saved structure. Deleting one that doesn't exist is
+/// treated as success.
+pub fn delete_structure(name: &str) -> std::io::Result<()> {
+    let path = structures_dir().join(format!("{name}.{STRUCTURE_EXT}"));
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Names of every saved structure (without the extension), sorted. Unreadable
+/// entries are skipped silently.
+pub fn list_structures() -> Vec<String> {
+    let mut names = Vec::new();
+    let entries = match fs::read_dir(structures_dir()) {
+        Ok(e) => e,
+        Err(_) => return names,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some(STRUCTURE_EXT)
+            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+        {
+            names.push(stem.to_string());
+        }
+    }
+    names.sort();
+    names
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,11 +428,13 @@ mod tests {
                 "ada".into(),
                 "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2g".into(),
             )],
+            creator_server: true,
         };
         store.save_meta(&meta).unwrap();
 
         let got = store.load_meta().unwrap().expect("save exists");
         assert_eq!(got.seed, meta.seed);
+        assert_eq!(got.creator_server, meta.creator_server);
         assert_eq!(got.elapsed_secs, meta.elapsed_secs);
         assert_eq!(got.next_id, meta.next_id);
         assert_eq!(got.spawn, meta.spawn);

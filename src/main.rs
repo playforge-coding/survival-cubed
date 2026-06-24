@@ -1,8 +1,10 @@
 //! Survival Cubed — a multiplayer-first 2D block game.
 //!
 //! Run with no arguments for the graphical client (with singleplayer/host/join
-//! from the menu). Run `survival-cubed server [port]` for a dedicated headless
-//! server that prints its certificate fingerprint for clients to verify.
+//! from the menu). Run `survival-cubed server [port] [creator]` for a dedicated
+//! headless server that prints its certificate fingerprint for clients to verify.
+//! Pass `creator` to make it a creator-type server (every player may enter
+//! creator mode); omit it for a survival server.
 
 mod assets;
 mod auth;
@@ -17,6 +19,7 @@ mod protocol;
 mod recipe;
 mod save;
 mod server;
+mod structure;
 mod world;
 mod worldgen;
 
@@ -32,7 +35,9 @@ fn main() -> anyhow::Result<()> {
     match args.next().as_deref() {
         Some("server") => {
             let port: u16 = args.next().and_then(|s| s.parse().ok()).unwrap_or(5000);
-            run_dedicated(port)
+            // An optional `creator` argument makes this a creator-type server.
+            let creator_world = args.next().as_deref() == Some("creator");
+            run_dedicated(port, creator_world)
         }
         Some(other) => {
             eprintln!("unknown command '{other}'. Usage: survival-cubed [server [port]]");
@@ -42,18 +47,27 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn run_dedicated(port: u16) -> anyhow::Result<()> {
+fn run_dedicated(port: u16, creator_world: bool) -> anyhow::Result<()> {
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i32)
         .unwrap_or(1337);
 
     let save_dir = save::world_dir(&format!("server-{port}"));
-    let mut srv = server::start_server(server::host_bind(port), seed, save_dir.clone())?;
+    let mut srv = server::start_server(
+        server::host_bind(port),
+        seed,
+        save_dir.clone(),
+        creator_world,
+    )?;
     srv.advertise(&format!("Survival Cubed :{port}"));
     println!("Survival Cubed dedicated server");
     println!("  listening on : {}", srv.addr);
     println!("  world save   : {}", save_dir.display());
+    println!(
+        "  mode         : {}",
+        if creator_world { "creator" } else { "survival" }
+    );
     println!(
         "  fingerprint  : {}",
         net::fingerprint_hex(&srv.fingerprint)

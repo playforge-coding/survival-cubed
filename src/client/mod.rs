@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use glam::Vec2;
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
@@ -25,7 +25,17 @@ use crate::inventory::{HOTBAR_SLOTS, Inventory, STORAGE_SLOTS, Slot};
 use crate::net::Credentials;
 use crate::protocol::{BlockId, Waypoint};
 use crate::server::{self, RunningServer};
+use crate::structure::Structure;
 use crate::world::{CHUNK_SIZE, Dimension, TILE_SIZE, WORLD_HEIGHT, World, to_chunk};
+
+/// Which creator-mode interaction the left/right mouse buttons drive.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CreatorTool {
+    /// Mine (LMB) and place the infinite block (RMB), as in normal creator play.
+    Build,
+    /// Drag out a rectangular region to capture as a structure.
+    Select,
+}
 
 use net::{NetCommand, NetEvent, NetHandle, connect};
 use render::{Atlas, CameraUniform, CapturedFrame, EguiFrame, Gfx, TileInstance, UvRect};
@@ -35,8 +45,14 @@ use render::{Atlas, CameraUniform, CapturedFrame, EguiFrame, Gfx, TileInstance, 
 const GRAVITY: f32 = 1400.0;
 const MOVE_SPEED: f32 = 150.0;
 const JUMP_VELOCITY: f32 = -440.0;
-/// Vertical speed (px/s) of the player while flying in dev mode.
+/// Base vertical speed (px/s) of the player while flying in creator mode, before
+/// the scroll-wheel speed multiplier is applied.
 const FLY_SPEED: f32 = 240.0;
+/// Bounds on the creator fly-speed multiplier adjusted with the scroll wheel.
+const FLY_MULT_MIN: f32 = 1.0;
+const FLY_MULT_MAX: f32 = 8.0;
+/// How much one scroll-wheel notch changes the creator fly-speed multiplier.
+const FLY_MULT_STEP: f32 = 0.5;
 /// Vertical speed (px/s) of the player while climbing a ladder.
 const CLIMB_SPEED: f32 = 90.0;
 /// Vertical speed (px/s) of the player paddling up or diving down in water.
@@ -133,7 +149,7 @@ struct Input {
     left: bool,
     right: bool,
     jump: bool,
-    /// Held while descending in dev-mode flight (S / ↓). Ignored on the ground.
+    /// Held while descending in creator-mode flight (S / ↓). Ignored on the ground.
     down: bool,
     mouse: (f32, f32),
     breaking: bool,
@@ -205,14 +221,32 @@ struct GameState {
     /// and decayed each frame. Kept separate because [`step_physics`] recomputes
     /// `vel.x` from input every step, which would otherwise wipe out the shove.
     knockback_x: f32,
-    /// Whether dev mode is active for this session. Only ever `true` when this
-    /// client created/hosted the server (see [`App::debug_enabled`]); gates the
-    /// dev-tools window and the abilities below.
-    debug: bool,
-    /// Dev mode: whether the player is flying (gravity off, free vertical move).
+    /// Whether the server permits this client to enter creator mode (true for the
+    /// admin/host, and for everyone on a creator-type server). Gates whether the
+    /// creator-tools window is offered at all.
+    creator_allowed: bool,
+    /// Whether creator mode is currently active. Gates the creator abilities
+    /// (flight, infinite blocks) and exempts the player from monster attacks.
+    creator: bool,
+    /// Creator mode: whether the player is flying (gravity off, free vertical move).
     fly: bool,
-    /// Dev mode: the block placed for free by infinite-block placement (RMB).
-    debug_block: BlockId,
+    /// Creator mode: scroll-wheel speed multiplier applied to flight movement.
+    fly_speed_mult: f32,
+    /// Creator mode: the block placed for free by infinite-block placement (RMB).
+    creator_block: BlockId,
+    /// Creator mode: which tool the mouse buttons drive (build vs select).
+    creator_tool: CreatorTool,
+    /// Creator mode: the two world-cell corners of the in-progress structure
+    /// selection (the second tracks the cursor while the drag is held).
+    sel_a: Option<(i32, i32)>,
+    sel_b: Option<(i32, i32)>,
+    /// Previous-frame mouse button states, for rising-edge detection in the
+    /// creator selection/paste tools (where a click should fire once, not repeat).
+    sel_prev_lmb: bool,
+    sel_prev_rmb: bool,
+    /// Creator mode: a loaded structure awaiting placement. While set, the next
+    /// left-click stamps it (top-left at the cursor); right-click cancels.
+    pending_paste: Option<Structure>,
     /// When spectating another player (admin `/spectate`), the id of the entity
     /// being watched: the camera follows it and the local avatar is frozen until
     /// it clears (a second `/spectate`, or the target leaving). `None` in normal
@@ -276,9 +310,17 @@ impl GameState {
             air_min_y: spawn.y,
             hit_flash: 0.0,
             knockback_x: 0.0,
-            debug: false,
+            creator_allowed: false,
+            creator: false,
             fly: false,
-            debug_block: STONE,
+            fly_speed_mult: FLY_MULT_MIN,
+            creator_block: STONE,
+            creator_tool: CreatorTool::Build,
+            sel_a: None,
+            sel_b: None,
+            sel_prev_lmb: false,
+            sel_prev_rmb: false,
+            pending_paste: None,
             spectating: None,
             chat_log: Vec::new(),
             chat_open: false,
@@ -340,19 +382,23 @@ struct App {
     seed_input: String,
     /// Whether launching a world should also host it on the LAN.
     host_enabled: bool,
-    /// Recently typed letters on the menu, used to detect the dev-mode unlock
-    /// sequence ("IAMADEV").
-    dev_seq: String,
-    /// Whether the dev-mode unlock sequence has been entered, revealing the
-    /// dev-mode checkbox on the menu.
-    dev_unlocked: bool,
-    /// Whether dev mode is requested for the next world. Takes effect only when
-    /// this client creates/hosts the server (a remote join is never the creator).
-    debug_enabled: bool,
-    /// Item id or name typed into the dev-tools item giver.
+    /// Whether the "New world" form should create a creator-type server (every
+    /// player may enter creator mode) rather than a survival one. Only meaningful
+    /// when creating a brand-new world; ignored when loading an existing save.
+    host_creator_world: bool,
+    /// Item id or name typed into the creator-tools item giver.
     give_item_input: String,
-    /// How many of the item the dev-tools item giver hands over per click.
+    /// How many of the item the creator-tools item giver hands over per click.
     give_item_count: u32,
+    /// Name typed into the creator-tools "save structure" field.
+    structure_name_input: String,
+    /// Cached list of saved structure names shown in the creator tools, refreshed
+    /// after a save/delete (and when creator mode is first entered) rather than
+    /// re-reading the directory every frame.
+    structure_list: Vec<String>,
+    /// Last result line from a structure save/load/delete, shown in the creator
+    /// tools window.
+    structure_status: String,
 
     net: Option<NetHandle>,
     server: Option<RunningServer>,
@@ -397,11 +443,12 @@ impl App {
             world_name_input: "world".to_string(),
             seed_input: String::new(),
             host_enabled: false,
-            dev_seq: String::new(),
-            dev_unlocked: false,
-            debug_enabled: false,
+            host_creator_world: false,
             give_item_input: String::new(),
             give_item_count: 1,
+            structure_name_input: String::new(),
+            structure_list: Vec::new(),
+            structure_status: String::new(),
             net: None,
             server: None,
             pending_tofu: None,
@@ -486,7 +533,12 @@ impl App {
             return;
         };
         let save_dir = crate::save::world_dir(&name);
-        match server::start_server(server::local_bind(), seed, save_dir) {
+        match server::start_server(
+            server::local_bind(),
+            seed,
+            save_dir,
+            self.host_creator_world,
+        ) {
             Ok(srv) => {
                 let handle = connect(
                     srv.addr,
@@ -494,7 +546,7 @@ impl App {
                     self.player_name(),
                     password,
                     Some(srv.fingerprint),
-                    Some(srv.dev_token),
+                    Some(srv.creator_token),
                 );
                 self.server = Some(srv);
                 self.net = Some(handle);
@@ -511,7 +563,12 @@ impl App {
             return;
         };
         let save_dir = crate::save::world_dir(&name);
-        match server::start_server(server::host_bind(port), seed, save_dir) {
+        match server::start_server(
+            server::host_bind(port),
+            seed,
+            save_dir,
+            self.host_creator_world,
+        ) {
             Ok(mut srv) => {
                 srv.advertise(&format!("Survival Cubed: {name} :{port}"));
                 let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
@@ -521,7 +578,7 @@ impl App {
                     self.player_name(),
                     password,
                     Some(srv.fingerprint),
-                    Some(srv.dev_token),
+                    Some(srv.creator_token),
                 );
                 self.server = Some(srv);
                 self.net = Some(handle);
@@ -651,6 +708,7 @@ impl App {
                 entity_id,
                 spawn_x,
                 spawn_y,
+                creator_allowed,
             } => {
                 // The login was accepted: remember the password for this server so
                 // it needn't be retyped next time.
@@ -661,10 +719,10 @@ impl App {
                     log::warn!("could not save login: {e:#}");
                 }
                 let mut game = GameState::new(entity_id, Vec2::new(spawn_x, spawn_y));
-                // Dev mode only applies to the creator of the server: it requires
-                // both the unlock toggle and an embedded server we own (the dev
-                // token the server authorizes against rides on that server).
-                game.debug = self.debug_enabled && self.server.is_some();
+                // Whether creator mode is offered is decided by the server: the
+                // admin/host always may, and so may everyone on a creator server.
+                // Creator mode itself starts off; the player toggles it in-game.
+                game.creator_allowed = creator_allowed;
                 self.game = Some(game);
                 self.screen = Screen::InGame;
                 self.status.clear();
@@ -688,6 +746,15 @@ impl App {
                 if let Some(g) = &mut self.game {
                     if dim == g.dim {
                         g.world.set_block(x, y, block);
+                    }
+                }
+            }
+            NetEvent::BlocksUpdate { dim, cells } => {
+                if let Some(g) = &mut self.game {
+                    if dim == g.dim {
+                        for (x, y, block) in cells {
+                            g.world.set_block(x, y, block);
+                        }
                     }
                 }
             }
@@ -983,6 +1050,7 @@ impl App {
                     return;
                 }
                 self.waypoint_overlay(ui);
+                self.selection_overlay(ui);
                 self.spectate_overlay(ui);
                 self.chat_ui(ui);
                 if self.game.as_ref().is_some_and(|g| g.inventory_open) {
@@ -994,8 +1062,8 @@ impl App {
                 if self.game.as_ref().is_some_and(|g| g.campfire_open) {
                     self.campfire_window(ui);
                 }
-                if self.game.as_ref().is_some_and(|g| g.debug) {
-                    self.debug_window(ui);
+                if self.game.as_ref().is_some_and(|g| g.creator_allowed) {
+                    self.creator_window(ui);
                 }
             }
         }
@@ -1053,6 +1121,16 @@ impl App {
                                 .hint_text("random"),
                         );
                     });
+                    ui.horizontal(|ui| {
+                        ui.label("Mode:");
+                        ui.radio_value(&mut self.host_creator_world, false, "Survival");
+                        ui.radio_value(&mut self.host_creator_world, true, "Creator");
+                    });
+                    if self.host_creator_world {
+                        ui.weak("Everyone may enter creator mode.");
+                    } else {
+                        ui.weak("Only the host may enter creator mode.");
+                    }
                     ui.checkbox(&mut self.host_enabled, "Host on LAN");
                     if self.host_enabled {
                         ui.horizontal(|ui| {
@@ -1131,14 +1209,6 @@ impl App {
                 ui.add_space(20.0);
                 if !self.status.is_empty() {
                     ui.colored_label(egui::Color32::LIGHT_RED, &self.status);
-                }
-
-                // Hidden until the "IAMADEV" unlock sequence is typed. Dev mode
-                // takes effect only in worlds this client creates or hosts.
-                if self.dev_unlocked {
-                    ui.add_space(12.0);
-                    ui.checkbox(&mut self.debug_enabled, "🛠 Developer mode");
-                    ui.weak("Applies to worlds you create or host.");
                 }
             });
         });
@@ -1396,6 +1466,72 @@ impl App {
                     egui::Color32::from_white_alpha(200),
                 );
             }
+        }
+    }
+
+    /// Draw the creator structure-tool overlays in world space: the active
+    /// selection rectangle, and — while a structure is loaded for pasting — its
+    /// footprint outlined at the cursor. No-op outside creator mode.
+    fn selection_overlay(&self, ui: &mut egui::Ui) {
+        let Some(g) = &self.game else { return };
+        if !g.creator {
+            return;
+        }
+        let ctx = ui.ctx();
+        let screen = ctx.content_rect();
+        let scale = ZOOM / ctx.pixels_per_point();
+        let player_center = g.pos + Vec2::new(PLAYER_W * 0.5, PLAYER_H * 0.5);
+        let center_pt = screen.center();
+        // World pixel -> screen point, matching the camera the tiles are drawn with.
+        let to_screen = |wx: f32, wy: f32| {
+            center_pt
+                + egui::vec2(
+                    (wx - player_center.x) * scale,
+                    (wy - player_center.y) * scale,
+                )
+        };
+        let cell_rect = |x0: i32, y0: i32, x1: i32, y1: i32| {
+            egui::Rect::from_two_pos(
+                to_screen(x0 as f32 * TILE_SIZE, y0 as f32 * TILE_SIZE),
+                to_screen((x1 + 1) as f32 * TILE_SIZE, (y1 + 1) as f32 * TILE_SIZE),
+            )
+        };
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("selection_overlay"),
+        ));
+
+        // The committed/in-progress selection box.
+        if let Some((x0, y0, x1, y1)) = selection_bounds(g) {
+            let rect = cell_rect(x0, y0, x1, y1);
+            painter.rect_filled(
+                rect,
+                0,
+                egui::Color32::from_rgba_unmultiplied(120, 200, 255, 40),
+            );
+            painter.rect_stroke(
+                rect,
+                0,
+                egui::Stroke::new(2.0, egui::Color32::from_rgb(120, 200, 255)),
+                egui::StrokeKind::Inside,
+            );
+        }
+
+        // Paste preview: the loaded structure's footprint at the cursor cell.
+        if let (Some(s), Some(gfx)) = (&g.pending_paste, self.gfx.as_ref()) {
+            let view_w = gfx.size.width.max(1) as f32 / ZOOM;
+            let view_h = gfx.size.height.max(1) as f32 / ZOOM;
+            let offset = player_center - Vec2::new(view_w * 0.5, view_h * 0.5);
+            let world = offset + Vec2::new(self.input.mouse.0 / ZOOM, self.input.mouse.1 / ZOOM);
+            let tx = (world.x / TILE_SIZE).floor() as i32;
+            let ty = (world.y / TILE_SIZE).floor() as i32;
+            let rect = cell_rect(tx, ty, tx + s.width as i32 - 1, ty + s.height as i32 - 1);
+            painter.rect_stroke(
+                rect,
+                0,
+                egui::Stroke::new(2.0, egui::Color32::from_rgb(140, 240, 160)),
+                egui::StrokeKind::Inside,
+            );
         }
     }
 
@@ -1965,13 +2101,37 @@ impl App {
         }
     }
 
-    /// The dev-tools window, shown in-game when dev mode is active for this
-    /// session. Toggles flight, jumps the world clock, spawns creatures, and
-    /// picks the block placed for free by infinite-block placement.
-    fn debug_window(&mut self, ui: &mut egui::Ui) {
-        let (mut fly, mut time, mut debug_block, player_pos) = {
+    /// The creator-tools window, shown in-game whenever this client is allowed
+    /// creator mode. A top toggle enters/leaves creator mode; while active it
+    /// toggles flight, jumps the world clock, spawns creatures, picks the block
+    /// placed for free by infinite-block placement, and gives items.
+    fn creator_window(&mut self, ui: &mut egui::Ui) {
+        #[allow(clippy::type_complexity)]
+        let (
+            was_creator,
+            mut creator,
+            mut fly,
+            fly_mult,
+            mut time,
+            mut creator_block,
+            player_pos,
+            mut tool,
+            sel,
+            pasting,
+        ) = {
             let g = self.game.as_ref().unwrap();
-            (g.fly, g.time_of_day, g.debug_block, g.pos)
+            (
+                g.creator,
+                g.creator,
+                g.fly,
+                g.fly_speed_mult,
+                g.time_of_day,
+                g.creator_block,
+                g.pos,
+                g.creator_tool,
+                selection_bounds(g),
+                g.pending_paste.as_ref().map(|s| (s.width, s.height)),
+            )
         };
         let registry = self.registry.clone();
         // The item-giver input lives on `self`, but the window closure below
@@ -1981,13 +2141,31 @@ impl App {
         let mut set_time: Option<f32> = None;
         let mut spawn: Option<EntityKind> = None;
         let mut give: Option<(BlockId, u32)> = None;
+        // Structure-tool inputs/intents, applied after the closure (which can't
+        // borrow `self`).
+        let mut name_input = std::mem::take(&mut self.structure_name_input);
+        let structure_list = self.structure_list.clone();
+        let structure_status = self.structure_status.clone();
+        let mut do_save = false;
+        let mut load_name: Option<String> = None;
+        let mut delete_name: Option<String> = None;
+        let mut refresh_list = false;
+        let mut clear_sel = false;
+        let mut cancel_paste = false;
 
-        egui::Window::new("🛠 Dev tools")
+        egui::Window::new("🛠 Creator tools")
             .anchor(egui::Align2::RIGHT_TOP, [-8.0, 56.0])
             .resizable(false)
             .collapsible(true)
             .show(ui.ctx(), |ui| {
+                ui.checkbox(&mut creator, "Creator mode");
+                if !creator {
+                    ui.weak("Enable to fly, build freely, and be ignored by monsters.");
+                    return;
+                }
+                ui.separator();
                 ui.checkbox(&mut fly, "Fly  (W/Space up · S/↓ down)");
+                ui.weak(format!("Fly speed ×{fly_mult:.1} — scroll wheel to adjust"));
 
                 ui.separator();
                 ui.label("Time of day");
@@ -2059,8 +2237,8 @@ impl App {
                 ui.horizontal(|ui| {
                     for block in [STONE, DIRT, GRASS, LOG, LEAVES, CHARRED_ROCK, FIRE] {
                         let name = registry.get(block).name;
-                        if ui.selectable_label(debug_block == block, name).clicked() {
-                            debug_block = block;
+                        if ui.selectable_label(creator_block == block, name).clicked() {
+                            creator_block = block;
                         }
                     }
                 });
@@ -2094,12 +2272,96 @@ impl App {
                     }
                     None => {}
                 }
+
+                ui.separator();
+                ui.label("Structures");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut tool, CreatorTool::Build, "🛠 Build");
+                    ui.selectable_value(&mut tool, CreatorTool::Select, "⬚ Select");
+                });
+                if tool == CreatorTool::Select {
+                    ui.weak("Drag LMB to box a region · RMB clears.");
+                }
+
+                // Save the current selection.
+                if let Some((x0, y0, x1, y1)) = sel {
+                    ui.label(format!("Selection {}×{}", x1 - x0 + 1, y1 - y0 + 1));
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut name_input)
+                                .desired_width(110.0)
+                                .hint_text("name"),
+                        );
+                        let ok = crate::save::sanitize_structure_name(&name_input).is_some();
+                        if ui.add_enabled(ok, egui::Button::new("Save")).clicked() {
+                            do_save = true;
+                        }
+                        if ui.button("Clear").clicked() {
+                            clear_sel = true;
+                        }
+                    });
+                } else {
+                    ui.weak("Select a region to save it.");
+                }
+
+                // The saved-structure library: load (to paste) or delete.
+                ui.horizontal(|ui| {
+                    ui.label("Saved:");
+                    if ui.small_button("⟳").clicked() {
+                        refresh_list = true;
+                    }
+                });
+                if structure_list.is_empty() {
+                    ui.weak("None saved yet.");
+                } else {
+                    egui::ScrollArea::vertical()
+                        .max_height(110.0)
+                        .show(ui, |ui| {
+                            for nm in &structure_list {
+                                ui.horizontal(|ui| {
+                                    if ui.button("Load").clicked() {
+                                        load_name = Some(nm.clone());
+                                    }
+                                    if ui.small_button("🗑").clicked() {
+                                        delete_name = Some(nm.clone());
+                                    }
+                                    ui.label(nm);
+                                });
+                            }
+                        });
+                }
+
+                if let Some((w, h)) = pasting {
+                    ui.colored_label(
+                        egui::Color32::LIGHT_BLUE,
+                        format!("Placing {w}×{h}: LMB stamps · RMB cancels"),
+                    );
+                    if ui.button("Cancel paste").clicked() {
+                        cancel_paste = true;
+                    }
+                }
+                if !structure_status.is_empty() {
+                    ui.weak(&structure_status);
+                }
             });
 
+        // Leaving creator mode also drops flight so the player doesn't hang midair.
+        if !creator {
+            fly = false;
+        }
         // Apply UI changes back to game state.
         if let Some(g) = self.game.as_mut() {
+            g.creator = creator;
             g.fly = fly;
-            g.debug_block = debug_block;
+            g.creator_block = creator_block;
+            g.creator_tool = tool;
+            if clear_sel {
+                g.sel_a = None;
+                g.sel_b = None;
+            }
+            if cancel_paste {
+                g.pending_paste = None;
+            }
             if let Some(t) = set_time {
                 g.time_of_day = t; // optimistic; the server confirms via TimeOfDay
             }
@@ -2107,8 +2369,57 @@ impl App {
         // Restore the item-giver input/count edited inside the window closure.
         self.give_item_input = give_input;
         self.give_item_count = give_count;
+        // Refresh the saved-structure list on demand, or the first time creator
+        // mode is entered this session (so the library is populated up front).
+        if refresh_list || (creator && !was_creator) {
+            self.structure_list = crate::save::list_structures();
+        }
+        // Capture the selected region from the mirrored world and save it.
+        if do_save && let Some((x0, y0, x1, y1)) = sel {
+            let structure = {
+                let g = self.game.as_ref().unwrap();
+                Structure::from_region(x0, y0, x1, y1, |x, y| g.world.get_block(x, y))
+            };
+            match crate::save::save_structure(&name_input, &structure) {
+                Ok(()) => {
+                    self.structure_status = format!(
+                        "Saved '{}' ({}×{}).",
+                        name_input.trim(),
+                        structure.width,
+                        structure.height
+                    );
+                    self.structure_list = crate::save::list_structures();
+                    name_input.clear();
+                }
+                Err(e) => self.structure_status = format!("Save failed: {e:#}"),
+            }
+        }
+        // Load a structure into the paste buffer (the world interaction stamps it).
+        if let Some(nm) = load_name {
+            match crate::save::load_structure(&nm) {
+                Ok(s) => {
+                    let (w, h) = (s.width, s.height);
+                    if let Some(g) = self.game.as_mut() {
+                        g.pending_paste = Some(s);
+                    }
+                    self.structure_status = format!("Loaded '{nm}' ({w}×{h}) — LMB to place.");
+                }
+                Err(e) => self.structure_status = format!("Load failed: {e:#}"),
+            }
+        }
+        if let Some(nm) = delete_name {
+            let _ = crate::save::delete_structure(&nm);
+            self.structure_list = crate::save::list_structures();
+            self.structure_status = format!("Deleted '{nm}'.");
+        }
+        self.structure_name_input = name_input;
         // Forward authoritative-state changes to the server.
         if let Some(net) = &self.net {
+            // Tell the server when creator mode flips, so monsters start/stop
+            // ignoring this player.
+            if creator != was_creator {
+                let _ = net.commands.send(NetCommand::SetCreator { on: creator });
+            }
             if let Some(t) = set_time {
                 let _ = net.commands.send(NetCommand::SetTime { t });
             }
@@ -2711,20 +3022,6 @@ fn chat_name_color(name: &str) -> egui::Color32 {
     PALETTE[(h as usize) % PALETTE.len()]
 }
 
-/// Map a keyboard key to its uppercase letter for the dev-unlock detector, or
-/// `None` for keys that aren't letters used by the sequence.
-fn dev_key_letter(code: KeyCode) -> Option<char> {
-    Some(match code {
-        KeyCode::KeyI => 'I',
-        KeyCode::KeyA => 'A',
-        KeyCode::KeyM => 'M',
-        KeyCode::KeyD => 'D',
-        KeyCode::KeyE => 'E',
-        KeyCode::KeyV => 'V',
-        _ => return None,
-    })
-}
-
 // --- Free functions (kept out of `&mut self` to ease borrow checking) ----
 
 /// Paint the player's HUD health bar: a red fill over a dark backing with a
@@ -2820,10 +3117,13 @@ fn step_physics(game: &mut GameState, reg: &BlockRegistry, input: &Input, dt: f3
         game.player_facing = false;
     }
 
-    // Dev-mode flight: no gravity; rise/fall from the jump/down inputs. Blocks
-    // still stop the player (fly, not noclip), and fall damage never applies.
-    if game.fly {
-        game.vel.y = (input.down as i32 - input.jump as i32) as f32 * FLY_SPEED;
+    // Creator-mode flight: no gravity; rise/fall from the jump/down inputs. Blocks
+    // still stop the player (fly, not noclip), and fall damage never applies. The
+    // scroll-wheel multiplier scales both horizontal and vertical flight speed.
+    if game.creator && game.fly {
+        let mult = game.fly_speed_mult;
+        game.vel.x *= mult;
+        game.vel.y = (input.down as i32 - input.jump as i32) as f32 * FLY_SPEED * mult;
         move_x(game, reg, game.vel.x * dt);
         let landed = move_y(game, reg, game.vel.y * dt);
         game.on_ground = landed && game.vel.y >= 0.0;
@@ -3098,6 +3398,20 @@ fn handle_block_actions(
     let tx = (world.x / TILE_SIZE).floor() as i32;
     let ty = (world.y / TILE_SIZE).floor() as i32;
 
+    // Rising edges (this frame pressed, last frame not) for the creator tools,
+    // where a click should fire once rather than repeat while held.
+    let lmb_edge = input.breaking && !game.sel_prev_lmb;
+    let rmb_edge = input.placing && !game.sel_prev_rmb;
+    game.sel_prev_lmb = input.breaking;
+    game.sel_prev_rmb = input.placing;
+
+    // Creator structure tools intercept the mouse before normal mining/placing.
+    if game.creator
+        && creator_structure_input(game, net, tx, ty, lmb_edge, rmb_edge, input.breaking)
+    {
+        return;
+    }
+
     // Left button: swing at a creature under the cursor, else mine the block.
     if input.breaking {
         if let Some(target) = creature_at(game, world) {
@@ -3121,7 +3435,7 @@ fn handle_block_actions(
     }
 
     // Right-clicking a forge opens its smelting GUI instead of placing a block.
-    // This takes priority over both dev-mode and normal placement.
+    // This takes priority over both creator-mode and normal placement.
     if input.placing
         && game.action_timer <= 0.0
         && game.world.get_block(tx, ty) == crate::block::FORGE
@@ -3236,14 +3550,14 @@ fn handle_block_actions(
         }
     }
 
-    // Dev mode: right button places the dev-selected block for free, with no
-    // inventory cost or adjacency requirement (infinite blocks).
-    if game.debug {
+    // Creator mode: right button places the creator-selected block for free, with
+    // no inventory cost or adjacency requirement (infinite blocks).
+    if game.creator {
         if input.placing && game.action_timer <= 0.0 && (0..WORLD_HEIGHT).contains(&ty) {
-            let block = game.debug_block;
+            let block = game.creator_block;
             if game.world.get_block(tx, ty) == AIR && !overlaps_player(game, tx, ty) {
                 game.world.set_block(tx, ty, block);
-                let _ = net.commands.send(NetCommand::DebugSetBlock {
+                let _ = net.commands.send(NetCommand::CreatorSetBlock {
                     x: tx,
                     y: ty,
                     block,
@@ -3279,6 +3593,71 @@ fn handle_block_actions(
             game.action_timer = ACTION_COOLDOWN;
         }
     }
+}
+
+/// Drive the creator structure tools from the mouse. Returns `true` when it has
+/// handled the click (so the caller skips normal mining/placing): always while a
+/// structure is queued for pasting or the Select tool is active; `false` for the
+/// Build tool, which falls through to the usual creator placement.
+fn creator_structure_input(
+    game: &mut GameState,
+    net: &NetHandle,
+    tx: i32,
+    ty: i32,
+    lmb_edge: bool,
+    rmb_edge: bool,
+    lmb_down: bool,
+) -> bool {
+    // A loaded structure waiting to be placed takes priority over any tool:
+    // left-click stamps it with its top-left at the cursor, right-click cancels.
+    if let Some(structure) = &game.pending_paste {
+        if rmb_edge {
+            game.pending_paste = None;
+            return true;
+        }
+        if lmb_edge {
+            let cells: Vec<(i32, i32, BlockId)> = structure
+                .solid_offsets()
+                .map(|(dx, dy, b)| (tx + dx, ty + dy, b))
+                .filter(|&(_, y, _)| (0..WORLD_HEIGHT).contains(&y))
+                .collect();
+            if !cells.is_empty() {
+                // Apply optimistically; the server echoes a BlocksUpdate to all
+                // clients (this one included, which is idempotent).
+                for &(x, y, b) in &cells {
+                    game.world.set_block(x, y, b);
+                }
+                let _ = net.commands.send(NetCommand::CreatorSetBlocks { cells });
+            }
+        }
+        return true;
+    }
+
+    match game.creator_tool {
+        CreatorTool::Build => false,
+        CreatorTool::Select => {
+            // Right-click clears any selection; left-drag defines a new rectangle
+            // (a fresh press anchors one corner, holding drags the opposite one).
+            if rmb_edge {
+                game.sel_a = None;
+                game.sel_b = None;
+            }
+            if lmb_edge {
+                game.sel_a = Some((tx, ty));
+                game.sel_b = Some((tx, ty));
+            } else if lmb_down && game.sel_a.is_some() {
+                game.sel_b = Some((tx, ty));
+            }
+            true
+        }
+    }
+}
+
+/// The inclusive world-cell bounds `(x0, y0, x1, y1)` of the current creator
+/// selection, if both corners are set.
+fn selection_bounds(game: &GameState) -> Option<(i32, i32, i32, i32)> {
+    let ((ax, ay), (bx, by)) = game.sel_a.zip(game.sel_b)?;
+    Some((ax.min(bx), ay.min(by), ax.max(bx), ay.max(by)))
 }
 
 /// Accumulate mining progress on the targeted cell, breaking it once the block's
@@ -3469,6 +3848,22 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // While flying in creator mode, the scroll wheel ramps fly speed up
+                // and down. (When egui wants the pointer, let it scroll instead.)
+                if !wants_pointer
+                    && let Some(g) = self.game.as_mut()
+                    && g.creator
+                    && g.fly
+                {
+                    let notches = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => y,
+                        MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
+                    };
+                    g.fly_speed_mult = (g.fly_speed_mult + notches * FLY_MULT_STEP)
+                        .clamp(FLY_MULT_MIN, FLY_MULT_MAX);
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 let pressed = event.state == ElementState::Pressed;
                 if let PhysicalKey::Code(code) = event.physical_key {
@@ -3506,10 +3901,6 @@ impl ApplicationHandler for App {
 
 impl App {
     fn handle_key(&mut self, code: KeyCode, pressed: bool) {
-        // On the menu, watch for the dev-mode unlock sequence ("IAMADEV").
-        if pressed && self.screen == Screen::Menu {
-            self.feed_dev_sequence(code);
-        }
         match code {
             KeyCode::KeyA | KeyCode::ArrowLeft => self.input.left = pressed,
             KeyCode::KeyD | KeyCode::ArrowRight => self.input.right = pressed,
@@ -3561,25 +3952,6 @@ impl App {
                 }
             }
             _ => {}
-        }
-    }
-
-    /// Feed one key press into the dev-mode unlock detector. Letter keys are
-    /// appended to a small rolling buffer; entering "IAMADEV" reveals the dev-mode
-    /// checkbox on the menu.
-    fn feed_dev_sequence(&mut self, code: KeyCode) {
-        const UNLOCK: &str = "IAMADEV";
-        let Some(c) = dev_key_letter(code) else {
-            return;
-        };
-        self.dev_seq.push(c);
-        // Keep only the last UNLOCK.len() characters so a near-miss can recover.
-        if self.dev_seq.len() > UNLOCK.len() {
-            let cut = self.dev_seq.len() - UNLOCK.len();
-            self.dev_seq.drain(..cut);
-        }
-        if self.dev_seq == UNLOCK {
-            self.dev_unlocked = true;
         }
     }
 
