@@ -1,0 +1,64 @@
+site_name: Survival Cubed
+site_description: A multiplayer-first 2D voxel survival game written in Rust.
+site_url: https://playforge-coding.github.io/survival-cubed/
+repo_url: https://github.com/playforge-coding/survival-cubed
+repo_name: playforge-coding/survival-cubed
+copyright: Documentation licensed CC BY-NC-SA 4.0 · Game code licensed AGPL-3.0-only
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: green
+      accent: light green
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: green
+      accent: light green
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+    - search.highlight
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+  - pymdownx.keys
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Controls & HUD: controls.md
+  - Gameplay & Survival: gameplay.md
+  - Blocks: blocks.md
+  - Crafting & Tools: crafting.md
+  - The World: world.md
+  - Creatures: creatures.md
+  - Multiplayer: multiplayer.md
+  - Creator Mode: creator-mode.md
+  - Saves & Files: saves.md
