@@ -91,6 +91,22 @@ const CAVERN_MIN_DEPTH: i32 = 30;
 /// The bottom-most rows of the world are never carved, leaving a solid floor so
 /// caves and caverns can't open into the empty void beneath the world.
 const BEDROCK_FLOOR: i32 = 4;
+/// Thickness (cells) of the surface band in which a tunnel may only be carved
+/// where the ground is steep (see [`STEEP_THRESHOLD`]). Over flat terrain this
+/// band stays solid, so caves never punch a hole straight down into level
+/// ground; on a hill or mountain face it is carved through, letting the tunnel
+/// open in the slope. Applies to both dimensions (measured from the overworld
+/// surface or the underworld ceiling).
+const SURFACE_CRUST: i32 = 6;
+/// Horizontal half-span (cells) over which a column's surface steepness is
+/// measured when deciding whether a cave may break the surface there.
+const SLOPE_SPAN: i32 = 2;
+/// A column counts as a steep **face** — a hill or mountain side a cave is
+/// allowed to open through — when its surface rises or falls by at least this
+/// many cells across the [`SLOPE_SPAN`] to either side. Gentle plains never
+/// reach it, so their caves stay sealed beneath a solid crust; only genuine
+/// slopes get a sideways cave mouth. Lower means mouths on shallower hills.
+const STEEP_THRESHOLD: i32 = 5;
 
 // --- Underworld ----------------------------------------------------------
 
@@ -290,6 +306,15 @@ impl WorldGen {
         (plains_h + (mountain_h - plains_h) * w).round() as i32
     }
 
+    /// How steeply the overworld surface rises or falls across this column,
+    /// measured as the absolute height change over [`SLOPE_SPAN`] cells either
+    /// side. Near zero on flat plains, large on a mountain face. Used to decide
+    /// whether a cave may open through the surface here.
+    fn surface_slope(&self, world_x: i32) -> i32 {
+        (self.surface_height(world_x + SLOPE_SPAN) - self.surface_height(world_x - SLOPE_SPAN))
+            .abs()
+    }
+
     /// The block to place at `world_y` in a column whose surface is at `surface`
     /// and that belongs to `biome`. `world_y < surface` is air (the caller skips
     /// those cells).
@@ -352,18 +377,26 @@ impl WorldGen {
 
     /// Whether the ground cell at `(world_x, world_y)` should be hollowed out as
     /// a cave. Two kinds are carved: thin **winding tunnels** along the zero
-    /// contours of two noise fields (which branch where they cross and break the
-    /// surface where a contour reaches it), and large **caverns** deep down where
-    /// a low-frequency field peaks. Only meaningful for cells at or below the
-    /// surface (the caller skips the open air above).
+    /// contours of two noise fields (which branch where they cross), and large
+    /// **caverns** deep down where a low-frequency field peaks. Both are kept
+    /// below a solid [`SURFACE_CRUST`], so a tunnel only reaches daylight where
+    /// the terrain falls away beside it — a cave mouth in the side of a hill or
+    /// mountain, never a hole underfoot on flat ground. Only meaningful for cells
+    /// at or below the surface (the caller skips the open air above).
     fn is_cave(&self, world_x: i32, world_y: i32, surface: i32) -> bool {
         // Keep a solid floor at the very bottom of the world.
         if world_y >= WORLD_HEIGHT - BEDROCK_FLOOR {
             return false;
         }
+        // Within the surface crust, only carve through a steep hillside, so cave
+        // mouths open in the side of a hill or mountain and never as a pit in
+        // flat ground. Below the crust, tunnels and caverns carve freely.
+        if world_y - surface < SURFACE_CRUST && self.surface_slope(world_x) < STEEP_THRESHOLD {
+            return false;
+        }
         let (x, y) = (world_x as f32, world_y as f32);
         // Winding tunnels: carve a band either side of the field's zero contour.
-        // Reaching up to the surface, these are the caves that open to daylight.
+        // Below the crust, these open to daylight only on an exposed slope.
         if self.cave_noise.get_noise_2d(x, y).abs() < TUNNEL_WIDTH {
             return true;
         }
@@ -443,6 +476,15 @@ impl WorldGen {
         (UNDERWORLD_SURFACE_BASE as f32 + n * UNDERWORLD_SURFACE_AMP).round() as i32
     }
 
+    /// How steeply the underworld ceiling rises or falls across this column,
+    /// measured like [`surface_slope`](Self::surface_slope). Used to decide
+    /// whether a cave may open through the charred ceiling here.
+    fn underworld_slope(&self, world_x: i32) -> i32 {
+        (self.underworld_surface(world_x + SLOPE_SPAN)
+            - self.underworld_surface(world_x - SLOPE_SPAN))
+        .abs()
+    }
+
     /// Surface row for `dim`'s spawn/landing helpers: the overworld grass line or
     /// the underworld's charred ceiling.
     pub fn surface_for(&self, dim: Dimension, world_x: i32) -> i32 {
@@ -455,9 +497,18 @@ impl WorldGen {
     /// Whether the underworld cell at `(world_x, world_y)` is hollowed into a cave.
     /// One winding/cavern field is carved as a band around its zero contour, wide
     /// and frequent so the charred rock is riddled with connected pockets. The
-    /// bottom-most rows are spared so nothing opens into the void below the world.
-    fn is_underworld_cave(&self, world_x: i32, world_y: i32) -> bool {
+    /// [`SURFACE_CRUST`] below the charred ceiling is carved only where the ceiling
+    /// drops away steeply, so caves open to the underworld sky on the side of a
+    /// ledge — never as a hole in the floor the player lands on. The bottom-most
+    /// rows are spared too, so nothing opens into the void below the world.
+    fn is_underworld_cave(&self, world_x: i32, world_y: i32, surface: i32) -> bool {
         if world_y >= WORLD_HEIGHT - BEDROCK_FLOOR {
+            return false;
+        }
+        // As in the overworld, keep a solid crust over the charred ceiling except
+        // where it drops away steeply, so caves open in the side of a ledge and
+        // never as a hole in the floor the player lands on.
+        if world_y - surface < SURFACE_CRUST && self.underworld_slope(world_x) < STEEP_THRESHOLD {
             return false;
         }
         self.uw_cave_noise
@@ -469,7 +520,7 @@ impl WorldGen {
     /// Whether the underworld cell at `(world_x, world_y)` is solid charred rock:
     /// at or below the ceiling and not carved out as a cave.
     fn underworld_solid(&self, world_x: i32, world_y: i32, surface: i32) -> bool {
-        world_y >= surface && !self.is_underworld_cave(world_x, world_y)
+        world_y >= surface && !self.is_underworld_cave(world_x, world_y, surface)
     }
 
     /// Which underworld biome the given world column belongs to. Picks an ash
@@ -817,16 +868,44 @@ mod tests {
         }
     }
 
-    /// At least some winding tunnels break the surface, opening caves to daylight.
+    /// Caves only break the surface on a steep slope — the side of a hill or
+    /// mountain — never as a pit in flat ground. Every column whose surface cell
+    /// is carved open (a cave mouth) is a steep face, and some such mouths exist.
     #[test]
-    fn some_caves_reach_the_surface() {
+    fn caves_open_only_on_steep_faces() {
         let worldgen = WorldGen::new(0xC0FFEE);
-        let openings = (-2000..2000)
-            .filter(|&x| {
-                let s = worldgen.surface_height(x);
-                worldgen.is_cave(x, s, s)
-            })
-            .count();
-        assert!(openings > 0, "expected some caves to open at the surface");
+        let mut mouths = 0u32;
+        for x in -4000..4000 {
+            let s = worldgen.surface_height(x);
+            if worldgen.is_cave(x, s, s) {
+                mouths += 1;
+                assert!(
+                    worldgen.surface_slope(x) >= STEEP_THRESHOLD,
+                    "cave opened on flat ground (slope {}) at column {x}",
+                    worldgen.surface_slope(x),
+                );
+            }
+        }
+        assert!(
+            mouths > 0,
+            "expected some caves to open on hill and mountain faces",
+        );
+    }
+
+    /// The same holds in the underworld: no cave opens a hole in the charred
+    /// ceiling the player lands on — every ceiling mouth sits on a steep ledge.
+    #[test]
+    fn underworld_caves_open_only_on_steep_faces() {
+        let worldgen = WorldGen::new(0xC0FFEE);
+        for x in -4000..4000 {
+            let s = worldgen.underworld_surface(x);
+            if worldgen.is_underworld_cave(x, s, s) {
+                assert!(
+                    worldgen.underworld_slope(x) >= STEEP_THRESHOLD,
+                    "underworld cave opened in the flat ceiling (slope {}) at column {x}",
+                    worldgen.underworld_slope(x),
+                );
+            }
+        }
     }
 }
