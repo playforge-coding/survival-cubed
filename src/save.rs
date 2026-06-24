@@ -40,7 +40,7 @@ const UNDERWORLD_CHUNKS_DIR: &str = "chunks_underworld";
 /// Magic prefix on `world.dat` ("SCWD" — Survival Cubed World Data).
 const MAGIC: u32 = 0x5343_5744;
 /// On-disk format version; bump on any incompatible layout change.
-const VERSION: u32 = 8;
+const VERSION: u32 = 9;
 
 /// Subdirectory name holding a dimension's chunks.
 fn chunks_dir_name(dim: Dimension) -> &'static str {

@@ -36,7 +36,7 @@ pub struct Waypoint {
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -232,6 +232,11 @@ pub enum ServerMessage {
     /// seconds; an [`ServerMessage::EntityDespawn`] for the same id follows once
     /// it finishes.
     EntityDying { id: EntityId },
+    /// A snake has begun a telegraphed wind-up lunge. Every client plays its
+    /// strike animation for [`crate::entity::SNAKE_LUNGE_TIME`] seconds; the
+    /// snake's forward spring and bite arrive as ordinary
+    /// [`ServerMessage::EntityMoved`]/[`ServerMessage::EntityHit`] updates.
+    EntityLunging { id: EntityId },
     /// An entity's health changed (damage, healing, or an initial value). Sent
     /// to every client, including the owner of a player entity (whose avatar is
     /// otherwise never mirrored).

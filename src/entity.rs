@@ -37,6 +37,9 @@ pub const CAT_SIZE: (f32, f32) = (15.0, 13.0);
 pub const ZOMBIE_SIZE: (f32, f32) = (14.0, 19.0);
 /// Collision/draw size (width, height) in pixels of a spider — low and wide.
 pub const SPIDER_SIZE: (f32, f32) = (14.0, 10.0);
+/// Collision/draw size (width, height) in pixels of a snake — a low, coiled
+/// ambusher drawn from a 16x14 sheet.
+pub const SNAKE_SIZE: (f32, f32) = (15.0, 11.0);
 /// Collision/draw size (width, height) in pixels of a skeleton — a lanky
 /// humanoid, the same build as the player.
 pub const SKELETON_SIZE: (f32, f32) = (11.0, 16.0);
@@ -53,6 +56,16 @@ pub const ITEM_SIZE: (f32, f32) = (8.0, 8.0);
 /// before it despawns. Shared by both sides so the server's despawn timing and
 /// the client's animation playback agree.
 pub const ZOMBIE_DEATH_TIME: f32 = 0.8;
+
+/// Seconds a snake's wind-up lunge runs end to end: it coils through the
+/// telegraphed wind-up and then springs forward. Shared by both sides so the
+/// server's lunge timing and the client's attack-animation playback agree.
+pub const SNAKE_LUNGE_TIME: f32 = 0.7;
+
+/// Seconds a snake spends writhing through its death animation when killed,
+/// before it despawns. Shared by both sides so the server's despawn timing and
+/// the client's animation playback agree.
+pub const SNAKE_DEATH_TIME: f32 = 0.6;
 
 /// Maximum health of a player, in hit points.
 pub const PLAYER_MAX_HEALTH: i32 = 20;
@@ -75,6 +88,9 @@ pub const SPIDER_MAX_HEALTH: i32 = 12;
 /// frailer than a zombie — it survives by keeping its distance and pelting the
 /// player with bones rather than soaking up blows.
 pub const SKELETON_MAX_HEALTH: i32 = 24;
+/// Maximum health of a snake, in hit points. Frail like the spider — it leans on
+/// its telegraphed lunge rather than soaking up blows.
+pub const SNAKE_MAX_HEALTH: i32 = 14;
 /// Maximum health of a charred skeleton, in hit points. Sturdier than the surface
 /// skeleton — a relentless underworld brawler that closes for melee and soaks up
 /// blows on the way in.
@@ -120,6 +136,11 @@ pub enum EntityKind {
     /// walls to reach them. Lurks only in the forest's shade and in the caverns
     /// deep underground. Server-simulated.
     Spider,
+    /// A desert ambusher that hunts on sight. Rather than biting on contact like
+    /// the spider, it attacks in a telegraphed wind-up **lunge**: it coils in
+    /// place (playing its strike animation) before springing forward to bite, so
+    /// an alert player can dodge the strike. Server-simulated.
+    Snake,
     /// A stack of items lying on the ground (mined, spilled by crafting, or
     /// discarded/gifted by a player), waiting to be walked into and picked up.
     /// Server-simulated (falls under gravity); carries the block id, how many are
@@ -157,6 +178,7 @@ impl EntityKind {
             EntityKind::Cat { .. } => CAT_SIZE,
             EntityKind::Zombie => ZOMBIE_SIZE,
             EntityKind::Spider => SPIDER_SIZE,
+            EntityKind::Snake => SNAKE_SIZE,
             EntityKind::Skeleton => SKELETON_SIZE,
             EntityKind::CharredSkeleton => CHARRED_SKELETON_SIZE,
             EntityKind::Bone => BONE_SIZE,
@@ -211,6 +233,7 @@ impl EntityKind {
             EntityKind::Cat { .. } => CAT_MAX_HEALTH,
             EntityKind::Zombie => ZOMBIE_MAX_HEALTH,
             EntityKind::Spider => SPIDER_MAX_HEALTH,
+            EntityKind::Snake => SNAKE_MAX_HEALTH,
             EntityKind::Skeleton => SKELETON_MAX_HEALTH,
             EntityKind::CharredSkeleton => CHARRED_SKELETON_MAX_HEALTH,
             // A bone is an inert projectile; 1 keeps health == max_health so no
@@ -218,6 +241,19 @@ impl EntityKind {
             EntityKind::Bone => 1,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
+        }
+    }
+
+    /// How long this kind's death animation plays before it despawns, or `None`
+    /// if it simply vanishes when it dies. Drives both the server's despawn delay
+    /// and the client's death-animation playback (see
+    /// [`crate::protocol::ServerMessage::EntityDying`]). A zombie crumbles in
+    /// daylight; a snake writhes when killed.
+    pub fn death_time(&self) -> Option<f32> {
+        match self {
+            EntityKind::Zombie => Some(ZOMBIE_DEATH_TIME),
+            EntityKind::Snake => Some(SNAKE_DEATH_TIME),
+            _ => None,
         }
     }
 }
@@ -265,6 +301,18 @@ pub struct Entity {
     /// Never sent over the wire (defaults to `0.0`).
     #[serde(skip)]
     pub dying: f32,
+    /// Seconds left in a snake's wind-up lunge strike. Set to
+    /// [`SNAKE_LUNGE_TIME`] when a lunge begins and counted down on both sides:
+    /// the server coils the snake in place through the wind-up then springs it
+    /// forward, while the client picks the attack-animation frame from the
+    /// remaining time. Never sent over the wire (defaults to `0.0`).
+    #[serde(skip)]
+    pub lunge: f32,
+    /// Server-only: the horizontal heading (`-1.0`/`1.0`) a lunging snake locked
+    /// in when its wind-up began, so the strike springs the way the player *was*
+    /// even if they sidestep it. Never sent over the wire.
+    #[serde(skip)]
+    pub lunge_dir: f32,
 }
 
 impl Entity {
@@ -285,6 +333,8 @@ impl Entity {
             home_x: None,
             hit_flash: 0.0,
             dying: 0.0,
+            lunge: 0.0,
+            lunge_dir: 0.0,
         }
     }
 

@@ -105,6 +105,37 @@ pub static SPIDER_SPRITE: SpriteDef = SpriteDef {
     fps: 10.0,
 };
 
+/// Snake: a low desert ambusher that slinks along the sand, body rippling.
+pub static SNAKE_SPRITE: SpriteDef = SpriteDef {
+    name: "snake",
+    frame_w: 16,
+    frame_h: 14,
+    frames: 8,
+    fps: 10.0,
+};
+
+/// Snake (striking): the one-shot wind-up lunge — the snake coils back and
+/// springs. Lives in the `snake/attack` subdirectory (its `name` doubles as that
+/// path), and its frames are stepped by the lunge timer rather than the walk clock.
+pub static SNAKE_ATTACK_SPRITE: SpriteDef = SpriteDef {
+    name: "snake/attack",
+    frame_w: 16,
+    frame_h: 14,
+    frames: 6,
+    fps: 8.0,
+};
+
+/// Snake death: a one-shot writhe played as the snake is killed. Lives in the
+/// `snake/death` subdirectory (its `name` doubles as that path), and its frames
+/// are stepped by the death timer rather than the walk clock.
+pub static SNAKE_DEATH_SPRITE: SpriteDef = SpriteDef {
+    name: "snake/death",
+    frame_w: 16,
+    frame_h: 14,
+    frames: 5,
+    fps: 8.0,
+};
+
 /// Skeleton: a lanky undead archer that strides along as it stalks the player.
 pub static SKELETON_SPRITE: SpriteDef = SpriteDef {
     name: "skeleton",
@@ -134,7 +165,7 @@ pub static BONE_SPRITE: SpriteDef = SpriteDef {
 };
 
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 12] {
+pub fn all() -> [&'static SpriteDef; 15] {
     [
         &PLAYER_SPRITE,
         &SLIME_SPRITE,
@@ -145,6 +176,9 @@ pub fn all() -> [&'static SpriteDef; 12] {
         &ZOMBIE_SPRITE,
         &ZOMBIE_DEATH_SPRITE,
         &SPIDER_SPRITE,
+        &SNAKE_SPRITE,
+        &SNAKE_ATTACK_SPRITE,
+        &SNAKE_DEATH_SPRITE,
         &SKELETON_SPRITE,
         &CHARRED_SKELETON_SPRITE,
         &BONE_SPRITE,
@@ -163,6 +197,9 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         EntityKind::Cat { .. } => &CAT_SPRITE,
         EntityKind::Zombie => &ZOMBIE_SPRITE,
         EntityKind::Spider => &SPIDER_SPRITE,
+        // A snake's striking pose is handled by the scene builder off its lunge
+        // timer; this walk sheet is its resting/slithering animation.
+        EntityKind::Snake => &SNAKE_SPRITE,
         EntityKind::Skeleton => &SKELETON_SPRITE,
         EntityKind::CharredSkeleton => &CHARRED_SKELETON_SPRITE,
         EntityKind::Bone => &BONE_SPRITE,
@@ -170,6 +207,17 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         // sheet (see the client's scene builder), so this is never queried for
         // them; fall back to the slime sheet to keep the match total.
         EntityKind::DroppedItem { .. } => &SLIME_SPRITE,
+    }
+}
+
+/// The death-animation sheet to play for a kind that has one (stepped by the
+/// entity's death timer, not the walk clock), or `None` if it simply vanishes
+/// when it dies. Pairs with [`EntityKind::death_time`] for the playback duration.
+pub fn death_sprite_for(kind: &EntityKind) -> Option<&'static SpriteDef> {
+    match kind {
+        EntityKind::Zombie => Some(&ZOMBIE_DEATH_SPRITE),
+        EntityKind::Snake => Some(&SNAKE_DEATH_SPRITE),
+        _ => None,
     }
 }
 

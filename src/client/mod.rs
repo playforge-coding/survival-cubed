@@ -755,10 +755,22 @@ impl App {
             NetEvent::EntityDying { id } => {
                 if let Some(g) = &mut self.game {
                     if let Some(e) = g.entities.get_mut(id) {
-                        // Kick off the crumble animation; it plays out locally
-                        // until the server's despawn for this id arrives.
-                        e.dying = crate::entity::ZOMBIE_DEATH_TIME;
-                        e.vx = 0.0;
+                        // Kick off this kind's death animation (a zombie's daylight
+                        // crumble, a snake's writhe); it plays out locally until the
+                        // server's despawn for this id arrives.
+                        if let Some(t) = e.kind.death_time() {
+                            e.dying = t;
+                            e.vx = 0.0;
+                        }
+                    }
+                }
+            }
+            NetEvent::EntityLunging { id } => {
+                if let Some(g) = &mut self.game {
+                    if let Some(e) = g.entities.get_mut(id) {
+                        // Kick off the strike animation; it plays out locally over
+                        // the lunge while the server drives the snake's spring.
+                        e.lunge = crate::entity::SNAKE_LUNGE_TIME;
                     }
                 }
             }
@@ -875,6 +887,10 @@ impl App {
             // Advance any in-progress death animation (zombies crumbling at dawn).
             if e.dying > 0.0 {
                 e.dying = (e.dying - dt).max(0.0);
+            }
+            // Advance any in-progress snake strike animation.
+            if e.lunge > 0.0 {
+                e.lunge = (e.lunge - dt).max(0.0);
             }
         }
 
@@ -2027,6 +2043,9 @@ impl App {
                     if ui.button("Spider").clicked() {
                         spawn = Some(EntityKind::Spider);
                     }
+                    if ui.button("Snake").clicked() {
+                        spawn = Some(EntityKind::Snake);
+                    }
                     if ui.button("Skeleton").clicked() {
                         spawn = Some(EntityKind::Skeleton);
                     }
@@ -2257,9 +2276,25 @@ impl App {
             // A dying zombie plays its one-shot crumble (frame stepped by the
             // death timer); everything else uses its walk sheet (frame stepped by
             // the shared animation clock when moving).
-            let (def, frame) = if e.dying > 0.0 && matches!(e.kind, EntityKind::Zombie) {
-                let d = &sprite::ZOMBIE_DEATH_SPRITE;
-                let progress = 1.0 - (e.dying / crate::entity::ZOMBIE_DEATH_TIME).clamp(0.0, 1.0);
+            // A dying creature plays its one-shot death sheet (frame stepped by the
+            // death timer): a zombie crumbling at dawn, a slain snake writhing.
+            let death = if e.dying > 0.0 {
+                sprite::death_sprite_for(&e.kind).map(|d| {
+                    let total = e.kind.death_time().unwrap_or(e.dying);
+                    let progress = 1.0 - (e.dying / total).clamp(0.0, 1.0);
+                    let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
+                    (d, frame)
+                })
+            } else {
+                None
+            };
+            let (def, frame) = if let Some((d, frame)) = death {
+                (d, frame)
+            } else if e.lunge > 0.0 && matches!(e.kind, EntityKind::Snake) {
+                // A lunging snake plays its one-shot strike (frame stepped by the
+                // lunge timer): it coils through the wind-up then springs.
+                let d = &sprite::SNAKE_ATTACK_SPRITE;
+                let progress = 1.0 - (e.lunge / crate::entity::SNAKE_LUNGE_TIME).clamp(0.0, 1.0);
                 let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
                 (d, frame)
             } else {

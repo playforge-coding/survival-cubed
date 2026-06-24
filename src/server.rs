@@ -98,6 +98,38 @@ const SPIDER_CHUNK_MAX: u32 = 2;
 /// they only nest in the underground caverns and never in surface tunnels that
 /// open to daylight. Sits well below the surface baseline (`WORLD_HEIGHT / 2`).
 const SPIDER_CAVERN_MIN_Y: i32 = WORLD_HEIGHT * 11 / 16;
+/// Slithering speed of a snake as it closes on a player, in pixels/second —
+/// brisker than a zombie but no sprinter; the danger is its lunge, not its pace.
+const SNAKE_SPEED: f32 = 30.0;
+/// How far (px) a snake notices a player and begins hunting.
+const SNAKE_AGGRO: f32 = 170.0;
+/// Gap (px between AABBs) at which a snake stops and commits to a wind-up lunge.
+/// Larger than a melee range so the snake strikes from a short distance, springing
+/// the rest of the way.
+const SNAKE_LUNGE_RANGE: f32 = 22.0;
+/// Gap (px between AABBs), measured at the moment the strike lands, within which a
+/// snake's lunge connects. Generous enough to cover the forward spring, so a
+/// player who holds still is bitten but one who breaks away during the telegraphed
+/// wind-up escapes.
+const SNAKE_LUNGE_REACH: f32 = 26.0;
+/// Forward speed (px/s) of the snake's body during the strike half of its lunge —
+/// a quick spring toward the locked-in heading.
+const SNAKE_LUNGE_SPEED: f32 = 90.0;
+/// Seconds the snake spends coiling (telegraphing) before the strike lands, out of
+/// the total [`crate::entity::SNAKE_LUNGE_TIME`]. The remainder is the spring.
+const SNAKE_WINDUP_TIME: f32 = 0.4;
+/// Seconds of strike remaining (of [`crate::entity::SNAKE_LUNGE_TIME`]) once the
+/// wind-up ends: the bite is resolved as this threshold is crossed and the snake
+/// springs forward for the rest.
+const SNAKE_STRIKE_TIME: f32 = crate::entity::SNAKE_LUNGE_TIME - SNAKE_WINDUP_TIME;
+/// Damage a snake's lunge bite deals.
+const SNAKE_DAMAGE: i32 = 6;
+/// Seconds a snake waits between lunges (the recovery after one finishes).
+const SNAKE_ATTACK_INTERVAL: f32 = 1.6;
+/// Percent chance that a fresh desert surface chunk seeds snakes.
+const SNAKE_CHUNK_CHANCE: u32 = 30;
+/// Most snakes a single eligible desert chunk seeds at once.
+const SNAKE_CHUNK_MAX: u32 = 2;
 /// Stalking speed of a skeleton, in pixels/second — a touch quicker than a
 /// zombie, since it wants to reposition for a clean shot rather than just maul.
 const SKELETON_SPEED: f32 = 22.0;
@@ -2459,6 +2491,57 @@ fn maybe_spawn_cats(shared: &Shared, cx: i32, cy: i32) {
     shared.broadcast_dim(Dimension::Overworld, ServerMessage::EntitySpawn { entity });
 }
 
+/// Possibly seed snakes into a freshly generated chunk. Snakes are the desert's
+/// predators: they drop onto the sand of a **desert** surface chunk that actually
+/// holds this column's surface line, like the other surface critters. The
+/// per-chunk decision is deterministic via [`chunk_hash`] on its own salt range,
+/// so exploring the same terrain never double-spawns, and it runs independently of
+/// [`maybe_spawn_in_chunk`].
+fn maybe_spawn_snakes(shared: &Shared, cx: i32, cy: i32) {
+    let world = shared.world(Dimension::Overworld).lock();
+    let seed = world.generator.seed();
+    if chunk_hash(seed, cx, cy, 400) % 100 >= SNAKE_CHUNK_CHANCE {
+        return;
+    }
+
+    let base_x = cx * CHUNK_SIZE;
+    let chunk_top = cy * CHUNK_SIZE;
+    let chunk_bottom = chunk_top + CHUNK_SIZE;
+    let count = 1 + chunk_hash(seed, cx, cy, 401) % SNAKE_CHUNK_MAX;
+    let (_, h) = EntityKind::Snake.size();
+
+    let mut spawned = Vec::new();
+    {
+        let mut entities = shared.entities(Dimension::Overworld).lock();
+        for n in 0..count {
+            let lx = chunk_hash(seed, cx, cy, 402 + n) % CHUNK_SIZE as u32;
+            let cell_x = base_x + lx as i32;
+            let surface = world.surface(cell_x);
+            // Only the desert, and only where this chunk holds the surface line.
+            if world.biome(cell_x) != Biome::Desert
+                || surface < chunk_top
+                || surface >= chunk_bottom
+            {
+                continue;
+            }
+            let id = shared.alloc_id();
+            let entity = Entity::new(
+                id,
+                EntityKind::Snake,
+                cell_x as f32 * TILE_SIZE,
+                surface as f32 * TILE_SIZE - h,
+            );
+            entities.insert(entity.clone());
+            spawned.push(entity);
+        }
+    }
+    drop(world);
+
+    for entity in spawned {
+        shared.broadcast_dim(Dimension::Overworld, ServerMessage::EntitySpawn { entity });
+    }
+}
+
 /// Possibly seed charred skeletons into a freshly generated underworld chunk.
 /// They drop onto any charred-rock floor (open cell above, solid below) the chunk
 /// contains. Deterministic per chunk via [`chunk_hash`] on its own salt range, so
@@ -2913,6 +2996,11 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         .filter(|e| matches!(e.kind, EntityKind::Spider))
         .map(|e| e.id)
         .collect();
+    let snake_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Snake))
+        .map(|e| e.id)
+        .collect();
     let skeleton_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::Skeleton))
@@ -3073,6 +3161,156 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
                 bites.push((pid, (dir * KNOCKBACK_X, -KNOCKBACK_Y), SPIDER_DAMAGE));
             }
         }
+    }
+
+    // Snakes: desert ambushers that hunt on sight and attack in telegraphed
+    // wind-up lunges. They slither into range, coil in place (a dodgeable
+    // wind-up), then spring forward to bite.
+    let mut snake_despawns: Vec<EntityId> = Vec::new();
+    for id in snake_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+
+        // Killed: writhe through the death animation in place (gravity still
+        // settles it onto the ground), run out the death timer, then despawn.
+        if e.dying > 0.0 {
+            e.dying -= TICK_DT;
+            let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, 0.0, 0.0, false);
+            e.x = m.x;
+            e.y = m.y;
+            e.vx = 0.0;
+            e.vy = m.vy;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: m.x,
+                y: m.y,
+                vx: 0.0,
+                vy: m.vy,
+            });
+            if e.dying <= 0.0 {
+                snake_despawns.push(id);
+            }
+            continue;
+        }
+
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let home = *e.home_x.get_or_insert(e.x);
+
+        // Mid-lunge: a committed strike that plays out over SNAKE_LUNGE_TIME. The
+        // snake coils in place through the wind-up, then springs along the heading
+        // it locked in. The bite is resolved once, as the wind-up gives way to the
+        // strike, so a player who broke away during the telegraph escapes.
+        if e.lunge > 0.0 {
+            let was_winding = e.lunge > SNAKE_STRIKE_TIME;
+            e.lunge = (e.lunge - TICK_DT).max(0.0);
+            let striking = e.lunge <= SNAKE_STRIKE_TIME;
+            let dir = e.lunge_dir;
+
+            let m = step_ground(
+                &mut world,
+                (e.x, e.y, w, h),
+                e.vy,
+                if striking { dir } else { 0.0 },
+                if striking { SNAKE_LUNGE_SPEED } else { 0.0 },
+                true,
+            );
+            e.x = m.x;
+            e.y = m.y;
+            e.vx = m.vx;
+            e.vy = m.vy;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: m.x,
+                y: m.y,
+                vx: m.vx,
+                vy: m.vy,
+            });
+
+            // The strike connects on the tick the wind-up ends, if a player is
+            // within the (generous) lunge reach.
+            if was_winding && striking {
+                if let Some((pid, px, py)) =
+                    nearest_player(&players, m.x + w * 0.5, m.y + h * 0.5, f32::INFINITY)
+                {
+                    if aabb_gap(m.x, m.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1)
+                        <= SNAKE_LUNGE_REACH
+                    {
+                        let kdir = if px + PLAYER_SIZE.0 * 0.5 >= m.x + w * 0.5 {
+                            1.0
+                        } else {
+                            -1.0
+                        };
+                        bites.push((pid, (kdir * KNOCKBACK_X, -KNOCKBACK_Y), SNAKE_DAMAGE));
+                    }
+                }
+            }
+            continue;
+        }
+
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+        let target = nearest_player(&players, scx, scy, SNAKE_AGGRO);
+
+        // In range and off cooldown: commit to a wind-up lunge. Lock the heading
+        // toward the player now and hold still — the strike springs this way even
+        // if the player sidesteps. Tell every client to play the strike animation.
+        if let Some((_, px, py)) = target {
+            if e.attack_cd <= 0.0
+                && aabb_gap(e.x, e.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1)
+                    <= SNAKE_LUNGE_RANGE
+            {
+                e.lunge = crate::entity::SNAKE_LUNGE_TIME;
+                e.lunge_dir = if px + PLAYER_SIZE.0 * 0.5 >= scx {
+                    1.0
+                } else {
+                    -1.0
+                };
+                e.attack_cd = SNAKE_ATTACK_INTERVAL;
+                e.vx = 0.0;
+                broadcasts.push(ServerMessage::EntityLunging { id });
+                broadcasts.push(ServerMessage::EntityMoved {
+                    id,
+                    x: e.x,
+                    y: e.y,
+                    vx: 0.0,
+                    vy: e.vy,
+                });
+                continue;
+            }
+        }
+
+        // Otherwise slither toward the target, or wander its home patch.
+        let chasing = target.is_some();
+        let dir = match target {
+            Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -1.0,
+            Some(_) => 1.0,
+            None => wander_dir(scx, e.vx, home),
+        };
+        let m = step_ground(
+            &mut world,
+            (e.x, e.y, w, h),
+            e.vy,
+            dir,
+            SNAKE_SPEED,
+            chasing,
+        );
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: m.vx,
+            vy: m.vy,
+        });
+    }
+    for id in snake_despawns {
+        entities.remove(id);
+        broadcasts.push(ServerMessage::EntityDespawn { id });
     }
 
     // Chickens: peck around peacefully, but bolt away from the nearest player
@@ -3794,6 +4032,12 @@ fn apply_damage(
     let Some(e) = entities.get_mut(id) else {
         return (Vec::new(), None);
     };
+    // An entity already playing its death animation is committed to despawning;
+    // further damage (e.g. lingering fire on the corpse) is moot and must never
+    // retrigger or restart the animation.
+    if e.dying > 0.0 {
+        return (Vec::new(), None);
+    }
     e.health = (e.health - amount).max(0);
 
     // Knockback: shove server-simulated creatures directly (their motion is
@@ -3874,6 +4118,16 @@ fn apply_damage(
         // Resync the whole entity (a plain EntityMoved/EntityHealth pair wouldn't
         // carry the flipped `sitting` flag, which rides along in `kind`).
         msgs.push(ServerMessage::EntitySpawn { entity: e.clone() });
+        (msgs, None)
+    } else if let Some(t) = e.kind.death_time() {
+        // A killed snake writhes through its death animation before despawning,
+        // rather than vanishing on the spot. The AI loop runs the timer down and
+        // removes it once the animation finishes. (A zombie's death_time is its
+        // daylight crumble — but a zombie only ever reaches 0 health here, where
+        // it likewise gets the courtesy of playing out rather than blinking away.)
+        e.dying = t;
+        e.vx = 0.0;
+        msgs.push(ServerMessage::EntityDying { id });
         (msgs, None)
     } else {
         entities.remove(id);
@@ -4375,6 +4629,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             Dimension::Overworld => {
                                 maybe_spawn_in_chunk(&shared, cx, cy);
                                 maybe_spawn_spiders(&shared, cx, cy);
+                                maybe_spawn_snakes(&shared, cx, cy);
                                 maybe_spawn_cats(&shared, cx, cy);
                             }
                             Dimension::Underworld => {
