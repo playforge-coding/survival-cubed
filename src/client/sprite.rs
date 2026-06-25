@@ -108,6 +108,29 @@ pub static PUPPY_SIT_SPRITE: SpriteDef = SpriteDef {
     fps: 6.0,
 };
 
+/// Horse (riderless): a tall plains grazer that ambles along on its four-frame
+/// walk cycle. The wild/unmounted horse; a ridden one is drawn with
+/// [`PLAYER_HORSE_SPRITE`] instead.
+pub static HORSE_SPRITE: SpriteDef = SpriteDef {
+    name: "horse",
+    frame_w: 17,
+    frame_h: 14,
+    frames: 4,
+    fps: 8.0,
+};
+
+/// Horse (with rider): the player seated on a horse, drawn in place of the plain
+/// player sprite while mounted — a four-frame gallop whose art already includes the
+/// horse, just as [`BOAT_SPRITE`] already includes its rider. Lives in the
+/// `player/horse` subdirectory (its `name` is that path).
+pub static PLAYER_HORSE_SPRITE: SpriteDef = SpriteDef {
+    name: "player/horse",
+    frame_w: 18,
+    frame_h: 21,
+    frames: 4,
+    fps: 8.0,
+};
+
 /// Zombie: a shambling undead that lurches along, arms out.
 pub static ZOMBIE_SPRITE: SpriteDef = SpriteDef {
     name: "zombie",
@@ -197,7 +220,7 @@ pub static BONE_SPRITE: SpriteDef = SpriteDef {
 };
 
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 18] {
+pub fn all() -> [&'static SpriteDef; 20] {
     [
         &PLAYER_SPRITE,
         &BOAT_SPRITE,
@@ -208,6 +231,8 @@ pub fn all() -> [&'static SpriteDef; 18] {
         &CAT_SIT_SPRITE,
         &PUPPY_SPRITE,
         &PUPPY_SIT_SPRITE,
+        &HORSE_SPRITE,
+        &PLAYER_HORSE_SPRITE,
         &ZOMBIE_SPRITE,
         &ZOMBIE_DEATH_SPRITE,
         &SPIDER_SPRITE,
@@ -233,6 +258,9 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         // A sitting puppy shows its one-frame resting pose; otherwise the walk sheet.
         EntityKind::Puppy { sitting: true, .. } => &PUPPY_SIT_SPRITE,
         EntityKind::Puppy { .. } => &PUPPY_SPRITE,
+        // A ridden horse is drawn as the combined player/horse sprite by the scene
+        // builder; this riderless sheet is the wild/unmounted horse.
+        EntityKind::Horse { .. } => &HORSE_SPRITE,
         EntityKind::Zombie => &ZOMBIE_SPRITE,
         EntityKind::Spider => &SPIDER_SPRITE,
         // A snake's striking pose is handled by the scene builder off its lunge

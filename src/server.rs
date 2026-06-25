@@ -63,6 +63,15 @@ const PUPPY_CHUNK_CHANCE: u32 = 6;
 /// Distance (px) past which a tamed puppy teleports to its owner instead of
 /// trotting along on the ground — same leash as the cat's.
 const PUPPY_TELEPORT_DIST: f32 = 320.0;
+/// Unhurried wander speed of a horse, in pixels/second. (The gallop the rider
+/// gets while mounted is a faster, client-side movement mode; this is just how a
+/// loose horse ambles.)
+const HORSE_SPEED: f32 = 26.0;
+/// Percent chance that a fresh plains surface chunk seeds a wild horse.
+const HORSE_CHUNK_CHANCE: u32 = 6;
+/// Distance (px) past which a tamed horse teleports to its owner instead of
+/// ambling along on the ground — same leash as the cat's and puppy's.
+const HORSE_TELEPORT_DIST: f32 = 320.0;
 /// How far (px) a puppy notices a skeleton/chicken to hunt, or raw meat to eat.
 const PUPPY_AGGRO: f32 = 220.0;
 /// Maximum gap (px between AABBs) at which a puppy lands a bite on its prey.
@@ -1396,6 +1405,62 @@ impl Shared {
         self.send_inventory(id);
     }
 
+    /// React to player `id` feeding the wild horse `target`: a horse is tamed not
+    /// with cooked meat like the other pets but with an **apple**. Mirrors
+    /// [`Self::try_feed_pet`] — the target must still be a wild horse within reach,
+    /// the feeder must be named (the bond is stored by name) and hold an apple — and
+    /// on success stamps the feeder as owner, heals the horse, spends the apple, and
+    /// resyncs both the horse and the feeder's inventory.
+    fn try_feed_horse(&self, id: EntityId, target: EntityId, held: BlockId, dim: Dimension) {
+        if held != crate::block::APPLE {
+            return;
+        }
+        let tamed = {
+            let mut invs = self.inventories.lock();
+            let mut entities = self.entities(dim).lock();
+            let owner_name = match (entities.get(id), entities.get(target)) {
+                (Some(a), Some(b))
+                    if matches!(b.kind, EntityKind::Horse { owner: None })
+                        && aabb_gap(
+                            a.x,
+                            a.y,
+                            a.size().0,
+                            a.size().1,
+                            b.x,
+                            b.y,
+                            b.size().0,
+                            b.size().1,
+                        ) <= PLAYER_ATTACK_REACH =>
+                {
+                    match &a.kind {
+                        EntityKind::Player { name } if !name.is_empty() => name.clone(),
+                        _ => return,
+                    }
+                }
+                _ => return,
+            };
+            // Spend one apple; bail (without taming) if they hold none.
+            let Some(inv) = invs.get_mut(&id) else {
+                return;
+            };
+            if inv.count(crate::block::APPLE) == 0 {
+                return;
+            }
+            inv.remove(crate::block::APPLE, 1);
+            entities.get_mut(target).map(|e| {
+                if let EntityKind::Horse { owner } = &mut e.kind {
+                    *owner = Some(owner_name);
+                }
+                e.health = e.max_health;
+                e.clone()
+            })
+        };
+        if let Some(entity) = tamed {
+            self.broadcast_dim(dim, ServerMessage::EntitySpawn { entity });
+        }
+        self.send_inventory(id);
+    }
+
     /// React to player `id` clicking the *tamed* pet `target`: if `id` is the pet's
     /// owner and within reach, flip whether it's sitting (sit it down, or stand it
     /// back up). A sitting pet stays put — its tick stops wandering and stops
@@ -1920,9 +1985,11 @@ impl Shared {
         player.vx = 0.0;
         player.vy = 0.0;
         // Arriving by fire key or by falling between worlds always lands on foot,
-        // never in a boat — clear the rider state so the new dimension draws them
-        // out of the boat (the client clears its local riding state to match).
+        // never in a boat or on a horse — clear both rider states so the new
+        // dimension draws them dismounted (the client clears its local state to
+        // match, and the horse stays behind in the dimension they left).
         player.boating = false;
+        player.riding = None;
         // Record the new dimension before announcing, so dimension-scoped
         // broadcasts route correctly.
         self.client_dim.lock().insert(id, to);
@@ -1943,12 +2010,23 @@ impl Shared {
             .cloned()
             .collect();
         for entity in snapshot {
-            // The serialized entity doesn't carry the (runtime-only) boat pose, so
-            // follow up for anyone already afloat to draw their boat from the start.
+            // The serialized entity doesn't carry the (runtime-only) boat/horse pose,
+            // so follow up for anyone already afloat or mounted to draw their boat or
+            // ride them on their horse from the start.
             let afloat = entity.boating.then_some(entity.id);
+            let mount = entity.riding.map(|h| (entity.id, h));
             self.send_to(id, ServerMessage::EntitySpawn { entity });
             if let Some(eid) = afloat {
                 self.send_to(id, ServerMessage::EntityBoating { id: eid, on: true });
+            }
+            if let Some((rider, horse)) = mount {
+                self.send_to(
+                    id,
+                    ServerMessage::EntityRiding {
+                        id: rider,
+                        horse: Some(horse),
+                    },
+                );
             }
         }
         // Resync the home marker (its dimension may differ from the new one) and
@@ -2664,6 +2742,46 @@ fn maybe_spawn_puppies(shared: &Shared, cx: i32, cy: i32) {
     shared.broadcast_dim(Dimension::Overworld, ServerMessage::EntitySpawn { entity });
 }
 
+/// Possibly seed a wild horse into a freshly generated chunk. Horses are a plains
+/// find: tameable with apples and, once tamed, rideable. Mirrors the cat/puppy
+/// spawners (its own `chunk_hash` salts keep it independent of theirs) but seeds
+/// the open grassland rather than the forest.
+fn maybe_spawn_horses(shared: &Shared, cx: i32, cy: i32) {
+    let world = shared.world(Dimension::Overworld).lock();
+    let seed = world.generator.seed();
+    if chunk_hash(seed, cx, cy, 500) % 100 >= HORSE_CHUNK_CHANCE {
+        return;
+    }
+
+    let base_x = cx * CHUNK_SIZE;
+    let chunk_top = cy * CHUNK_SIZE;
+    let chunk_bottom = chunk_top + CHUNK_SIZE;
+    let (_, h) = EntityKind::Horse { owner: None }.size();
+
+    // Drop the horse onto the grass of one scattered column, but only where this
+    // chunk holds the surface and the column is plains.
+    let lx = chunk_hash(seed, cx, cy, 501) % CHUNK_SIZE as u32;
+    let cell_x = base_x + lx as i32;
+    let surface = world.surface(cell_x);
+    if world.biome(cell_x) != Biome::Plains || surface < chunk_top || surface >= chunk_bottom {
+        return;
+    }
+    let id = shared.alloc_id();
+    let entity = Entity::new(
+        id,
+        EntityKind::Horse { owner: None },
+        cell_x as f32 * TILE_SIZE,
+        surface as f32 * TILE_SIZE - h,
+    );
+    drop(world);
+
+    shared
+        .entities(Dimension::Overworld)
+        .lock()
+        .insert(entity.clone());
+    shared.broadcast_dim(Dimension::Overworld, ServerMessage::EntitySpawn { entity });
+}
+
 /// Possibly seed snakes into a freshly generated chunk. Snakes are the desert's
 /// predators: they drop onto the sand of a **desert** surface chunk that actually
 /// holds this column's surface line, like the other surface critters. The
@@ -3125,6 +3243,14 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         })
         .collect();
 
+    // Snapshot of which horse each mounted player is riding, with the rider's
+    // position, so the horse AI can glue a ridden horse beneath its rider without
+    // re-borrowing the entities map mid-loop. `(horse id, rider x, rider y)`.
+    let ridden_horses: Vec<(EntityId, f32, f32)> = entities
+        .values()
+        .filter_map(|e| e.riding.map(|hid| (hid, e.x, e.y)))
+        .collect();
+
     // Cull any non-player entity that has drifted beyond DESPAWN_DIST of every
     // player, removing it before it is simulated this tick. This keeps the world
     // from accumulating creatures and stray items in terrain nobody is near
@@ -3175,6 +3301,11 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     let puppy_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| e.kind.is_puppy())
+        .map(|e| e.id)
+        .collect();
+    let horse_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| e.kind.is_horse())
         .map(|e| e.id)
         .collect();
     let zombie_ids: Vec<EntityId> = entities
@@ -3650,6 +3781,81 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         let home = *e.home_x.get_or_insert(e.x);
         let dir = wander_dir(scx, e.vx, home);
         let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, CAT_SPEED, false);
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: m.vx,
+            vy: m.vy,
+        });
+    }
+
+    // Horses: tall plains grazers that amble around their home patch like a cat. A
+    // *ridden* horse instead snaps beneath its rider each tick (the rider drives the
+    // movement client-side; the horse is drawn as part of the combined sprite, so its
+    // exact spot only matters at dismount). A tamed, unridden horse keeps up with its
+    // owner, teleporting to them past HORSE_TELEPORT_DIST — horses, like the other
+    // pets, never despawn for distance.
+    for id in horse_ids {
+        // A ridden horse: glue it centred beneath its rider, feet aligned, and skip
+        // its own AI. (Found in the pre-loop snapshot of who's riding what.)
+        if let Some(&(_, rx, ry)) = ridden_horses.iter().find(|(hid, ..)| *hid == id) {
+            let Some(e) = entities.get_mut(id) else {
+                continue;
+            };
+            let (w, h) = e.size();
+            e.x = rx + (PLAYER_SIZE.0 - w) * 0.5;
+            e.y = ry + PLAYER_SIZE.1 - h;
+            e.vx = 0.0;
+            e.vy = 0.0;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: e.x,
+                y: e.y,
+                vx: 0.0,
+                vy: 0.0,
+            });
+            continue;
+        }
+
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+
+        // A tamed horse whose owner has strayed too far teleports onto them and
+        // re-anchors its home there, exactly like the cat.
+        let owner = e.kind.owner().map(str::to_owned);
+        if let Some(owner) = &owner
+            && let Some(&(_, _, ox, oy)) = named_players.iter().find(|(n, ..)| n == owner)
+            && (((ox + PLAYER_SIZE.0 * 0.5) - scx).powi(2)
+                + ((oy + PLAYER_SIZE.1 * 0.5) - scy).powi(2))
+                > HORSE_TELEPORT_DIST * HORSE_TELEPORT_DIST
+        {
+            e.x = ox;
+            e.y = oy;
+            e.vx = 0.0;
+            e.vy = 0.0;
+            e.home_x = Some(ox);
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: ox,
+                y: oy,
+                vx: 0.0,
+                vy: 0.0,
+            });
+            continue;
+        }
+
+        let home = *e.home_x.get_or_insert(e.x);
+        let dir = wander_dir(scx, e.vx, home);
+        let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, HORSE_SPEED, false);
         e.x = m.x;
         e.y = m.y;
         e.vx = m.vx;
@@ -4940,10 +5146,17 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
         let mut entities = shared.entities(Dimension::Overworld).lock();
         for e in entities.values() {
             let _ = tx.send(ServerMessage::EntitySpawn { entity: e.clone() });
-            // The serialized entity doesn't carry the (runtime-only) boat pose, so
-            // follow up for anyone already afloat to draw their boat from the start.
+            // The serialized entity doesn't carry the (runtime-only) boat/horse pose,
+            // so follow up for anyone already afloat or mounted to draw their boat or
+            // ride them on their horse from the start.
             if e.boating {
                 let _ = tx.send(ServerMessage::EntityBoating { id: e.id, on: true });
+            }
+            if let Some(horse) = e.riding {
+                let _ = tx.send(ServerMessage::EntityRiding {
+                    id: e.id,
+                    horse: Some(horse),
+                });
             }
         }
         entities.insert(player.clone());
@@ -5055,6 +5268,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                 maybe_spawn_snakes(&shared, cx, cy);
                                 maybe_spawn_cats(&shared, cx, cy);
                                 maybe_spawn_puppies(&shared, cx, cy);
+                                maybe_spawn_horses(&shared, cx, cy);
                                 maybe_spawn_structure_entities(&shared, cx, cy);
                             }
                             Dimension::Underworld => {
@@ -5604,27 +5818,88 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         );
                     }
                 }
+                ClientMessage::SetRiding { horse } => {
+                    let dim = shared.dim_of(id);
+                    // Resolve the request to the horse the player ends up on. A mount
+                    // (`Some`) must name a horse this player has tamed, in this
+                    // dimension, and within reach; a dismount (`None`) always clears.
+                    // Anything that fails validation leaves the rider as they were.
+                    let new_riding: Option<Option<EntityId>> = {
+                        let entities = shared.entities(dim).lock();
+                        match horse {
+                            None => Some(None),
+                            Some(hid) => {
+                                let rider = match entities.get(id).map(|a| (&a.kind, a.x, a.y, a.size())) {
+                                    Some((EntityKind::Player { name }, ax, ay, (aw, ah)))
+                                        if !name.is_empty() =>
+                                    {
+                                        Some((name.clone(), ax, ay, aw, ah))
+                                    }
+                                    _ => None,
+                                };
+                                match (rider, entities.get(hid)) {
+                                    (Some((name, ax, ay, aw, ah)), Some(b))
+                                        if matches!(&b.kind, EntityKind::Horse { owner: Some(o) } if *o == name)
+                                            && aabb_gap(
+                                                ax, ay, aw, ah, b.x, b.y, b.size().0, b.size().1,
+                                            ) <= PLAYER_ATTACK_REACH =>
+                                    {
+                                        Some(Some(hid))
+                                    }
+                                    _ => None,
+                                }
+                            }
+                        }
+                    };
+                    if let Some(riding) = new_riding {
+                        let changed = {
+                            let mut entities = shared.entities(dim).lock();
+                            match entities.get_mut(id) {
+                                Some(e) if e.riding != riding => {
+                                    e.riding = riding;
+                                    true
+                                }
+                                _ => false,
+                            }
+                        };
+                        // Share the pose with everyone — including the rider, who
+                        // learns its mount is confirmed — so all clients draw the rider
+                        // on the combined horse sprite and hide the now-ridden horse.
+                        // The tick loop glues the horse beneath its rider.
+                        if changed {
+                            shared.broadcast_dim(dim, ServerMessage::EntityRiding { id, horse: riding });
+                        }
+                    }
+                }
                 ClientMessage::Attack { target, held } => {
                     let dim = shared.dim_of(id);
-                    // Pets (cats and puppies) are sacrosanct: a swing at one never
-                    // deals damage. A wild pet can only be fed (cooked meat tames
-                    // it); a player's own pet is sat down or stood up by the click;
-                    // anyone else's pet ignores the swing. Either way the damage
-                    // path is skipped.
-                    let pet_owner = shared
+                    // Pets (cats, puppies and horses) are sacrosanct: a swing at one
+                    // never deals damage. A wild pet can only be fed (which tames
+                    // it); a player's own cat/puppy is sat down or stood up by the
+                    // click, while a tamed horse is instead mounted by right-click
+                    // (handled in the client's interact path), so a swing at one just
+                    // bounces off; anyone else's pet ignores the swing. Either way the
+                    // damage path is skipped.
+                    let pet = shared
                         .entities(dim)
                         .lock()
                         .get(target)
                         .and_then(|e| match &e.kind {
                             EntityKind::Cat { owner, .. } | EntityKind::Puppy { owner, .. } => {
-                                Some(owner.clone())
+                                Some((false, owner.clone()))
                             }
+                            EntityKind::Horse { owner } => Some((true, owner.clone())),
                             _ => None,
                         });
-                    if let Some(owner) = pet_owner {
-                        match owner {
-                            None => shared.try_feed_pet(id, target, held, dim),
-                            Some(_) => shared.toggle_pet_sit(id, target, dim),
+                    if let Some((is_horse, owner)) = pet {
+                        match (is_horse, owner) {
+                            // Wild horse: an apple tames it. Tamed horse: nothing on a
+                            // swing (mounting is a right-click interact).
+                            (true, None) => shared.try_feed_horse(id, target, held, dim),
+                            (true, Some(_)) => {}
+                            // Wild cat/puppy: cooked meat tames it. Tamed: sit toggle.
+                            (false, None) => shared.try_feed_pet(id, target, held, dim),
+                            (false, Some(_)) => shared.toggle_pet_sit(id, target, dim),
                         }
                         continue;
                     }

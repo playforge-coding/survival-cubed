@@ -132,6 +132,10 @@ sprites!(
     "cat/sit" => [0],
     "puppy" => [0, 1, 2, 3],
     "puppy/sit" => [0, 1, 2, 3, 4, 5, 6, 7],
+    "horse" => [0, 1, 2, 3],
+    // The riding pose: the player seated on the horse, drawn while mounted. The
+    // art already includes the horse, like the boat sprite includes its rider.
+    "player/horse" => [0, 1, 2, 3],
     "zombie" => [0, 1, 2, 3],
     "zombie/death" => [0, 1, 2, 3],
     "spider" => [0, 1, 2, 3],

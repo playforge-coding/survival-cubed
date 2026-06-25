@@ -12,6 +12,7 @@ are all simulated by the server (only your own player is driven by your client).
 | **Goat** | 16 | Mountains | 2 Raw Meat | Calm grazer |
 | **Cat** | 8 | Forest | — | Wild until tamed |
 | **Puppy** | 14 | Forest | — | Wild until tamed; hunts skeletons and chickens |
+| **Horse** | 30 | Plains | — | Wild until tamed **with an apple**; can be ridden |
 
 Cook the raw meat from chickens and goats before eating it — raw meat makes you
 sick. See [Food](crafting.md#food).
@@ -29,6 +30,25 @@ tamed:
 - If killed, a tamed pet **respawns at your respawn point**.
 - The only thing that can kill a tamed pet for good is **fire**, so keep them
   away from the underworld's flames.
+
+## Mounts
+
+The **horse** is a tall, peaceable grazer that roams the **plains**. It's a pet
+like the cat and puppy — immune to your attacks, never lost (it teleports to you
+if you stray too far), and respawning at your respawn point if it ever dies — with
+two differences:
+
+- **Tame it with an apple**, not cooked meat. Hold an [apple](crafting.md#food)
+  and left-click a wild horse to befriend it. (Apples are shed now and then by
+  leaves.)
+- Once tamed, you can **ride it**. Walk up to your horse and **right-click** to
+  climb on; **right-click again** to hop off. While mounted you gallop
+  noticeably faster than you can run, and you still jump and fall normally — handy
+  for crossing the open plains in a hurry.
+
+A horse can't be ridden between dimensions: stepping through a fire key (or
+falling to the underworld) drops you back on foot and leaves the horse behind in
+the world you left.
 
 ## Hostile monsters
 

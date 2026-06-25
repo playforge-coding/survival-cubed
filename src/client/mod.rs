@@ -91,6 +91,10 @@ const BOAT_FLOAT_STIFFNESS: f32 = 9.0;
 /// Cap (px/s) on the vertical speed of that settling, so a boat dropped into deep
 /// water rises to the surface briskly without snapping.
 const BOAT_FLOAT_MAX_SPEED: f32 = 220.0;
+/// Multiplier on walking speed while riding a horse: a gallop carries the rider
+/// noticeably faster than they can run on foot. Gravity and jumping are otherwise
+/// unchanged — a mounted player still arcs and lands like normal.
+const HORSE_RIDE_SPEED_MULT: f32 = 1.7;
 // The local player is just a (special) entity; reuse its shared size.
 const PLAYER_W: f32 = crate::entity::PLAYER_SIZE.0;
 const PLAYER_H: f32 = crate::entity::PLAYER_SIZE.1;
@@ -206,6 +210,12 @@ struct GameState {
     /// toggled by right-clicking a held boat: while on, the player glides across
     /// water on the surface instead of swimming (see [`step_physics`]).
     boating: bool,
+    /// The tamed horse this player is currently riding, if any (its entity id).
+    /// Set authoritatively from the server's [`NetEvent::EntityRiding`] echo after
+    /// right-clicking a tamed horse to mount; while `Some`, the player gallops faster
+    /// (see [`step_physics`]) and is drawn on the combined `player/horse` sprite with
+    /// the mounted horse entity hidden. Right-clicking again dismounts.
+    riding: Option<EntityId>,
     requested: HashSet<(i32, i32)>,
     /// Index of the selected hotbar slot (`0..HOTBAR_SLOTS`); its block is the
     /// one placed on right-click.
@@ -320,6 +330,7 @@ impl GameState {
             facing: HashMap::new(),
             player_facing: true,
             boating: false,
+            riding: None,
             requested: HashSet::new(),
             selected_slot: 0,
             inventory: Inventory::new(),
@@ -373,7 +384,7 @@ const CHAT_VISIBLE_LINES: usize = 8;
 const MAX_CHAT_INPUT_LEN: usize = 256;
 /// Entity sprite sheets exposed as `:name:` chat icons, alongside block/item
 /// names. (Dropped-item and zombie-death sheets are intentionally excluded.)
-const CHAT_ENTITY_ICONS: &[&str] = &["player", "slime", "chicken", "goat", "zombie"];
+const CHAT_ENTITY_ICONS: &[&str] = &["player", "slime", "chicken", "goat", "horse", "zombie"];
 
 struct App {
     window: Option<Arc<Window>>,
@@ -822,9 +833,11 @@ impl App {
                     g.knockback_x = 0.0;
                     g.air_min_y = y;
                     g.last_sent = g.pos;
-                    // You always arrive in a new dimension on foot, never afloat;
-                    // the server clears the rider state to match (see enter_dimension).
+                    // You always arrive in a new dimension on foot, never afloat or
+                    // mounted; the server clears both rider states to match (see
+                    // enter_dimension), leaving any horse behind in the old dimension.
                     g.boating = false;
+                    g.riding = None;
                 }
                 // Swap to the new dimension's (randomly chosen) music.
                 if let Some(m) = &mut self.music {
@@ -865,8 +878,28 @@ impl App {
                     e.boating = on;
                 }
             }
+            NetEvent::EntityRiding { id, horse } => {
+                if let Some(g) = &mut self.game {
+                    if id == g.entity_id {
+                        // The server confirmed our own mount/dismount; adopt it as the
+                        // authoritative local riding state.
+                        g.riding = horse;
+                    } else if let Some(e) = g.entities.get_mut(id) {
+                        // Mirror a remote player's mount pose; their rendering draws
+                        // them on the combined horse sprite from this, and the ridden
+                        // horse entity is hidden (their own motion still arrives via
+                        // EntityMoved).
+                        e.riding = horse;
+                    }
+                }
+            }
             NetEvent::EntityDespawn { id } => {
                 if let Some(g) = &mut self.game {
+                    // If the horse we were riding vanished, step off so we don't keep
+                    // galloping on a ghost.
+                    if g.riding == Some(id) {
+                        g.riding = None;
+                    }
                     g.entities.remove(id);
                     g.facing.remove(&id);
                     // If the player we were spectating just left, drop back to our
@@ -2315,6 +2348,9 @@ impl App {
                             sitting: false,
                         });
                     }
+                    if ui.button("Horse").clicked() {
+                        spawn = Some(EntityKind::Horse { owner: None });
+                    }
                     if ui.button("Zombie").clicked() {
                         spawn = Some(EntityKind::Zombie);
                     }
@@ -2683,9 +2719,24 @@ impl App {
             }
         }
 
+        // Horses currently being ridden (by any remote player, or by us) are drawn
+        // as part of their rider's combined sprite, so the standalone horse entity is
+        // hidden to avoid drawing it twice.
+        let ridden_horses: HashSet<EntityId> = g
+            .entities
+            .values()
+            .filter_map(|e| e.riding)
+            .chain(g.riding)
+            .collect();
+
         // Other entities — remote players and server creatures (drawn over tiles).
         for e in g.entities.values() {
             let (w, h) = e.size();
+            // A horse someone is riding is drawn via its rider's combined sprite, so
+            // skip the standalone horse here.
+            if ridden_horses.contains(&e.id) {
+                continue;
+            }
             // Dropped items render as a small version of their block sprite, not
             // an animation sheet.
             if let EntityKind::DroppedItem { block, .. } = e.kind {
@@ -2697,6 +2748,36 @@ impl App {
                     uv_max: uv.max,
                     color: tint,
                 });
+                continue;
+            }
+            // A remote player riding a horse shows the combined player/horse sprite
+            // (the horse is part of the art), animated as it moves, centred on their
+            // body and resting on their feet — just like the boat pose below.
+            if e.riding.is_some() && matches!(e.kind, EntityKind::Player { .. }) {
+                let hdef = &sprite::PLAYER_HORSE_SPRITE;
+                let (hw, hh) = (hdef.frame_w as f32, hdef.frame_h as f32);
+                let facing = g.facing.get(&e.id).copied().unwrap_or(true);
+                let frame = sprite::frame_index(e.vx.abs() > 1.0, self.anim_time, hdef);
+                tiles.push(entity_instance(
+                    self.atlas.sprite_frame(hdef.name, frame),
+                    e.x + (w - hw) * 0.5,
+                    e.y + h - hh,
+                    hw,
+                    hh,
+                    facing,
+                    flash_tint(tint, e.hit_flash),
+                ));
+                if e.health < e.max_health && e.max_health > 0 {
+                    push_health_bar(
+                        &mut tiles,
+                        self.atlas.white(),
+                        e.x,
+                        e.y,
+                        w,
+                        e.health,
+                        e.max_health,
+                    );
+                }
                 continue;
             }
             // A remote player riding a boat shows the boat sprite (the rider is part
@@ -2802,6 +2883,22 @@ impl App {
                 g.pos.y + PLAYER_H - bh,
                 bw,
                 bh,
+                g.player_facing,
+                flash_tint(tint, g.hit_flash),
+            ));
+        } else if g.riding.is_some() {
+            // Mounted: the combined player/horse sprite (the horse is part of the
+            // art) replaces the plain avatar, animated as the player gallops, centred
+            // on the player box and resting on their feet — like the boat pose above.
+            let def = &sprite::PLAYER_HORSE_SPRITE;
+            let (hw, hh) = (def.frame_w as f32, def.frame_h as f32);
+            let frame = sprite::frame_index(g.vel.x.abs() > 1.0, self.anim_time, def);
+            tiles.push(entity_instance(
+                self.atlas.sprite_frame(def.name, frame),
+                g.pos.x + (PLAYER_W - hw) * 0.5,
+                g.pos.y + PLAYER_H - hh,
+                hw,
+                hh,
                 g.player_facing,
                 flash_tint(tint, g.hit_flash),
             ));
@@ -3323,6 +3420,14 @@ fn step_physics(game: &mut GameState, reg: &BlockRegistry, input: &Input, dt: f3
         game.vel.x *= BOAT_LAND_DRAG;
     }
 
+    // Riding a horse: a gallop carries the rider faster than running. Only the
+    // horizontal speed changes — the player still jumps and falls on the normal arc
+    // below, and the horse is glued beneath them server-side — so we just scale the
+    // intent and fall through to the ordinary ground physics.
+    if game.riding.is_some() {
+        game.vel.x *= HORSE_RIDE_SPEED_MULT;
+    }
+
     // Ladder climbing: while overlapping a ladder the player clings to it,
     // ignoring gravity, and moves vertically with the jump (up) and down inputs.
     // This overrides the normal jump/gravity arc below.
@@ -3671,6 +3776,31 @@ fn handle_block_actions(
         game.break_progress = 0.0;
     }
 
+    // Right-clicking mounts or dismounts a horse, taking priority over placing a
+    // block or opening a cell GUI. While mounted, any right-click dismounts; while on
+    // foot, right-clicking your own tamed horse within reach mounts it. The mount is
+    // confirmed authoritatively by the server (which validates ownership and reach),
+    // so we only send the request — the riding state is adopted from its echo.
+    if input.placing && game.action_timer <= 0.0 {
+        if game.riding.is_some() {
+            let _ = net.commands.send(NetCommand::SetRiding { horse: None });
+            game.action_timer = ACTION_COOLDOWN;
+            return;
+        }
+        if let Some(target) = creature_at(game, world)
+            && game
+                .entities
+                .get(target)
+                .is_some_and(|e| matches!(e.kind, EntityKind::Horse { owner: Some(_) }))
+        {
+            let _ = net.commands.send(NetCommand::SetRiding {
+                horse: Some(target),
+            });
+            game.action_timer = ACTION_COOLDOWN;
+            return;
+        }
+    }
+
     // Right-clicking a forge opens its smelting GUI instead of placing a block.
     // This takes priority over both creator-mode and normal placement.
     if input.placing
@@ -3922,9 +4052,9 @@ fn creator_structure_input(
     }
 }
 
-/// Normalize an entity kind for storage in a structure: a captured pet (cat or
-/// puppy) is set wild (owner cleared) so a pasted or worldgen copy doesn't belong
-/// to whoever tamed the original. Other kinds are taken as-is.
+/// Normalize an entity kind for storage in a structure: a captured pet (cat,
+/// puppy, or horse) is set wild (owner cleared) so a pasted or worldgen copy
+/// doesn't belong to whoever tamed the original. Other kinds are taken as-is.
 fn structure_entity_kind(kind: &EntityKind) -> EntityKind {
     match kind {
         EntityKind::Cat { sitting, .. } => EntityKind::Cat {
@@ -3935,6 +4065,7 @@ fn structure_entity_kind(kind: &EntityKind) -> EntityKind {
             owner: None,
             sitting: *sitting,
         },
+        EntityKind::Horse { .. } => EntityKind::Horse { owner: None },
         other => other.clone(),
     }
 }

@@ -36,7 +36,7 @@ pub struct Waypoint {
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -161,6 +161,14 @@ pub enum ClientMessage {
     /// [`ServerMessage::EntitySpawn`]) so remote clients draw the rider in their
     /// boat. Riding itself is simulated client-side; this only shares the pose.
     SetBoating { on: bool },
+    /// Mount the tamed [`horse`](crate::entity::EntityKind::Horse) with this id
+    /// (`Some`), or dismount whatever horse the player is currently riding
+    /// (`None`). The server validates that the horse exists in the player's
+    /// dimension, is tamed by this player, and is within reach before honoring a
+    /// mount; on success it records the ride on the player entity and shares the
+    /// pose with every client (via [`ServerMessage::EntityRiding`]) so the rider is
+    /// drawn on the combined horse sprite and the horse is glued beneath them.
+    SetRiding { horse: Option<EntityId> },
     /// Melee-attack another entity (e.g. a slime). The server validates range
     /// before applying damage. `held` is the item the player is wielding
     /// ([`crate::block::AIR`] for bare hands); the server uses it to scale the
@@ -254,6 +262,17 @@ pub enum ServerMessage {
     /// no position. Sent on each toggle, and once per already-riding player when a
     /// client first receives that player's [`ServerMessage::EntitySpawn`] snapshot.
     EntityBoating { id: EntityId, on: bool },
+    /// A player mounted a tamed horse (`horse = Some(horse_id)`) or dismounted
+    /// (`horse = None`). Every client draws that player on the combined
+    /// `player/horse` sprite while mounted and hides the now-ridden horse entity
+    /// (which the server keeps glued beneath the rider). Riding is driven by the
+    /// rider's own client; this shares the pose. Sent on each mount/dismount, and
+    /// once per already-mounted player when a client first receives that player's
+    /// [`ServerMessage::EntitySpawn`] snapshot. `id` is the rider's entity id.
+    EntityRiding {
+        id: EntityId,
+        horse: Option<EntityId>,
+    },
     /// A zombie has been caught by daylight and begun its death animation. The
     /// client plays the crumble animation for [`crate::entity::ZOMBIE_DEATH_TIME`]
     /// seconds; an [`ServerMessage::EntityDespawn`] for the same id follows once

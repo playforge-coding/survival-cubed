@@ -78,6 +78,10 @@ pub enum NetEvent {
         id: EntityId,
         on: bool,
     },
+    EntityRiding {
+        id: EntityId,
+        horse: Option<EntityId>,
+    },
     EntityDying {
         id: EntityId,
     },
@@ -239,6 +243,11 @@ pub enum NetCommand {
     /// riding pose with other clients.
     SetBoating {
         on: bool,
+    },
+    /// Mount the tamed horse with this id, or dismount (`None`), so the server can
+    /// glue the horse beneath the rider and share the pose with other clients.
+    SetRiding {
+        horse: Option<EntityId>,
     },
     /// Creator mode: toggle this player's creator mode on or off.
     SetCreator {
@@ -472,6 +481,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::RemoveWaypoint { x, y } => ClientMessage::RemoveWaypoint { x, y },
         NetCommand::FallDamage { amount } => ClientMessage::FallDamage { amount },
         NetCommand::SetBoating { on } => ClientMessage::SetBoating { on },
+        NetCommand::SetRiding { horse } => ClientMessage::SetRiding { horse },
         NetCommand::SetCreator { on } => ClientMessage::SetCreator { on },
         NetCommand::SetTime { t } => ClientMessage::SetTime { t },
         NetCommand::SpawnEntity { kind, x, y } => ClientMessage::SpawnEntity { kind, x, y },
@@ -520,6 +530,7 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
         }
         ServerMessage::EntityDespawn { id } => NetEvent::EntityDespawn { id },
         ServerMessage::EntityBoating { id, on } => NetEvent::EntityBoating { id, on },
+        ServerMessage::EntityRiding { id, horse } => NetEvent::EntityRiding { id, horse },
         ServerMessage::EntityDying { id } => NetEvent::EntityDying { id },
         ServerMessage::EntityLunging { id } => NetEvent::EntityLunging { id },
         ServerMessage::EntityHealth {

@@ -40,7 +40,8 @@ Drag the **time-of-day slider**, or use the preset buttons — **Dawn**, **Noon*
 ## Spawning creatures
 
 Buttons in the Creator Tools window spawn any creature at your location: Slime,
-Chicken, Goat, Cat, Puppy, Zombie, Spider, Snake, Skeleton, and Charred Skeleton.
+Chicken, Goat, Cat, Puppy, Horse, Zombie, Spider, Snake, Skeleton, and Charred
+Skeleton.
 See **[Creatures](creatures.md)** for what each one does.
 
 ## Giving items

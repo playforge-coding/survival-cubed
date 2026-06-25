@@ -36,6 +36,9 @@ pub const CAT_SIZE: (f32, f32) = (15.0, 13.0);
 /// Collision/draw size (width, height) in pixels of a puppy — a small, low critter
 /// a touch longer than the cat, matching its art's proportions.
 pub const PUPPY_SIZE: (f32, f32) = (18.0, 13.0);
+/// Collision/draw size (width, height) in pixels of a horse — a tall, sturdy
+/// grazer a touch larger than a goat, matching its art's proportions.
+pub const HORSE_SIZE: (f32, f32) = (17.0, 14.0);
 /// Collision/draw size (width, height) in pixels of a zombie.
 pub const ZOMBIE_SIZE: (f32, f32) = (14.0, 19.0);
 /// Collision/draw size (width, height) in pixels of a spider — low and wide.
@@ -85,6 +88,10 @@ pub const CAT_MAX_HEALTH: i32 = 8;
 /// fights with skeletons and chickens — but, like the cat, a tamed puppy that
 /// dies simply returns to its owner's respawn point rather than being gone for good.
 pub const PUPPY_MAX_HEALTH: i32 = 14;
+/// Maximum health of a horse, in hit points. Sturdier than the small pets — but,
+/// like the cat and puppy, a tamed horse that dies simply returns to its owner's
+/// respawn point rather than being gone for good.
+pub const HORSE_MAX_HEALTH: i32 = 30;
 /// Maximum health of a zombie, in hit points. Far tougher than anything else
 /// that walks the surface — it soaks up many hits before going down.
 pub const ZOMBIE_MAX_HEALTH: i32 = 40;
@@ -187,6 +194,20 @@ pub enum EntityKind {
     /// a zombie, and lays down a trail of [`crate::block::FIRE`] behind it while it
     /// is closing on a target. Roams the underworld at all hours. Server-simulated.
     CharredSkeleton,
+    /// A tall, peaceable grazer that wanders the plains and — unlike the other
+    /// pets, which are tamed with cooked meat — is tamed by feeding it an
+    /// **apple**, stamping the feeding player's **name** into `owner` (stored by
+    /// name, not a volatile id, so the bond survives a server restart). Once tamed
+    /// it is a [pet](`EntityKind::is_pet`): players can never attack it, it never
+    /// despawns for distance (teleporting to its owner when they stray too far),
+    /// and a horse that dies reappears at its owner's respawn point. Its party
+    /// trick is that it can be **ridden**: right-click your tamed horse to mount
+    /// and gallop faster than you can run, and right-click again to dismount. While
+    /// mounted the rider drives the horse (which is glued under them and drawn as
+    /// the combined `player/horse` sprite, like a boat carries its rider). Native
+    /// to the plains. Server-simulated. Appended last so older saves and the wire
+    /// format keep their variant indices.
+    Horse { owner: Option<String> },
 }
 
 impl EntityKind {
@@ -204,6 +225,7 @@ impl EntityKind {
             EntityKind::Snake => SNAKE_SIZE,
             EntityKind::Skeleton => SKELETON_SIZE,
             EntityKind::CharredSkeleton => CHARRED_SKELETON_SIZE,
+            EntityKind::Horse { .. } => HORSE_SIZE,
             EntityKind::Bone => BONE_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
@@ -232,12 +254,22 @@ impl EntityKind {
         matches!(self, EntityKind::Puppy { .. })
     }
 
-    /// Whether this is a tameable companion (a cat or a puppy). Pets share a bundle
-    /// of special rules: immune to player attacks, exempt from distance despawn,
-    /// singed by fire (their one mortal hazard), and — once tamed — respawning at
-    /// their owner's respawn point and teleporting to a far-strayed owner.
+    /// Whether this is a horse (tamed or wild). Horses are tamed with apples and,
+    /// once tamed, can be ridden.
+    pub fn is_horse(&self) -> bool {
+        matches!(self, EntityKind::Horse { .. })
+    }
+
+    /// Whether this is a tameable companion (a cat, a puppy, or a horse). Pets share
+    /// a bundle of special rules: immune to player attacks, exempt from distance
+    /// despawn, singed by fire (their one mortal hazard), and — once tamed —
+    /// respawning at their owner's respawn point and teleporting to a far-strayed
+    /// owner.
     pub fn is_pet(&self) -> bool {
-        matches!(self, EntityKind::Cat { .. } | EntityKind::Puppy { .. })
+        matches!(
+            self,
+            EntityKind::Cat { .. } | EntityKind::Puppy { .. } | EntityKind::Horse { .. }
+        )
     }
 
     /// Whether this is a pet that has been told to sit (by its owner clicking it).
@@ -255,7 +287,9 @@ impl EntityKind {
     /// [`crate::server`]'s `find_player_by_name`).
     pub fn owner(&self) -> Option<&str> {
         match self {
-            EntityKind::Cat { owner, .. } | EntityKind::Puppy { owner, .. } => owner.as_deref(),
+            EntityKind::Cat { owner, .. }
+            | EntityKind::Puppy { owner, .. }
+            | EntityKind::Horse { owner } => owner.as_deref(),
             _ => None,
         }
     }
@@ -276,6 +310,7 @@ impl EntityKind {
             EntityKind::Snake => SNAKE_MAX_HEALTH,
             EntityKind::Skeleton => SKELETON_MAX_HEALTH,
             EntityKind::CharredSkeleton => CHARRED_SKELETON_MAX_HEALTH,
+            EntityKind::Horse { .. } => HORSE_MAX_HEALTH,
             // A bone is an inert projectile; 1 keeps health == max_health so no
             // health bar shows and a stray melee swing can't meaningfully "kill" it.
             EntityKind::Bone => 1,
@@ -362,6 +397,18 @@ pub struct Entity {
     /// it; it stays `false` for creatures and defaults `false` on the client.
     #[serde(skip)]
     pub boating: bool,
+    /// Which [`EntityKind::Horse`] this player is currently riding, if any. Like
+    /// [`Self::boating`] it is live runtime state: never persisted (a reloaded
+    /// world shouldn't remember a mid-ride pose) and never piggybacked on the
+    /// serialized entity, so it stays out of the save format. It is synced to
+    /// clients by a dedicated [`crate::protocol::ServerMessage::EntityRiding`]
+    /// message (sent on mount/dismount and alongside the entity snapshot a joining
+    /// client receives). Only players set it; it stays `None` for creatures and
+    /// defaults `None` on the client. The server uses it each tick to glue the
+    /// ridden horse beneath its rider; clients use it to draw the rider on the
+    /// combined `player/horse` sprite and to hide the now-mounted horse entity.
+    #[serde(skip)]
+    pub riding: Option<EntityId>,
 }
 
 impl Entity {
@@ -385,6 +432,7 @@ impl Entity {
             lunge: 0.0,
             lunge_dir: 0.0,
             boating: false,
+            riding: None,
         }
     }
 

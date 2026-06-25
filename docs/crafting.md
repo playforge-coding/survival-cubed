@@ -110,8 +110,8 @@ Eat the food in your selected hotbar slot with <kbd>F</kbd>.
 
 | Food | Effect | Source |
 |---|---|---|
-| Apple | +4 health | Drops from leaves (15%) |
-| Cooked Meat | +8 health | Cook raw meat on a lit campfire |
+| Apple | +4 health | Drops from leaves (15%) — also used to tame a [horse](creatures.md#mounts) |
+| Cooked Meat | +8 health | Cook raw meat on a lit campfire — also tames [cats and puppies](creatures.md#pets) |
 | Raw Meat | −3 health (makes you sick) | Drops from chickens and goats — **cook it first!** |
 
 ## Tools and utility items

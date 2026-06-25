@@ -10,14 +10,16 @@
 | <kbd>S</kbd> / <kbd>↓</kbd> | Climb down a ladder · dive in water · fly down (creator) |
 
 You can only jump while standing on the ground. On ladders gravity is suspended
-and you climb at a steady pace; in water you paddle up and dive down.
+and you climb at a steady pace; in water you paddle up and dive down. Riding a
+tamed **horse** lets you gallop noticeably faster than you can run (you still jump
+and fall normally) — see **[Creatures](creatures.md#mounts)**.
 
 ## Mouse
 
 | Input | Action |
 |---|---|
 | **Left button** (hold) | Mine/break the targeted block, or melee-attack a creature |
-| **Right button** | Place the selected block, or interact (doors, forge, campfire, bucket, fire key, boat) |
+| **Right button** | Place the selected block, or interact (doors, forge, campfire, bucket, fire key, boat) · mount/dismount a tamed horse |
 | **Scroll wheel** | In creator flight: adjust fly-speed multiplier (1.0×–8.0×) |
 
 Your reach is about **80 pixels** (five blocks) from your body, and both mining
