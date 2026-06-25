@@ -237,6 +237,20 @@ struct GameState {
     /// (opened by right-clicking a campfire block).
     campfire_open: bool,
     campfire_cell: Option<(i32, i32)>,
+    /// Text written on the signs and quest boards of the current dimension, keyed
+    /// by world cell. Mirrored from the server (which persists it): populated as
+    /// chunks stream in and updated on every edit. Cleared on a dimension change.
+    block_text: HashMap<(i32, i32), crate::protocol::BlockText>,
+    /// Whether the sign editor is open, which sign cell it belongs to, and the
+    /// in-progress lines being edited (opened by right-clicking a sign block).
+    sign_open: bool,
+    sign_cell: Option<(i32, i32)>,
+    sign_draft: Vec<String>,
+    /// Whether the quest-board editor is open, which board cell it belongs to, and
+    /// the in-progress notes being edited (opened by right-clicking a quest board).
+    quest_open: bool,
+    quest_cell: Option<(i32, i32)>,
+    quest_draft: Vec<Vec<String>>,
     action_timer: f32,
     move_send_timer: f32,
     last_sent: Vec2,
@@ -341,6 +355,13 @@ impl GameState {
             forge_fuel: crate::block::WOOD,
             campfire_open: false,
             campfire_cell: None,
+            block_text: HashMap::new(),
+            sign_open: false,
+            sign_cell: None,
+            sign_draft: Vec::new(),
+            quest_open: false,
+            quest_cell: None,
+            quest_draft: Vec::new(),
             action_timer: 0.0,
             move_send_timer: 0.0,
             last_sent: spawn,
@@ -800,6 +821,23 @@ impl App {
                 if let Some(g) = &mut self.game {
                     if dim == g.dim {
                         g.world.set_block(x, y, block);
+                        // A cell that stops being a sign / quest board drops any
+                        // cached text, so a board broken and replaced starts blank.
+                        if !crate::block::is_text_block(block) {
+                            g.block_text.remove(&(x, y));
+                        }
+                    }
+                }
+            }
+            NetEvent::BlockText { dim, x, y, text } => {
+                if let Some(g) = &mut self.game {
+                    if dim == g.dim {
+                        // A blank update means the board was cleared; drop the entry.
+                        if text.is_blank() {
+                            g.block_text.remove(&(x, y));
+                        } else {
+                            g.block_text.insert((x, y), text);
+                        }
                     }
                 }
             }
@@ -828,6 +866,11 @@ impl App {
                     g.forge_cell = None;
                     g.campfire_open = false;
                     g.campfire_cell = None;
+                    g.sign_open = false;
+                    g.sign_cell = None;
+                    g.quest_open = false;
+                    g.quest_cell = None;
+                    g.block_text.clear();
                     g.pos = Vec2::new(x, y);
                     g.vel = Vec2::ZERO;
                     g.knockback_x = 0.0;
@@ -1173,6 +1216,12 @@ impl App {
                 }
                 if self.game.as_ref().is_some_and(|g| g.campfire_open) {
                     self.campfire_window(ui);
+                }
+                if self.game.as_ref().is_some_and(|g| g.sign_open) {
+                    self.sign_window(ui);
+                }
+                if self.game.as_ref().is_some_and(|g| g.quest_open) {
+                    self.quest_window(ui);
                 }
                 if self.game.as_ref().is_some_and(|g| g.creator_allowed) {
                     self.creator_window(ui);
@@ -2210,6 +2259,185 @@ impl App {
         if close && let Some(g) = self.game.as_mut() {
             g.campfire_open = false;
             g.campfire_cell = None;
+        }
+    }
+
+    /// The sign editor: a small window of up to [`crate::protocol::TEXT_ROWS`]
+    /// short lines. Opened by right-clicking a placed sign; "Save" writes the lines
+    /// to the server (which stores and rebroadcasts them) and closes the editor.
+    fn sign_window(&mut self, ui: &mut egui::Ui) {
+        // Close if the sign this editor belongs to is gone or out of reach.
+        let cell = {
+            let g = self.game.as_ref().unwrap();
+            g.sign_cell.filter(|&(x, y)| {
+                crate::block::is_sign(g.world.get_block(x, y)) && cell_in_reach(g, x, y)
+            })
+        };
+        let Some((x, y)) = cell else {
+            if let Some(g) = self.game.as_mut() {
+                g.sign_open = false;
+                g.sign_cell = None;
+            }
+            return;
+        };
+
+        // Edit a local copy of the draft so the egui closure doesn't borrow `self`,
+        // then write it back. The draft persists across frames in `GameState`.
+        let mut draft = self
+            .game
+            .as_mut()
+            .map(|g| std::mem::take(&mut g.sign_draft))
+            .unwrap_or_default();
+        draft.resize(crate::protocol::TEXT_ROWS, String::new());
+        let mut save = false;
+        let mut close = false;
+
+        egui::Window::new("Sign")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                ui.label(format!(
+                    "Write up to {} lines ({} characters each):",
+                    crate::protocol::TEXT_ROWS,
+                    crate::protocol::TEXT_COLS,
+                ));
+                ui.add_space(4.0);
+                for line in draft.iter_mut() {
+                    ui.add(
+                        egui::TextEdit::singleline(line)
+                            .char_limit(crate::protocol::TEXT_COLS)
+                            .desired_width(180.0)
+                            .font(egui::TextStyle::Monospace),
+                    );
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        save = true;
+                    }
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                });
+            });
+
+        if save && let Some(net) = &self.net {
+            let _ = net.commands.send(NetCommand::WriteBlockText {
+                x,
+                y,
+                text: crate::protocol::BlockText::Sign(draft.clone()),
+            });
+        }
+        if let Some(g) = self.game.as_mut() {
+            g.sign_draft = draft;
+            if save || close {
+                g.sign_open = false;
+                g.sign_cell = None;
+            }
+        }
+    }
+
+    /// The quest-board editor: a scrolling list of up to
+    /// [`crate::protocol::QUEST_MAX_NOTES`] notes, each its own short message of up
+    /// to [`crate::protocol::TEXT_ROWS`] lines. Notes can be added and removed;
+    /// "Save" writes the whole board to the server and closes the editor.
+    fn quest_window(&mut self, ui: &mut egui::Ui) {
+        // Close if the quest board this editor belongs to is gone or out of reach.
+        let cell = {
+            let g = self.game.as_ref().unwrap();
+            g.quest_cell.filter(|&(x, y)| {
+                crate::block::is_quest_board(g.world.get_block(x, y)) && cell_in_reach(g, x, y)
+            })
+        };
+        let Some((x, y)) = cell else {
+            if let Some(g) = self.game.as_mut() {
+                g.quest_open = false;
+                g.quest_cell = None;
+            }
+            return;
+        };
+
+        let mut notes = self
+            .game
+            .as_mut()
+            .map(|g| std::mem::take(&mut g.quest_draft))
+            .unwrap_or_default();
+        let mut save = false;
+        let mut close = false;
+
+        egui::Window::new("Quest Board")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                ui.label(format!(
+                    "Post up to {} notes ({} lines × {} characters):",
+                    crate::protocol::QUEST_MAX_NOTES,
+                    crate::protocol::TEXT_ROWS,
+                    crate::protocol::TEXT_COLS,
+                ));
+                ui.add_space(4.0);
+
+                let mut remove: Option<usize> = None;
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        for (i, note) in notes.iter_mut().enumerate() {
+                            note.resize(crate::protocol::TEXT_ROWS, String::new());
+                            ui.group(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.strong(format!("Note {}", i + 1));
+                                    if ui.small_button("Delete").clicked() {
+                                        remove = Some(i);
+                                    }
+                                });
+                                for line in note.iter_mut() {
+                                    ui.add(
+                                        egui::TextEdit::singleline(line)
+                                            .char_limit(crate::protocol::TEXT_COLS)
+                                            .desired_width(180.0)
+                                            .font(egui::TextStyle::Monospace),
+                                    );
+                                }
+                            });
+                        }
+                    });
+                if let Some(i) = remove {
+                    notes.remove(i);
+                }
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let can_add = notes.len() < crate::protocol::QUEST_MAX_NOTES;
+                    if ui
+                        .add_enabled(can_add, egui::Button::new("Add note"))
+                        .clicked()
+                    {
+                        notes.push(vec![String::new(); crate::protocol::TEXT_ROWS]);
+                    }
+                    if ui.button("Save").clicked() {
+                        save = true;
+                    }
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                });
+            });
+
+        if save && let Some(net) = &self.net {
+            let _ = net.commands.send(NetCommand::WriteBlockText {
+                x,
+                y,
+                text: crate::protocol::BlockText::Quest(notes.clone()),
+            });
+        }
+        if let Some(g) = self.game.as_mut() {
+            g.quest_draft = notes;
+            if save || close {
+                g.quest_open = false;
+                g.quest_cell = None;
+            }
         }
     }
 
@@ -3788,7 +4016,12 @@ fn handle_block_actions(
 
     // Open menus (inventory, forge, campfire) capture the mouse for their own UI;
     // don't mine or place in the world while one is open.
-    if game.inventory_open || game.forge_open || game.campfire_open {
+    if game.inventory_open
+        || game.forge_open
+        || game.campfire_open
+        || game.sign_open
+        || game.quest_open
+    {
         game.break_target = None;
         game.break_progress = 0.0;
         return;
@@ -3893,6 +4126,42 @@ fn handle_block_actions(
         game.action_timer = ACTION_COOLDOWN;
         // Interacting with a campfire makes it this player's respawn point.
         let _ = net.commands.send(NetCommand::SetRespawn { x: tx, y: ty });
+        return;
+    }
+
+    // Right-clicking a sign opens its text editor instead of placing a block. The
+    // editor seeds from whatever has already been written there (mirrored from the
+    // server), or blank for a fresh sign.
+    if input.placing
+        && game.action_timer <= 0.0
+        && crate::block::is_sign(game.world.get_block(tx, ty))
+        && cell_in_reach(game, tx, ty)
+    {
+        game.sign_draft = match game.block_text.get(&(tx, ty)) {
+            Some(crate::protocol::BlockText::Sign(lines)) => lines.clone(),
+            _ => Vec::new(),
+        };
+        game.sign_draft.resize(crate::protocol::TEXT_ROWS, String::new());
+        game.sign_open = true;
+        game.sign_cell = Some((tx, ty));
+        game.action_timer = ACTION_COOLDOWN;
+        return;
+    }
+
+    // Right-clicking a quest board opens its notes editor instead of placing a
+    // block, seeded from the notes already posted there.
+    if input.placing
+        && game.action_timer <= 0.0
+        && crate::block::is_quest_board(game.world.get_block(tx, ty))
+        && cell_in_reach(game, tx, ty)
+    {
+        game.quest_draft = match game.block_text.get(&(tx, ty)) {
+            Some(crate::protocol::BlockText::Quest(notes)) => notes.clone(),
+            _ => Vec::new(),
+        };
+        game.quest_open = true;
+        game.quest_cell = Some((tx, ty));
+        game.action_timer = ACTION_COOLDOWN;
         return;
     }
 
@@ -4418,10 +4687,13 @@ impl App {
             // Escape closes an open menu (inventory, forge, or campfire) if any,
             // otherwise leaves the world.
             KeyCode::Escape if pressed => {
-                let menu_open = self
-                    .game
-                    .as_ref()
-                    .is_some_and(|g| g.inventory_open || g.forge_open || g.campfire_open);
+                let menu_open = self.game.as_ref().is_some_and(|g| {
+                    g.inventory_open
+                        || g.forge_open
+                        || g.campfire_open
+                        || g.sign_open
+                        || g.quest_open
+                });
                 if menu_open {
                     if let Some(g) = &mut self.game {
                         g.inventory_open = false;
@@ -4430,6 +4702,10 @@ impl App {
                         g.forge_cell = None;
                         g.campfire_open = false;
                         g.campfire_cell = None;
+                        g.sign_open = false;
+                        g.sign_cell = None;
+                        g.quest_open = false;
+                        g.quest_cell = None;
                     }
                 } else {
                     self.leave();

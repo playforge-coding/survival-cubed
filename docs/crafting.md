@@ -41,6 +41,8 @@ server-authoritative, so the result is always consistent in multiplayer.
 | Boat | 5 Wood + 3 Stick | 1 Boat |
 | Door | 6 Wood | 1 Door |
 | Fire Key | 1 Charred Rock + 1 Tungsten Ingot | 1 Fire Key |
+| Sign | 1 Wood + 1 Stick | 1 Sign |
+| Quest Board | 4 Wood + 2 Stick | 1 Quest Board |
 
 !!! tip "Where to start"
     Punch a tree for logs, split them into **wood + bark**, harvest **sticks**

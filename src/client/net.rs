@@ -54,6 +54,13 @@ pub enum NetEvent {
         dim: Dimension,
         cells: Vec<(i32, i32, BlockId)>,
     },
+    /// Player-written text on the sign or quest board at cell `(x, y)`.
+    BlockText {
+        dim: Dimension,
+        x: i32,
+        y: i32,
+        text: crate::protocol::BlockText,
+    },
     /// Move into a new dimension at world pixel `(x, y)`: the client clears its
     /// world and entities and re-streams the new dimension.
     EnterDimension {
@@ -282,6 +289,13 @@ pub enum NetCommand {
     Chat {
         text: String,
     },
+    /// Write `text` onto the sign or quest board at cell `(x, y)` (server validates,
+    /// clamps, stores, and rebroadcasts it).
+    WriteBlockText {
+        x: i32,
+        y: i32,
+        text: crate::protocol::BlockText,
+    },
     Disconnect,
 }
 
@@ -491,6 +505,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         }
         NetCommand::CreatorSetBlocks { cells } => ClientMessage::CreatorSetBlocks { cells },
         NetCommand::Chat { text } => ClientMessage::Chat { text },
+        NetCommand::WriteBlockText { x, y, text } => ClientMessage::WriteBlockText { x, y, text },
         NetCommand::Disconnect => unreachable!("handled before conversion"),
     }
 }
@@ -523,6 +538,7 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
             NetEvent::BlockUpdate { dim, x, y, block }
         }
         ServerMessage::BlocksUpdate { dim, cells } => NetEvent::BlocksUpdate { dim, cells },
+        ServerMessage::BlockText { dim, x, y, text } => NetEvent::BlockText { dim, x, y, text },
         ServerMessage::EnterDimension { dim, x, y } => NetEvent::EnterDimension { dim, x, y },
         ServerMessage::EntitySpawn { entity } => NetEvent::EntitySpawn { entity },
         ServerMessage::EntityMoved { id, x, y, vx, vy } => {

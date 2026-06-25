@@ -25,6 +25,77 @@ pub struct Waypoint {
     pub color: [f32; 3],
 }
 
+/// Maximum characters allowed on a single line of a [`BlockText`] (sign or quest
+/// board). Lines longer than this are truncated when written.
+pub const TEXT_COLS: usize = 15;
+/// Maximum lines in one [`BlockText`] note — both a sign's body and each note of a
+/// quest board cap out here.
+pub const TEXT_ROWS: usize = 5;
+/// Maximum notes a quest board ([`BlockText::Quest`]) may hold.
+pub const QUEST_MAX_NOTES: usize = 5;
+
+/// Player-written text attached to a placed block, addressed by its world cell.
+/// A [`sign`](crate::block::SIGN) carries a single note of up to [`TEXT_ROWS`]
+/// lines; a [`quest board`](crate::block::QUEST_BOARD) carries up to
+/// [`QUEST_MAX_NOTES`] such notes. Every line is capped at [`TEXT_COLS`]
+/// characters. The server stores it per cell, syncs it to clients, and persists it
+/// (see [`crate::server`] and [`crate::save`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum BlockText {
+    /// A sign's body: up to [`TEXT_ROWS`] lines.
+    Sign(Vec<String>),
+    /// A quest board's notes: up to [`QUEST_MAX_NOTES`] notes, each up to
+    /// [`TEXT_ROWS`] lines.
+    Quest(Vec<Vec<String>>),
+}
+
+/// Truncate one line to [`TEXT_COLS`] characters (counting Unicode scalar values).
+fn clamp_line(line: &str) -> String {
+    line.chars().take(TEXT_COLS).collect()
+}
+
+/// Clamp a note to [`TEXT_ROWS`] lines, each truncated to [`TEXT_COLS`] characters.
+fn clamp_note(lines: &[String]) -> Vec<String> {
+    lines.iter().take(TEXT_ROWS).map(|l| clamp_line(l)).collect()
+}
+
+impl BlockText {
+    /// A copy clamped to the line/row/note limits, so untrusted client input can't
+    /// store oversized text. The server clamps every write before storing it.
+    pub fn sanitized(&self) -> BlockText {
+        match self {
+            BlockText::Sign(lines) => BlockText::Sign(clamp_note(lines)),
+            BlockText::Quest(notes) => BlockText::Quest(
+                notes
+                    .iter()
+                    .take(QUEST_MAX_NOTES)
+                    .map(|n| clamp_note(n))
+                    .collect(),
+            ),
+        }
+    }
+
+    /// Whether this holds no actual text (every line blank), so a cleared sign or
+    /// board need not be stored or persisted.
+    pub fn is_blank(&self) -> bool {
+        let blank_note = |n: &Vec<String>| n.iter().all(|l| l.trim().is_empty());
+        match self {
+            BlockText::Sign(lines) => lines.iter().all(|l| l.trim().is_empty()),
+            BlockText::Quest(notes) => notes.iter().all(blank_note),
+        }
+    }
+
+    /// Whether this text belongs on the block currently at its cell: a
+    /// [`Sign`](BlockText::Sign) only on a [`sign`](crate::block::SIGN), a
+    /// [`Quest`](BlockText::Quest) only on a [`quest board`](crate::block::QUEST_BOARD).
+    pub fn matches_block(&self, block: BlockId) -> bool {
+        match self {
+            BlockText::Sign(_) => crate::block::is_sign(block),
+            BlockText::Quest(_) => crate::block::is_quest_board(block),
+        }
+    }
+}
+
 /// Wire-protocol compatibility version. **Bump this on every incompatible change
 /// to anything that crosses the wire** — adding/removing/reordering a
 /// [`ClientMessage`] or [`ServerMessage`] variant, changing a variant's fields,
@@ -36,7 +107,7 @@ pub struct Waypoint {
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -201,6 +272,11 @@ pub enum ClientMessage {
     /// Send a line of chat. The server attributes it to this connection's
     /// player name and rebroadcasts it to everyone (see [`ServerMessage::Chat`]).
     Chat { text: String },
+    /// Write `text` onto the sign or quest board at world cell `(x, y)`. The
+    /// server validates the cell holds the matching block type and is within reach,
+    /// clamps the text to the line/row/note limits, stores it, and rebroadcasts it
+    /// via [`ServerMessage::BlockText`]. A blank write clears the cell's text.
+    WriteBlockText { x: i32, y: i32, text: BlockText },
 }
 
 /// Sent from server to client over the single bidirectional stream.
@@ -324,6 +400,16 @@ pub enum ServerMessage {
     /// Admin command feedback and ban announcements arrive on this same channel,
     /// attributed to a `Server` pseudo-sender.
     Chat { from: String, text: String },
+    /// The player-written text on the sign or quest board at world cell `(x, y)`
+    /// in dimension `dim`. Sent when a chunk holding a written text block loads, and
+    /// whenever the text changes. A cleared block sends a blank
+    /// [`BlockText`]. The client ignores updates for a dimension it is not in.
+    BlockText {
+        dim: Dimension,
+        x: i32,
+        y: i32,
+        text: BlockText,
+    },
     /// Begin or end spectating another player. `Some(id)` locks the receiving
     /// (admin) client's camera onto the entity with that id — which the server has
     /// already moved the admin alongside so it streams in — and freezes the admin's

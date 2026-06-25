@@ -717,6 +717,11 @@ struct Shared {
     /// anchor per dimension). `None` for a dimension the player has not yet keyed
     /// from — then a fresh landing spot is chosen instead. Runtime-only.
     fire_marks: Mutex<HashMap<EntityId, [Option<(f32, f32)>; NUM_DIMENSIONS]>>,
+    /// Player-written text on signs and quest boards, keyed by `(dimension, x, y)`.
+    /// A cell is present only while its board holds non-blank text; breaking the
+    /// board drops the entry. Synced to clients as they stream the chunk and on
+    /// every edit, and persisted in [`WorldMeta`] so the writing survives a reload.
+    block_text: Mutex<HashMap<(Dimension, i32, i32), crate::protocol::BlockText>>,
 }
 
 impl Shared {
@@ -839,6 +844,12 @@ impl Shared {
             .map(|(&(dim, x, y), &secs)| (dim, x, y, secs))
             .collect();
         let placed_logs = self.placed_logs.lock().iter().copied().collect();
+        let block_text = self
+            .block_text
+            .lock()
+            .iter()
+            .map(|(&(dim, x, y), text)| (dim, x, y, text.clone()))
+            .collect();
         let spawned_structure_roots = self
             .spawned_structure_roots
             .lock()
@@ -856,6 +867,7 @@ impl Shared {
             players: players.into_values().collect(),
             campfires,
             placed_logs,
+            block_text,
             accounts: self
                 .accounts
                 .lock()
@@ -1739,6 +1751,50 @@ impl Shared {
             );
         }
         self.send_inventory(id);
+    }
+
+    /// Whether player `id` (in dimension `dim`) is close enough to interact with
+    /// world cell `(x, y)` — the same melee reach that governs mining and placement.
+    fn cell_in_reach(&self, id: EntityId, dim: Dimension, x: i32, y: i32) -> bool {
+        let entities = self.entities(dim).lock();
+        entities.get(id).is_some_and(|p| {
+            let (pw, ph) = p.size();
+            aabb_gap(
+                p.x,
+                p.y,
+                pw,
+                ph,
+                x as f32 * TILE_SIZE,
+                y as f32 * TILE_SIZE,
+                TILE_SIZE,
+                TILE_SIZE,
+            ) <= PLAYER_ATTACK_REACH
+        })
+    }
+
+    /// Write `text` onto the sign or quest board at cell `(x, y)` for player `id`.
+    /// No-op unless the cell really holds the matching block type and the player is
+    /// within reach. The text is clamped to the line/row/note limits; a blank write
+    /// clears the cell's stored text. The (sanitized) result is broadcast to
+    /// everyone in the dimension so each client mirrors the change.
+    fn write_block_text(&self, id: EntityId, x: i32, y: i32, text: crate::protocol::BlockText) {
+        let dim = self.dim_of(id);
+        let block = self.world(dim).lock().get(x, y);
+        // The text kind has to suit the block actually standing there (a sign's note
+        // on a sign, a board's notes on a quest board).
+        if !text.matches_block(block) {
+            return;
+        }
+        if !self.cell_in_reach(id, dim, x, y) {
+            return;
+        }
+        let text = text.sanitized();
+        if text.is_blank() {
+            self.block_text.lock().remove(&(dim, x, y));
+        } else {
+            self.block_text.lock().insert((dim, x, y), text.clone());
+        }
+        self.broadcast_dim(dim, ServerMessage::BlockText { dim, x, y, text });
     }
 
     /// Use the bucket in player `id`'s inventory `slot` on world cell `(x, y)`: an
@@ -2666,6 +2722,7 @@ fn build_endpoint(
     let mut campfires = HashMap::new();
     let mut placed_logs = HashSet::new();
     let mut spawned_structure_roots = HashSet::new();
+    let mut block_text = HashMap::new();
     if let Some(m) = &saved {
         for e in &m.entities {
             overworld_entities.insert(e.clone());
@@ -2684,6 +2741,9 @@ fn build_endpoint(
         }
         for &(dim, x, y) in &m.placed_logs {
             placed_logs.insert((dim, x, y));
+        }
+        for (dim, x, y, text) in &m.block_text {
+            block_text.insert((*dim, *x, *y), text.clone());
         }
         spawned_structure_roots.extend(m.spawned_structure_roots.iter().copied());
     }
@@ -2742,6 +2802,7 @@ fn build_endpoint(
         bans_path,
         spectate_return: Mutex::new(HashMap::new()),
         fire_marks: Mutex::new(HashMap::new()),
+        block_text: Mutex::new(block_text),
     });
 
     // Only seed fresh creatures for a brand-new world; a loaded one keeps its own.
@@ -6541,6 +6602,22 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         cy,
                         blocks,
                     });
+                    // Hand over any sign / quest-board text written within this chunk
+                    // so the newly streamed boards show their writing right away.
+                    let x_range = cx * CHUNK_SIZE..(cx + 1) * CHUNK_SIZE;
+                    let y_range = cy * CHUNK_SIZE..(cy + 1) * CHUNK_SIZE;
+                    let texts: Vec<(i32, i32, crate::protocol::BlockText)> = shared
+                        .block_text
+                        .lock()
+                        .iter()
+                        .filter(|((d, x, y), _)| {
+                            *d == dim && x_range.contains(x) && y_range.contains(y)
+                        })
+                        .map(|((_, x, y), text)| (*x, *y, text.clone()))
+                        .collect();
+                    for (x, y, text) in texts {
+                        let _ = tx.send(ServerMessage::BlockText { dim, x, y, text });
+                    }
                     // A chunk coming into existence for the first time has a chance
                     // to seed dimension-appropriate creatures into its terrain.
                     if fresh {
@@ -6633,6 +6710,11 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         }
                         if crate::block::is_fire(prev) {
                             shared.trail_fires.lock().remove(&(dim, x, y));
+                        }
+                        // A mined sign or quest board forgets whatever was written on
+                        // it, so a fresh board placed in the same cell starts blank.
+                        if crate::block::is_text_block(prev) {
+                            shared.block_text.lock().remove(&(dim, x, y));
                         }
                         // Tool-gated blocks (stone, iron ore) only yield a drop
                         // when mined with a strong enough pickaxe; broken with too
@@ -7048,6 +7130,9 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 }
                 ClientMessage::FuelCampfire { x, y, fuel } => {
                     shared.fuel_campfire(id, x, y, fuel);
+                }
+                ClientMessage::WriteBlockText { x, y, text } => {
+                    shared.write_block_text(id, x, y, text);
                 }
                 ClientMessage::Cook {
                     x,

@@ -40,7 +40,7 @@ const UNDERWORLD_CHUNKS_DIR: &str = "chunks_underworld";
 /// Magic prefix on `world.dat` ("SCWD" — Survival Cubed World Data).
 const MAGIC: u32 = 0x5343_5744;
 /// On-disk format version; bump on any incompatible layout change.
-const VERSION: u32 = 10;
+const VERSION: u32 = 11;
 
 /// Subdirectory name holding a dimension's chunks.
 fn chunks_dir_name(dim: Dimension) -> &'static str {
@@ -105,6 +105,10 @@ pub struct WorldMeta {
     /// axe's tree-felling spares logs the player built with (see [`crate::server`]).
     #[serde(default)]
     pub placed_logs: Vec<(Dimension, i32, i32)>,
+    /// Player-written sign and quest-board text as `(dimension, x, y, text)`, so
+    /// the writing on every board survives a save/reload (see [`crate::server`]).
+    #[serde(default)]
+    pub block_text: Vec<(Dimension, i32, i32, crate::protocol::BlockText)>,
     /// Per-account password records as `(player name, encoded hash)` — see
     /// [`crate::auth`]. Holds the authentication credentials for everyone who has
     /// registered on this world, so logins are verified across restarts. Passwords
@@ -429,6 +433,23 @@ mod tests {
                 (Dimension::Underworld, -8, 2, 30.0),
             ],
             placed_logs: vec![(Dimension::Overworld, 1, 2), (Dimension::Underworld, -3, 4)],
+            block_text: vec![
+                (
+                    Dimension::Overworld,
+                    5,
+                    -2,
+                    crate::protocol::BlockText::Sign(vec!["welcome".into(), "home".into()]),
+                ),
+                (
+                    Dimension::Underworld,
+                    -1,
+                    9,
+                    crate::protocol::BlockText::Quest(vec![
+                        vec!["slay 3".into(), "skeletons".into()],
+                        vec!["reward:".into(), "gold".into()],
+                    ]),
+                ),
+            ],
             accounts: vec![(
                 "ada".into(),
                 "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2g".into(),
@@ -455,6 +476,7 @@ mod tests {
         assert_eq!(got.players[0].inventory.get(1), Some((DIRT, 7, 0)));
         assert_eq!(got.players[0].dim, Dimension::Underworld);
         assert_eq!(got.players[0].respawn, Some((Dimension::Underworld, 3, -5)));
+        assert_eq!(got.block_text, meta.block_text);
         assert_eq!(got.players[0].waypoints, meta.players[0].waypoints);
         assert_eq!(got.underworld_entities.len(), 1);
         assert_eq!(got.underworld_entities[0].id, 8);

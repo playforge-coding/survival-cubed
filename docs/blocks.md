@@ -40,6 +40,8 @@ Smelt raw iron and raw tungsten into ingots at a [forge](crafting.md#smelting).
 | Ladder | ❌ | 0.4 | Climbable; needs side or below support |
 | Rope Ladder | ❌ | 0.4 | Climbable; unrolls downward when placed |
 | Door | ✅ | 0.6 | Two cells tall; right-click to open/close |
+| Sign | ❌ | 0.5 | Right-click to write a short message (up to 5 lines) |
+| Quest Board | ❌ | 0.6 | Right-click to post several notes (up to 5) |
 
 ### Special blocks in detail
 
@@ -54,6 +56,12 @@ Smelt raw iron and raw tungsten into ingots at a [forge](crafting.md#smelting).
   is a light source.
 - **Ladders & rope ladders** are non-solid; you climb them with the up/down keys.
   Rope ladders are made from rope and are ideal for dropping into caves.
+- **Sign** — right-click to open its editor and write up to **5 lines** of **15
+  characters** each. The text is saved with the world and shared with everyone, so
+  anyone can right-click the sign to read it. Breaking the sign erases its text.
+- **Quest Board** — like a sign, but holds up to **5 separate notes**, each its
+  own message of up to 5 lines × 15 characters. Right-click to read the posted
+  notes, add new ones, edit or delete existing ones, then **Save**.
 
 ## Block properties summary
 

@@ -169,6 +169,14 @@ pub const STONE_BRICKS: BlockId = 50;
 /// right-click again to step back out. Riding is a client-side movement mode (see
 /// [`crate::client`]); the boat is a vehicle, never consumed by using it.
 pub const BOAT: BlockId = 51;
+/// A sign: a non-solid, placeable wooden board the player writes on. Right-click a
+/// placed sign to open its editor (see [`crate::client`]) and inscribe up to
+/// [`crate::protocol::TEXT_ROWS`] lines of text, stored per cell by the server.
+pub const SIGN: BlockId = 52;
+/// A quest board: like a [`SIGN`] but holding several notes rather than one. A
+/// non-solid, placeable block; right-click it to read and post up to
+/// [`crate::protocol::QUEST_MAX_NOTES`] notes, each its own short message.
+pub const QUEST_BOARD: BlockId = 53;
 
 /// Definition of a single block type.
 pub struct BlockDef {
@@ -287,6 +295,11 @@ impl BlockRegistry {
         // A boat: a non-placeable vehicle item (visible only so its inventory and
         // dropped sprite have an atlas tile). Ridden by right-clicking, not placed.
         r.register("boat", false, true, false, 0.0);
+        // A sign and a quest board: non-solid placeable boards the player writes
+        // on. Right-clicking a placed one opens its text editor (the text itself is
+        // stored per cell by the server, not in the block id).
+        r.register("sign", false, true, true, 0.5);
+        r.register("quest_board", false, true, true, 0.6);
         r
     }
 
@@ -632,6 +645,22 @@ pub fn is_food(item: BlockId) -> bool {
 /// Whether `block` is a campfire in either state (unlit or lit).
 pub fn is_campfire(block: BlockId) -> bool {
     matches!(block, CAMPFIRE | CAMPFIRE_LIT)
+}
+
+/// Whether `block` is a [`SIGN`].
+pub fn is_sign(block: BlockId) -> bool {
+    block == SIGN
+}
+
+/// Whether `block` is a [`QUEST_BOARD`].
+pub fn is_quest_board(block: BlockId) -> bool {
+    block == QUEST_BOARD
+}
+
+/// Whether `block` carries player-written text — a sign or a quest board — so it
+/// has an associated [`BlockText`](crate::protocol::BlockText) entry.
+pub fn is_text_block(block: BlockId) -> bool {
+    is_sign(block) || is_quest_board(block)
 }
 
 /// Seconds of burn time one unit of `item` adds to a campfire when used as fuel,

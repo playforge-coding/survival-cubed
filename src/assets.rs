@@ -119,6 +119,8 @@ blocks!(
     "fire_key",
     "stone_bricks",
     "boat",
+    "sign",
+    "quest_board",
 );
 
 sprites!(
