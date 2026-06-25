@@ -235,6 +235,30 @@ const FIREBALL_HIT_RANGE: f32 = 2.0;
 /// seeded chunk gets a single demon (where the charred skeleton can come in pairs),
 /// keeping these ranged casters thin on the ground.
 const DEMON_CHUNK_CHANCE: u32 = 18;
+/// Lumbering speed of an orc, in pixels/second — slower than even a zombie, the
+/// previous slowest thing afoot. Its menace is the slam, never the chase.
+const ORC_SPEED: f32 = 12.0;
+/// How far (px) an orc notices a player and begins lumbering after them.
+const ORC_AGGRO: f32 = 200.0;
+/// Gap (px between AABBs) at which an orc stops and commits to a wind-up slam.
+const ORC_SLAM_RANGE: f32 = 14.0;
+/// Maximum gap (px between AABBs) at which a committed slam connects when the fists
+/// hit the ground. A touch generous so the heavy blow still lands if the player
+/// only just backed off.
+const ORC_SLAM_REACH: f32 = 18.0;
+/// Seconds of slam remaining (of [`crate::entity::ORC_SLAM_TIME`]) at which the
+/// fists hit the ground and the blow lands. The slam sheet is six frames and the
+/// impact is its frame 3, so the strike connects halfway through the animation.
+const ORC_SLAM_STRIKE_TIME: f32 = crate::entity::ORC_SLAM_TIME * 0.5;
+/// Damage an orc's slam deals — by far the heaviest blow in the world, enough to
+/// gut an unarmoured player in two hits.
+const ORC_SLAM_DAMAGE: i32 = 16;
+/// Seconds an orc waits between slams (the recovery after one finishes).
+const ORC_SLAM_INTERVAL: f32 = 1.5;
+/// Percent chance that a fresh underworld chunk seeds orcs.
+const ORC_CHUNK_CHANCE: u32 = 28;
+/// Most orcs a single fresh underworld chunk seeds at once.
+const ORC_CHUNK_MAX: u32 = 2;
 /// Seconds a tongue of charred-skeleton trail fire burns before guttering out.
 /// Naturally generated fire (part of the terrain) is permanent and untracked.
 const TRAIL_FIRE_LIFETIME: f32 = 4.0;
@@ -2956,6 +2980,53 @@ fn maybe_spawn_demons(shared: &Shared, cx: i32, cy: i32) {
     shared.broadcast_dim(Dimension::Underworld, ServerMessage::EntitySpawn { entity });
 }
 
+/// Possibly seed orcs into a freshly generated underworld chunk. Like the charred
+/// skeleton they drop onto any charred-rock floor (open cell above, solid below)
+/// the chunk contains. Deterministic per chunk via [`chunk_hash`] on its own salt
+/// range, so re-exploring the same terrain never double-spawns, and it runs
+/// independently of the other underworld spawners.
+fn maybe_spawn_orcs(shared: &Shared, cx: i32, cy: i32) {
+    let mut world = shared.world(Dimension::Underworld).lock();
+    let seed = world.generator.seed();
+    if chunk_hash(seed, cx, cy, 220) % 100 >= ORC_CHUNK_CHANCE {
+        return;
+    }
+
+    let base_x = cx * CHUNK_SIZE;
+    let chunk_top = cy * CHUNK_SIZE;
+    let chunk_bottom = chunk_top + CHUNK_SIZE;
+    let count = 1 + chunk_hash(seed, cx, cy, 221) % ORC_CHUNK_MAX;
+    let (_, h) = EntityKind::Orc.size();
+
+    let mut spawned = Vec::new();
+    {
+        let mut entities = shared.entities(Dimension::Underworld).lock();
+        for n in 0..count {
+            let lx = chunk_hash(seed, cx, cy, 222 + n) % CHUNK_SIZE as u32;
+            let cell_x = base_x + lx as i32;
+            // Find an open cell in this column with solid charred rock beneath —
+            // a floor to stand on — scanning from the chunk's bottom upward.
+            let mut placed = None;
+            for ty in (chunk_top..chunk_bottom).rev() {
+                if !world.solid(cell_x, ty) && world.solid(cell_x, ty + 1) {
+                    placed = Some((ty + 1) as f32 * TILE_SIZE - h);
+                    break;
+                }
+            }
+            let Some(y) = placed else { continue };
+            let id = shared.alloc_id();
+            let entity = Entity::new(id, EntityKind::Orc, cell_x as f32 * TILE_SIZE, y);
+            entities.insert(entity.clone());
+            spawned.push(entity);
+        }
+    }
+    drop(world);
+
+    for entity in spawned {
+        shared.broadcast_dim(Dimension::Underworld, ServerMessage::EntitySpawn { entity });
+    }
+}
+
 /// Possibly seed spiders into a freshly generated chunk. Spiders keep to two
 /// haunts: the tree-shadowed **forest** surface and the **caverns** deep
 /// underground. A forest chunk that holds the grass line drops them onto the
@@ -3408,6 +3479,11 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     let demon_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::Demon))
+        .map(|e| e.id)
+        .collect();
+    let orc_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Orc))
         .map(|e| e.id)
         .collect();
     let bone_ids: Vec<EntityId> = entities
@@ -4527,6 +4603,113 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         broadcasts.push(ServerMessage::EntitySpawn { entity: fireball });
     }
 
+    // Orcs: the underworld's hulking brutes. They lumber after players at all hours
+    // (slower than anything else afoot), then plant their feet and commit to a
+    // telegraphed slam — heaving their arms up and crashing them down for heavy
+    // damage. Like the snake's lunge the slam is dodgeable: the blow only lands on
+    // the frame the fists hit the ground, so a player who backs out of reach during
+    // the wind-up escapes it.
+    for id in orc_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let home = *e.home_x.get_or_insert(e.x);
+
+        // Mid-slam: a committed attack that plays out over ORC_SLAM_TIME. The orc
+        // stands its ground through the wind-up and crash (gravity still settles it
+        // onto the floor). The blow is resolved once, as the wind-up gives way to
+        // the strike, so a player who broke away during the telegraph escapes.
+        if e.lunge > 0.0 {
+            let was_winding = e.lunge > ORC_SLAM_STRIKE_TIME;
+            e.lunge = (e.lunge - TICK_DT).max(0.0);
+            let striking = e.lunge <= ORC_SLAM_STRIKE_TIME;
+
+            let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, 0.0, 0.0, true);
+            e.x = m.x;
+            e.y = m.y;
+            e.vx = 0.0;
+            e.vy = m.vy;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: m.x,
+                y: m.y,
+                vx: 0.0,
+                vy: m.vy,
+            });
+
+            // The slam connects on the tick the wind-up ends, if a player is still
+            // within the (generous) slam reach.
+            if was_winding && striking {
+                if let Some((pid, px, py)) = nearest_player(
+                    &hostile_players,
+                    m.x + w * 0.5,
+                    m.y + h * 0.5,
+                    f32::INFINITY,
+                ) {
+                    if aabb_gap(m.x, m.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1)
+                        <= ORC_SLAM_REACH
+                    {
+                        let kdir = if px + PLAYER_SIZE.0 * 0.5 >= m.x + w * 0.5 {
+                            1.0
+                        } else {
+                            -1.0
+                        };
+                        bites.push((pid, (kdir * KNOCKBACK_X, -KNOCKBACK_Y), ORC_SLAM_DAMAGE));
+                    }
+                }
+            }
+            continue;
+        }
+
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+        let target = nearest_player(&hostile_players, scx, scy, ORC_AGGRO);
+
+        // In range and off cooldown: commit to a wind-up slam. Hold still (facing is
+        // already pointed at the player from the lumber in) and tell every client to
+        // play the slam animation.
+        if let Some((_, px, py)) = target {
+            if e.attack_cd <= 0.0
+                && aabb_gap(e.x, e.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1) <= ORC_SLAM_RANGE
+            {
+                e.lunge = crate::entity::ORC_SLAM_TIME;
+                e.attack_cd = ORC_SLAM_INTERVAL;
+                e.vx = 0.0;
+                broadcasts.push(ServerMessage::EntityLunging { id });
+                broadcasts.push(ServerMessage::EntityMoved {
+                    id,
+                    x: e.x,
+                    y: e.y,
+                    vx: 0.0,
+                    vy: e.vy,
+                });
+                continue;
+            }
+        }
+
+        // Otherwise lumber toward the target, or wander its home patch.
+        let chasing = target.is_some();
+        let dir = match target {
+            Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -1.0,
+            Some(_) => 1.0,
+            None => wander_dir(scx, e.vx, home),
+        };
+        let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, ORC_SPEED, chasing);
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: m.vx,
+            vy: m.vy,
+        });
+    }
+
     // Bones in flight: travel in a straight line (no gravity), striking the first
     // player they overlap or winking out on a wall or when their short life ends.
     let mut bone_despawns: Vec<EntityId> = Vec::new();
@@ -5530,6 +5713,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             Dimension::Underworld => {
                                 maybe_spawn_charred_skeletons(&shared, cx, cy);
                                 maybe_spawn_demons(&shared, cx, cy);
+                                maybe_spawn_orcs(&shared, cx, cy);
                             }
                         }
                     }

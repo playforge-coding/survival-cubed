@@ -278,10 +278,12 @@ pub enum ServerMessage {
     /// seconds; an [`ServerMessage::EntityDespawn`] for the same id follows once
     /// it finishes.
     EntityDying { id: EntityId },
-    /// A snake has begun a telegraphed wind-up lunge. Every client plays its
-    /// strike animation for [`crate::entity::SNAKE_LUNGE_TIME`] seconds; the
-    /// snake's forward spring and bite arrive as ordinary
-    /// [`ServerMessage::EntityMoved`]/[`ServerMessage::EntityHit`] updates.
+    /// An entity has begun a telegraphed wind-up melee attack — a snake's lunge or
+    /// an orc's slam. Every client plays that kind's strike animation for its
+    /// attack duration ([`crate::entity::SNAKE_LUNGE_TIME`] /
+    /// [`crate::entity::ORC_SLAM_TIME`]); the attacker's motion and the blow itself
+    /// arrive as ordinary [`ServerMessage::EntityMoved`]/[`ServerMessage::EntityHit`]
+    /// updates.
     EntityLunging { id: EntityId },
     /// An entity's health changed (damage, healing, or an initial value). Sent
     /// to every client, including the owner of a player entity (whose avatar is

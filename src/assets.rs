@@ -145,6 +145,8 @@ sprites!(
     "skeleton" => [0, 1, 2, 3, 4, 5],
     "charred_skeleton" => [0, 1, 2, 3, 4, 5],
     "demon" => [0, 1, 2, 3],
+    "orc" => [0, 1, 2, 3, 4],
+    "orc/slam" => [0, 1, 2, 3, 4, 5],
     "bone" => [0, 1, 2, 3],
     "fireball" => [0],
 );

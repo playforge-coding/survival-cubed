@@ -930,8 +930,12 @@ impl App {
                 if let Some(g) = &mut self.game {
                     if let Some(e) = g.entities.get_mut(id) {
                         // Kick off the strike animation; it plays out locally over
-                        // the lunge while the server drives the snake's spring.
-                        e.lunge = crate::entity::SNAKE_LUNGE_TIME;
+                        // the attack duration while the server drives the blow. The
+                        // snake springs; the orc slams — each runs for its own time.
+                        e.lunge = match e.kind {
+                            EntityKind::Orc => crate::entity::ORC_SLAM_TIME,
+                            _ => crate::entity::SNAKE_LUNGE_TIME,
+                        };
                     }
                 }
             }
@@ -2369,6 +2373,9 @@ impl App {
                     if ui.button("Demon").clicked() {
                         spawn = Some(EntityKind::Demon);
                     }
+                    if ui.button("Orc").clicked() {
+                        spawn = Some(EntityKind::Orc);
+                    }
                 });
 
                 ui.separator();
@@ -2834,6 +2841,14 @@ impl App {
                 // lunge timer): it coils through the wind-up then springs.
                 let d = &sprite::SNAKE_ATTACK_SPRITE;
                 let progress = 1.0 - (e.lunge / crate::entity::SNAKE_LUNGE_TIME).clamp(0.0, 1.0);
+                let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
+                (d, frame)
+            } else if e.lunge > 0.0 && matches!(e.kind, EntityKind::Orc) {
+                // A slamming orc plays its one-shot slam (frame stepped by the slam
+                // timer, which rides on the same `lunge` field): it heaves its arms
+                // up then crashes them down, the blow landing on frame 3.
+                let d = &sprite::ORC_SLAM_SPRITE;
+                let progress = 1.0 - (e.lunge / crate::entity::ORC_SLAM_TIME).clamp(0.0, 1.0);
                 let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
                 (d, frame)
             } else if matches!(e.kind, EntityKind::Puppy { sitting: true, .. }) {

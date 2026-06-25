@@ -55,6 +55,9 @@ pub const CHARRED_SKELETON_SIZE: (f32, f32) = (11.0, 16.0);
 /// Collision/draw size (width, height) in pixels of a demon — a small, hunched
 /// underworld fiend, shorter than a skeleton, matching its art's proportions.
 pub const DEMON_SIZE: (f32, f32) = (10.0, 15.0);
+/// Collision/draw size (width, height) in pixels of an orc — a stocky underworld
+/// brute, broader than the lanky skeletons it shares the depths with.
+pub const ORC_SIZE: (f32, f32) = (12.0, 15.0);
 /// Collision/draw size (width, height) in pixels of a thrown bone — a small
 /// tumbling projectile.
 pub const BONE_SIZE: (f32, f32) = (12.0, 12.0);
@@ -73,6 +76,14 @@ pub const ZOMBIE_DEATH_TIME: f32 = 0.8;
 /// telegraphed wind-up and then springs forward. Shared by both sides so the
 /// server's lunge timing and the client's attack-animation playback agree.
 pub const SNAKE_LUNGE_TIME: f32 = 0.7;
+
+/// Seconds an orc's slam attack runs end to end: it heaves its arms up through a
+/// slow telegraph and then crashes them down. Shared by both sides so the server's
+/// slam timing and the client's attack-animation playback agree. The blow only
+/// lands partway through (see [`crate::server`]'s `ORC_SLAM_STRIKE_TIME`), on the
+/// frame where the fists hit the ground — so an alert player can back out of reach
+/// during the wind-up. Reuses the [`Entity::lunge`] timer the snake strike rides on.
+pub const ORC_SLAM_TIME: f32 = 1.1;
 
 /// Seconds a snake spends writhing through its death animation when killed,
 /// before it despawns. Shared by both sides so the server's despawn timing and
@@ -120,6 +131,9 @@ pub const CHARRED_SKELETON_MAX_HEALTH: i32 = 36;
 /// survives by keeping its distance and pelting the player with fireballs rather
 /// than wading into melee.
 pub const DEMON_MAX_HEALTH: i32 = 28;
+/// Maximum health of an orc, in hit points. The toughest thing in the underworld —
+/// a slow brute that soaks up punishment and answers with a devastating slam.
+pub const ORC_MAX_HEALTH: i32 = 50;
 
 /// What an entity *is*. Adding a new creature/object means adding a variant
 /// here plus (for server-simulated kinds) a branch in the server tick loop.
@@ -232,6 +246,14 @@ pub enum EntityKind {
     /// [`Entity::vy`] carry its flight velocity. Server-simulated. Appended last so
     /// older saves and the wire format keep their variant indices.
     Fireball,
+    /// An orc: a hulking underworld brute. It lumbers slowly after players — slower
+    /// than even a zombie — but rather than a quick bite it commits to a telegraphed
+    /// **slam**, heaving its arms up and crashing them down for heavy damage. Like
+    /// the snake's lunge the slam is dodgeable: the blow only lands on the frame the
+    /// fists hit the ground, so a player who backs away during the wind-up escapes
+    /// it. Roams the underworld at all hours. Server-simulated. Appended last so
+    /// older saves and the wire format keep their variant indices.
+    Orc,
 }
 
 impl EntityKind {
@@ -253,6 +275,7 @@ impl EntityKind {
             EntityKind::Horse { .. } => HORSE_SIZE,
             EntityKind::Bone => BONE_SIZE,
             EntityKind::Fireball => FIREBALL_SIZE,
+            EntityKind::Orc => ORC_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -344,6 +367,7 @@ impl EntityKind {
             // A fireball is an inert projectile; 1 keeps health == max_health so no
             // health bar shows and a stray melee swing can't meaningfully "kill" it.
             EntityKind::Fireball => 1,
+            EntityKind::Orc => ORC_MAX_HEALTH,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }
@@ -406,11 +430,12 @@ pub struct Entity {
     /// Never sent over the wire (defaults to `0.0`).
     #[serde(skip)]
     pub dying: f32,
-    /// Seconds left in a snake's wind-up lunge strike. Set to
-    /// [`SNAKE_LUNGE_TIME`] when a lunge begins and counted down on both sides:
-    /// the server coils the snake in place through the wind-up then springs it
-    /// forward, while the client picks the attack-animation frame from the
-    /// remaining time. Never sent over the wire (defaults to `0.0`).
+    /// Seconds left in a wind-up melee attack — a snake's lunge strike, or an orc's
+    /// slam. Set to the kind's attack duration ([`SNAKE_LUNGE_TIME`] /
+    /// [`ORC_SLAM_TIME`]) when one begins and counted down on both sides: the server
+    /// drives the attack (the snake coils then springs; the orc heaves then crashes
+    /// down), while the client picks the attack-animation frame from the remaining
+    /// time. Never sent over the wire (defaults to `0.0`).
     #[serde(skip)]
     pub lunge: f32,
     /// Server-only: the horizontal heading (`-1.0`/`1.0`) a lunging snake locked

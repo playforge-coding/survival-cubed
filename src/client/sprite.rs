@@ -220,6 +220,27 @@ pub static DEMON_SPRITE: SpriteDef = SpriteDef {
     fps: 8.0,
 };
 
+/// Orc: a hulking underworld brute that lumbers along on a slow, heavy stride.
+pub static ORC_SPRITE: SpriteDef = SpriteDef {
+    name: "orc",
+    frame_w: 10,
+    frame_h: 15,
+    frames: 5,
+    fps: 5.0,
+};
+
+/// Orc slam: the one-shot telegraphed attack — the orc heaves its arms up and
+/// crashes them down. Lives in the `orc/slam` subdirectory (its `name` doubles as
+/// that path), and its frames are stepped by the slam (lunge) timer rather than the
+/// walk clock. The blow lands on frame 3, where the fists hit the ground.
+pub static ORC_SLAM_SPRITE: SpriteDef = SpriteDef {
+    name: "orc/slam",
+    frame_w: 12,
+    frame_h: 15,
+    frames: 6,
+    fps: 6.0,
+};
+
 /// Bone: a small thrown projectile that tumbles end over end as it flies.
 pub static BONE_SPRITE: SpriteDef = SpriteDef {
     name: "bone",
@@ -240,7 +261,7 @@ pub static FIREBALL_SPRITE: SpriteDef = SpriteDef {
 };
 
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 22] {
+pub fn all() -> [&'static SpriteDef; 24] {
     [
         &PLAYER_SPRITE,
         &BOAT_SPRITE,
@@ -262,6 +283,8 @@ pub fn all() -> [&'static SpriteDef; 22] {
         &SKELETON_SPRITE,
         &CHARRED_SKELETON_SPRITE,
         &DEMON_SPRITE,
+        &ORC_SPRITE,
+        &ORC_SLAM_SPRITE,
         &BONE_SPRITE,
         &FIREBALL_SPRITE,
     ]
@@ -291,6 +314,9 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         EntityKind::Skeleton => &SKELETON_SPRITE,
         EntityKind::CharredSkeleton => &CHARRED_SKELETON_SPRITE,
         EntityKind::Demon => &DEMON_SPRITE,
+        // An orc's slam pose is handled by the scene builder off its lunge timer;
+        // this walk sheet is its plodding stride.
+        EntityKind::Orc => &ORC_SPRITE,
         EntityKind::Bone => &BONE_SPRITE,
         EntityKind::Fireball => &FIREBALL_SPRITE,
         // Dropped items are drawn from their block texture, not an animation
