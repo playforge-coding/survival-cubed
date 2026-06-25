@@ -37,7 +37,7 @@ The client needs the system windowing and input libraries:
 
 ```sh
 sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev \
-  libxcursor-dev libxi-dev libxrandr-dev
+  libxcursor-dev libxi-dev libxrandr-dev libasound2-dev
 ```
 
 ## Launching the game

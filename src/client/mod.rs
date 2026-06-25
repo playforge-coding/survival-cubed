@@ -56,8 +56,10 @@ const FLY_MULT_MAX: f32 = 8.0;
 const FLY_MULT_STEP: f32 = 0.5;
 /// Vertical speed (px/s) of the player while climbing a ladder.
 const CLIMB_SPEED: f32 = 90.0;
-/// Vertical speed (px/s) of the player paddling up or diving down in water.
-const SWIM_SPEED: f32 = 80.0;
+/// Vertical speed (px/s) of the player paddling up or diving down in water. Kept
+/// gentle so a swimmer can't launch themselves up out of the surface and skip
+/// along the top — escaping water means wading to a shallow shore, not skimming.
+const SWIM_SPEED: f32 = 55.0;
 /// Rate (px/s) at which an idle swimmer sinks: the player is denser than water and
 /// steadily goes under unless actively paddling up. Crossing open water on foot is
 /// a slow, sinking slog — that's what a boat is for.
@@ -65,9 +67,21 @@ const WATER_SINK_SPEED: f32 = 110.0;
 /// Reduced gravity (px/s²) felt while submerged, easing the vertical speed toward
 /// a steady sink instead of a free fall.
 const WATER_GRAVITY: f32 = 320.0;
-/// Fraction of horizontal speed kept while swimming — water drags movement hard,
-/// so wading across a lake is sluggish compared to riding a boat over it.
-const WATER_DRAG: f32 = 0.35;
+/// Fraction of horizontal speed kept while swimming — water drags movement hard
+/// (down to a slow crawl), so wading across a lake is far slower than riding a boat
+/// over it.
+const WATER_DRAG: f32 = 0.22;
+/// How far (px) above the water a swimmer still counts as "in water". Bobbing at
+/// the surface stays a slow swim rather than briefly popping into open air at full
+/// land speed, which is what let players skim across the top.
+const WATER_SURFACE_CLING: f32 = 8.0;
+/// How far (px) a swimmer's head may poke above the waterline. A swimmer treads
+/// water here and can rise no further — they can't launch out of the surface and
+/// skim across open water; to leave the water they wade to a shallow shore.
+const SWIM_SURFACE_POKE: f32 = 4.0;
+/// Multiplier on walking speed while boating: a boat glides across the water
+/// noticeably faster than walking, and far faster than swimming.
+const BOAT_SPEED_MULT: f32 = 1.45;
 /// How firmly a boat is pulled toward its floating waterline each second: the
 /// proportional gain easing the rider's vertical speed to settle on the surface.
 const BOAT_FLOAT_STIFFNESS: f32 = 9.0;
@@ -3290,6 +3304,8 @@ fn step_physics(game: &mut GameState, reg: &BlockRegistry, input: &Input, dt: f3
     if game.boating
         && let Some(surface) = water_surface_y(game)
     {
+        // Glide across the surface, faster than walking and far faster than a swim.
+        game.vel.x *= BOAT_SPEED_MULT;
         let target = surface - PLAYER_H * 0.6;
         game.vel.y = ((target - game.pos.y) * BOAT_FLOAT_STIFFNESS)
             .clamp(-BOAT_FLOAT_MAX_SPEED, BOAT_FLOAT_MAX_SPEED);
@@ -3333,6 +3349,16 @@ fn step_physics(game: &mut GameState, reg: &BlockRegistry, input: &Input, dt: f3
         }
         move_x(game, reg, game.vel.x * dt);
         let landed = move_y(game, reg, game.vel.y * dt);
+        // Cap the rise at the waterline: a swimmer treads water at the surface and
+        // can't launch out of the top to skim across. (The boat, handled above,
+        // glides on the surface; swimmers must wade to a shallow shore to climb out.)
+        if let Some(surface) = water_surface_y(game) {
+            let min_y = surface - SWIM_SURFACE_POKE;
+            if game.pos.y < min_y {
+                game.pos.y = min_y;
+                game.vel.y = game.vel.y.max(0.0);
+            }
+        }
         // Resting on the sea floor still counts as grounded so stepping back out
         // onto dry land walks normally.
         game.on_ground = landed && game.vel.y >= 0.0;
@@ -3470,30 +3496,32 @@ fn player_on_ladder(game: &GameState) -> bool {
     (y0..=y1).any(|ty| (x0..=x1).any(|tx| crate::block::is_climbable(game.world.get_block(tx, ty))))
 }
 
-/// Whether the player's body currently overlaps any water cell — the condition
-/// for swimming instead of falling.
+/// Whether the player is swimming: their body overlaps a water cell, or water sits
+/// just below their feet (within [`WATER_SURFACE_CLING`]). The downward margin
+/// keeps a swimmer bobbing at the surface in the slow swim state instead of letting
+/// them pop a pixel into open air and travel at full land speed — the old skim.
 fn player_in_water(game: &GameState) -> bool {
     let x0 = (game.pos.x / TILE_SIZE).floor() as i32;
     let x1 = ((game.pos.x + PLAYER_W - EPS) / TILE_SIZE).floor() as i32;
     let y0 = (game.pos.y / TILE_SIZE).floor() as i32;
-    let y1 = ((game.pos.y + PLAYER_H - EPS) / TILE_SIZE).floor() as i32;
+    let y1 = ((game.pos.y + PLAYER_H - EPS + WATER_SURFACE_CLING) / TILE_SIZE).floor() as i32;
     (y0..=y1).any(|ty| (x0..=x1).any(|tx| crate::block::is_water(game.world.get_block(tx, ty))))
 }
 
-/// World-pixel y of the water surface beneath a boating player: the top edge of
-/// the highest contiguous water cell in the player's centre column, or `None` if
-/// that column isn't water at the player's midline (e.g. a boat carried onto land).
-/// Used to settle the boat onto the surface (see [`step_physics`]).
+/// World-pixel y of the water surface a boating player rides on: the top edge of
+/// the highest water cell in the player's centre column anywhere from just above
+/// their head down to just below their feet, or `None` if there's no water there
+/// (e.g. a boat carried onto land). Scanning the whole body — not just the midline
+/// — means a boat floating high on the surface is still detected, so it keeps
+/// gliding instead of dropping into the swim code. Used to settle the boat onto the
+/// surface (see [`step_physics`]).
 fn water_surface_y(game: &GameState) -> Option<f32> {
     let cx = ((game.pos.x + PLAYER_W * 0.5) / TILE_SIZE).floor() as i32;
-    let mut ty = ((game.pos.y + PLAYER_H * 0.5) / TILE_SIZE).floor() as i32;
-    if !crate::block::is_water(game.world.get_block(cx, ty)) {
-        return None;
-    }
-    while ty > 0 && crate::block::is_water(game.world.get_block(cx, ty - 1)) {
-        ty -= 1;
-    }
-    Some(ty as f32 * TILE_SIZE)
+    let top = ((game.pos.y - TILE_SIZE) / TILE_SIZE).floor() as i32;
+    let foot = ((game.pos.y + PLAYER_H - EPS + WATER_SURFACE_CLING) / TILE_SIZE).floor() as i32;
+    (top..=foot)
+        .find(|&ty| crate::block::is_water(game.world.get_block(cx, ty)))
+        .map(|ty| ty as f32 * TILE_SIZE)
 }
 
 fn column_solid(game: &GameState, reg: &BlockRegistry, tx: i32, y0: i32, y1: i32) -> bool {
