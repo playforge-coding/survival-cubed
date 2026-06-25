@@ -12,6 +12,11 @@ use super::sprite::{self, SpriteDef};
 use crate::block::{BlockDef, BlockRegistry, TILE_TEX};
 use crate::protocol::BlockId;
 
+/// Maximum atlas row width before wrapping to a new shelf. Kept at the common
+/// minimum `max_texture_dimension_2d` so the atlas uploads on older/low-end GPUs
+/// (some Macs report a 2048-texel limit) as well as WebGL2 targets.
+const MAX_ATLAS_WIDTH: u32 = 2048;
+
 /// A UV rectangle (texture-space min/max) addressing one image inside the atlas.
 #[derive(Clone, Copy)]
 pub struct UvRect {
@@ -25,11 +30,11 @@ impl UvRect {
         max: [0.0, 0.0],
     };
 
-    fn from_px(x: u32, w: u32, h: u32, tex_w: u32, tex_h: u32) -> UvRect {
+    fn from_px(x: u32, y: u32, w: u32, h: u32, tex_w: u32, tex_h: u32) -> UvRect {
         let (tw, th) = (tex_w as f32, tex_h as f32);
         UvRect {
-            min: [x as f32 / tw, 0.0],
-            max: [(x + w) as f32 / tw, h as f32 / th],
+            min: [x as f32 / tw, y as f32 / th],
+            max: [(x + w) as f32 / tw, (y + h) as f32 / th],
         }
     }
 }
@@ -42,9 +47,11 @@ enum AtlasKey {
 }
 
 /// A texture atlas packing every block tile, every entity animation frame, and
-/// a solid-white cell, side by side in one row. Each entry is top-aligned and
-/// addressed by its own [`UvRect`], so entries of different sizes (16x16 tiles,
-/// 16x32 players, 12x12 slimes) coexist in a single texture.
+/// a solid-white cell into shelves (rows). Entries are laid left to right and
+/// wrap to a new shelf once a row would exceed [`MAX_ATLAS_WIDTH`], keeping both
+/// dimensions within GPU texture-size limits. Each entry is addressed by its own
+/// [`UvRect`], so entries of different sizes (16x16 tiles, 16x32 players, 12x12
+/// slimes) coexist in a single texture.
 pub struct Atlas {
     pub pixels: Vec<u8>,
     pub width: u32,
@@ -83,24 +90,40 @@ impl Atlas {
             }
         }
 
-        let width: u32 = items.iter().map(|(_, w, _, _)| *w).sum::<u32>().max(1);
-        let height: u32 = items.iter().map(|(_, _, h, _)| *h).max().unwrap_or(1);
-        let mut pixels = vec![0u8; (width * height * 4) as usize];
+        // Shelf-pack the items into rows so neither dimension blows past GPU
+        // texture-size limits (a single 2607px-wide row trips the 2048 cap on
+        // some hardware). First pass: assign each item an (x, y) origin, wrapping
+        // to a new shelf whenever the current row would exceed MAX_ATLAS_WIDTH.
+        let mut placements: Vec<(u32, u32)> = Vec::with_capacity(items.len());
+        let (mut x_off, mut shelf_y, mut shelf_h) = (0u32, 0u32, 0u32);
+        let (mut width, mut height) = (1u32, 1u32);
+        for (_, w, h, _) in &items {
+            if x_off > 0 && x_off + *w > MAX_ATLAS_WIDTH {
+                shelf_y += shelf_h;
+                x_off = 0;
+                shelf_h = 0;
+            }
+            placements.push((x_off, shelf_y));
+            x_off += *w;
+            shelf_h = shelf_h.max(*h);
+            width = width.max(x_off);
+            height = height.max(shelf_y + shelf_h);
+        }
 
+        let mut pixels = vec![0u8; (width * height * 4) as usize];
         let mut block_uv = vec![UvRect::ZERO; reg.len()];
         let mut white_uv = UvRect::ZERO;
         let mut sprite_uv: HashMap<&'static str, Vec<UvRect>> = HashMap::new();
 
-        let mut x_off = 0u32;
-        for (key, w, h, buf) in &items {
+        for ((key, w, h, buf), (px, py)) in items.iter().zip(&placements) {
             for y in 0..*h {
                 for x in 0..*w {
                     let src = ((y * *w + x) * 4) as usize;
-                    let dst = ((y * width + x_off + x) * 4) as usize;
+                    let dst = (((py + y) * width + px + x) * 4) as usize;
                     pixels[dst..dst + 4].copy_from_slice(&buf[src..src + 4]);
                 }
             }
-            let rect = UvRect::from_px(x_off, *w, *h, width, height);
+            let rect = UvRect::from_px(*px, *py, *w, *h, width, height);
             match key {
                 AtlasKey::Block(id) => block_uv[*id as usize] = rect,
                 AtlasKey::White => white_uv = rect,
@@ -112,7 +135,6 @@ impl Atlas {
                     frames[*frame as usize] = rect;
                 }
             }
-            x_off += *w;
         }
 
         Atlas {
@@ -267,20 +289,23 @@ mod tests {
         let reg = BlockRegistry::new();
         let atlas = Atlas::build(&reg);
 
-        // Texture is tall enough for the tallest sprite (the 24px mounted knight).
-        assert_eq!(atlas.height, sprite::KNIGHT_HORSE_SPRITE.frame_h);
-        assert!(atlas.width > 0);
+        // Shelves keep both dimensions within GPU texture-size limits.
+        assert!(atlas.width > 0 && atlas.width <= MAX_ATLAS_WIDTH);
+        assert!(atlas.height >= sprite::KNIGHT_HORSE_SPRITE.frame_h);
 
         // Animation frames are distinct regions, so the sprite actually animates.
         let f0 = atlas.sprite_frame("player", 0);
         let f1 = atlas.sprite_frame("player", 1);
-        assert_ne!(f0.min[0], f1.min[0]);
+        assert!(f0.min != f1.min);
 
-        // The tallest sprite spans the full height; a shorter one only part of it.
-        let knight_horse = atlas.sprite_frame("knight/horse", 0);
-        assert!((knight_horse.max[1] - 1.0).abs() < 1e-6);
+        // Each sprite's UV rect spans exactly its frame size in texels.
+        let px_h = |r: UvRect| ((r.max[1] - r.min[1]) * atlas.height as f32).round() as u32;
+        assert_eq!(
+            px_h(atlas.sprite_frame("knight/horse", 0)),
+            sprite::KNIGHT_HORSE_SPRITE.frame_h
+        );
         let slime = atlas.sprite_frame("slime", 0);
-        assert!(slime.max[1] < 1.0);
+        assert!(px_h(slime) < sprite::KNIGHT_HORSE_SPRITE.frame_h);
 
         // Visible blocks resolve to a non-empty UV rect.
         let stone = atlas.block(crate::block::STONE);
