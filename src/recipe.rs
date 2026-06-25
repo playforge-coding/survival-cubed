@@ -9,11 +9,11 @@
 //! A recipe is identified on the wire by its index in [`RECIPES`].
 
 use crate::block::{
-    BARK, BOAT, BUCKET, CAMPFIRE, CHARRED_ROCK, COOKED_MEAT, DOOR, FIRE_KEY, FORGE, IRON_AXE,
-    IRON_INGOT, IRON_PICKAXE, IRON_SWORD, LADDER, LOG, PICKAXE, QUEST_BOARD, RAW_IRON, RAW_MEAT,
-    RAW_TUNGSTEN, ROPE, ROPE_LADDER, SIGN, STICK, STONE, STONE_AXE, STONE_BRICKS, STONE_PICKAXE,
-    STONE_SWORD, TUNGSTEN_AXE, TUNGSTEN_INGOT, TUNGSTEN_PICKAXE, TUNGSTEN_SWORD, WOOD, WOOD_AXE,
-    WOOD_SWORD,
+    BARK, BOAT, BUCKET, CAMPFIRE, CHARRED_ROCK, CHEST, COOKED_MEAT, DOOR, FIRE_KEY, FORGE,
+    GOLD_INGOT, IRON_AXE, IRON_INGOT, IRON_PICKAXE, IRON_SWORD, LADDER, LOG, PICKAXE, QUEST_BOARD,
+    RAW_GOLD, RAW_IRON, RAW_MEAT, RAW_TUNGSTEN, ROPE, ROPE_LADDER, SIGN, STICK, STONE, STONE_AXE,
+    STONE_BRICKS, STONE_PICKAXE, STONE_SWORD, TUNGSTEN_AXE, TUNGSTEN_INGOT, TUNGSTEN_PICKAXE,
+    TUNGSTEN_SWORD, WOOD, WOOD_AXE, WOOD_SWORD,
 };
 use crate::inventory::Inventory;
 use crate::protocol::BlockId;
@@ -181,6 +181,12 @@ pub const RECIPES: &[Recipe] = &[
         inputs: &[(WOOD, 4), (STICK, 2)],
         outputs: &[(QUEST_BOARD, 1)],
     },
+    // Planks banded with a strip of iron: a sturdy storage chest.
+    Recipe {
+        name: "Chest",
+        inputs: &[(IRON_INGOT, 1), (WOOD, 8)],
+        outputs: &[(CHEST, 1)],
+    },
 ];
 
 /// Cooking recipes, available only at a lit [`CAMPFIRE`](crate::block::CAMPFIRE)
@@ -212,6 +218,12 @@ pub const SMELT_RECIPES: &[Recipe] = &[
         name: "Tungsten Ingot",
         inputs: &[(RAW_TUNGSTEN, 1)],
         outputs: &[(TUNGSTEN_INGOT, 1)],
+    },
+    // Raw gold smelts into a refined ingot (one charge of fuel per smelt).
+    Recipe {
+        name: "Gold Ingot",
+        inputs: &[(RAW_GOLD, 1)],
+        outputs: &[(GOLD_INGOT, 1)],
     },
 ];
 

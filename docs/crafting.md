@@ -43,6 +43,7 @@ server-authoritative, so the result is always consistent in multiplayer.
 | Fire Key | 1 Charred Rock + 1 Tungsten Ingot | 1 Fire Key |
 | Sign | 1 Wood + 1 Stick | 1 Sign |
 | Quest Board | 4 Wood + 2 Stick | 1 Quest Board |
+| Chest | 1 Iron Ingot + 8 Wood | 1 Chest |
 
 !!! tip "Where to start"
     Punch a tree for logs, split them into **wood + bark**, harvest **sticks**
@@ -92,10 +93,16 @@ separate **fuel**, and the forge produces ingots.
 | Recipe | Input | Output |
 |---|---|---|
 | Iron Ingot | 1 Raw Iron | 1 Iron Ingot |
+| Gold Ingot | 1 Raw Gold | 1 Gold Ingot |
 | Tungsten Ingot | 1 Raw Tungsten | 1 Tungsten Ingot |
 
 **Fuel options** (per smelt): 1 Wood, **or** 1 Coal, **or** 4 Bark. Coal burns
 the longest, bark is the weakest.
+
+**Gold** smelts into ingots but crafts into no tools or weapons (it is too soft).
+Its only use is reinforcing a placed [chest](blocks.md#special-blocks-in-detail)
+into a **locked chest**: open the chest, type a password, and spend **3 Gold
+Ingots** to seal it.
 
 ## Cooking
 

@@ -56,7 +56,11 @@ fn clamp_line(line: &str) -> String {
 
 /// Clamp a note to [`TEXT_ROWS`] lines, each truncated to [`TEXT_COLS`] characters.
 fn clamp_note(lines: &[String]) -> Vec<String> {
-    lines.iter().take(TEXT_ROWS).map(|l| clamp_line(l)).collect()
+    lines
+        .iter()
+        .take(TEXT_ROWS)
+        .map(|l| clamp_line(l))
+        .collect()
 }
 
 impl BlockText {
@@ -96,6 +100,20 @@ impl BlockText {
     }
 }
 
+/// Maximum length (in characters) of a locked-chest password.
+pub const PASSWORD_MAX_LEN: usize = 24;
+
+/// A reference to one slot involved in a chest move: either a slot of the player's
+/// own inventory or a slot of the open chest. Lets a single move message shuffle
+/// items within the player's bag, within the chest, or between the two.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum SlotRef {
+    /// A slot of the player's own inventory (`0..TOTAL_SLOTS`).
+    Player(u8),
+    /// A slot of the currently-open chest (`0..CHEST_SLOTS`).
+    Chest(u8),
+}
+
 /// Wire-protocol compatibility version. **Bump this on every incompatible change
 /// to anything that crosses the wire** — adding/removing/reordering a
 /// [`ClientMessage`] or [`ServerMessage`] variant, changing a variant's fields,
@@ -107,7 +125,7 @@ impl BlockText {
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 18;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -277,6 +295,33 @@ pub enum ClientMessage {
     /// clamps the text to the line/row/note limits, stores it, and rebroadcasts it
     /// via [`ServerMessage::BlockText`]. A blank write clears the cell's text.
     WriteBlockText { x: i32, y: i32, text: BlockText },
+    /// Ask to open the chest at world cell `(x, y)`. `password` is sent for a
+    /// locked chest (ignored for a plain one). The server validates the block, the
+    /// player's reach, and — for a locked chest — the password (or a standing
+    /// session unlock). It replies with [`ServerMessage::ChestContents`] on success
+    /// or [`ServerMessage::ChestLocked`] when the password is missing or wrong.
+    OpenChest {
+        x: i32,
+        y: i32,
+        password: Option<String>,
+    },
+    /// Stop viewing whatever chest this player has open, so the server no longer
+    /// streams that chest's content updates to them.
+    CloseChest,
+    /// Move a stack between the open chest at `(x, y)` and/or the player's own
+    /// inventory (see [`SlotRef`]). The server validates the player is viewing that
+    /// chest and applies the same merge/swap/relocate rules as an inventory move.
+    MoveChestItem {
+        x: i32,
+        y: i32,
+        from: SlotRef,
+        to: SlotRef,
+    },
+    /// Reinforce the plain chest at `(x, y)` into a locked chest sealed with
+    /// `password`. The server checks the cell is a chest, the player is in reach and
+    /// holds enough [`gold`](crate::block::GOLD_INGOT), then consumes the gold,
+    /// converts the block, and records the password. The chest keeps its contents.
+    ReinforceChest { x: i32, y: i32, password: String },
 }
 
 /// Sent from server to client over the single bidirectional stream.
@@ -410,6 +455,14 @@ pub enum ServerMessage {
         y: i32,
         text: BlockText,
     },
+    /// The contents of the chest at world cell `(x, y)` — its
+    /// [`CHEST_SLOTS`](crate::inventory::CHEST_SLOTS) slots. Sent to a player when
+    /// they successfully open a chest (the client then shows the chest window) and
+    /// again to every viewer whenever its contents change.
+    ChestContents { x: i32, y: i32, slots: Vec<Slot> },
+    /// The locked chest at `(x, y)` refused to open: the password was missing or
+    /// wrong. The client prompts for (or re-prompts for) the password.
+    ChestLocked { x: i32, y: i32 },
     /// Begin or end spectating another player. `Some(id)` locks the receiving
     /// (admin) client's camera onto the entity with that id — which the server has
     /// already moved the admin alongside so it streams in — and freezes the admin's

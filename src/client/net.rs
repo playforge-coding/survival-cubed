@@ -19,7 +19,7 @@ use rustls::{DigitallySignedStruct, SignatureScheme};
 use crate::entity::{Entity, EntityId, EntityKind};
 use crate::inventory::Slot;
 use crate::net::{KnownHosts, fingerprint, fingerprint_hex, read_msg, write_msg, write_version};
-use crate::protocol::{ALPN, BlockId, ClientMessage, ServerMessage, Waypoint};
+use crate::protocol::{ALPN, BlockId, ClientMessage, ServerMessage, SlotRef, Waypoint};
 use crate::world::Dimension;
 
 /// Events flowing from the network thread to the UI.
@@ -60,6 +60,17 @@ pub enum NetEvent {
         x: i32,
         y: i32,
         text: crate::protocol::BlockText,
+    },
+    /// Contents of the chest at cell `(x, y)` (sent on open and on every change).
+    ChestContents {
+        x: i32,
+        y: i32,
+        slots: Vec<Slot>,
+    },
+    /// The locked chest at cell `(x, y)` refused to open — prompt for the password.
+    ChestLocked {
+        x: i32,
+        y: i32,
     },
     /// Move into a new dimension at world pixel `(x, y)`: the client clears its
     /// world and entities and re-streams the new dimension.
@@ -296,6 +307,27 @@ pub enum NetCommand {
         y: i32,
         text: crate::protocol::BlockText,
     },
+    /// Ask to open the chest at cell `(x, y)`, sending `password` for a locked one.
+    OpenChest {
+        x: i32,
+        y: i32,
+        password: Option<String>,
+    },
+    /// Stop viewing the open chest.
+    CloseChest,
+    /// Move a stack between the open chest at `(x, y)` and/or the player inventory.
+    MoveChestItem {
+        x: i32,
+        y: i32,
+        from: SlotRef,
+        to: SlotRef,
+    },
+    /// Reinforce the plain chest at `(x, y)` into a locked chest sealed with `password`.
+    ReinforceChest {
+        x: i32,
+        y: i32,
+        password: String,
+    },
     Disconnect,
 }
 
@@ -506,6 +538,14 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::CreatorSetBlocks { cells } => ClientMessage::CreatorSetBlocks { cells },
         NetCommand::Chat { text } => ClientMessage::Chat { text },
         NetCommand::WriteBlockText { x, y, text } => ClientMessage::WriteBlockText { x, y, text },
+        NetCommand::OpenChest { x, y, password } => ClientMessage::OpenChest { x, y, password },
+        NetCommand::CloseChest => ClientMessage::CloseChest,
+        NetCommand::MoveChestItem { x, y, from, to } => {
+            ClientMessage::MoveChestItem { x, y, from, to }
+        }
+        NetCommand::ReinforceChest { x, y, password } => {
+            ClientMessage::ReinforceChest { x, y, password }
+        }
         NetCommand::Disconnect => unreachable!("handled before conversion"),
     }
 }
@@ -539,6 +579,8 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
         }
         ServerMessage::BlocksUpdate { dim, cells } => NetEvent::BlocksUpdate { dim, cells },
         ServerMessage::BlockText { dim, x, y, text } => NetEvent::BlockText { dim, x, y, text },
+        ServerMessage::ChestContents { x, y, slots } => NetEvent::ChestContents { x, y, slots },
+        ServerMessage::ChestLocked { x, y } => NetEvent::ChestLocked { x, y },
         ServerMessage::EnterDimension { dim, x, y } => NetEvent::EnterDimension { dim, x, y },
         ServerMessage::EntitySpawn { entity } => NetEvent::EntitySpawn { entity },
         ServerMessage::EntityMoved { id, x, y, vx, vy } => {

@@ -19,7 +19,7 @@ and fall normally) — see **[Creatures](creatures.md#mounts)**.
 | Input | Action |
 |---|---|
 | **Left button** (hold) | Mine/break the targeted block, or melee-attack a creature |
-| **Right button** | Place the selected block, or interact (doors, forge, campfire, sign, quest board, bucket, fire key, boat) · mount/dismount a tamed horse |
+| **Right button** | Place the selected block, or interact (doors, forge, campfire, sign, quest board, chest, bucket, fire key, boat) · mount/dismount a tamed horse |
 | **Scroll wheel** | In creator flight: adjust fly-speed multiplier (1.0×–8.0×) |
 
 Your reach is about **80 pixels** (five blocks) from your body, and both mining
@@ -53,7 +53,7 @@ around the edges of the screen with a distance readout when they're off-screen.
 | Key | Action |
 |---|---|
 | <kbd>Enter</kbd> / <kbd>T</kbd> | Open the chat box (type, <kbd>Enter</kbd> to send, <kbd>Esc</kbd> to cancel) |
-| <kbd>Esc</kbd> | Close an open menu (inventory/forge/campfire/sign/quest board); otherwise leave the world |
+| <kbd>Esc</kbd> | Close an open menu (inventory/forge/campfire/sign/quest board/chest); otherwise leave the world |
 | <kbd>F2</kbd> | Take a screenshot (world only — no HUD) |
 
 Chat messages are up to 256 characters. See **[Multiplayer](multiplayer.md)** for
@@ -97,6 +97,10 @@ drop a whole stack.
   share them with everyone.
 - **Quest Board** (right-click a quest board) — post, edit, or delete up to 5
   notes, each its own short message; **Save** to share them.
+- **Chest** (right-click a chest) — a 27-slot store. Click a slot then another to
+  move stacks between the chest and your bag. A plain chest can be **reinforced**
+  with gold and a password to become a **locked chest**; a locked one asks for its
+  password (remembered for the session) before it opens.
 
 ### Creator tools
 

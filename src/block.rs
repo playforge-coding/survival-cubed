@@ -177,6 +177,29 @@ pub const SIGN: BlockId = 52;
 /// non-solid, placeable block; right-click it to read and post up to
 /// [`crate::protocol::QUEST_MAX_NOTES`] notes, each its own short message.
 pub const QUEST_BOARD: BlockId = 53;
+/// Gold ore: a glittering vein found only in the underworld's charred rock. A
+/// solid, placeable block that yields [`RAW_GOLD`] when mined with a stone pickaxe
+/// or better. Gold is too soft for tools or weapons — its only use is reinforcing
+/// chests into locked chests (see [`LOCKED_CHEST`]).
+pub const GOLD_ORE: BlockId = 54;
+/// Raw gold, dropped by [`GOLD_ORE`]. An item; smelted at a [`FORGE`] into a
+/// [`GOLD_INGOT`].
+pub const RAW_GOLD: BlockId = 55;
+/// A refined gold ingot, smelted from [`RAW_GOLD`]. An item used only to reinforce
+/// a placed [`CHEST`] into a [`LOCKED_CHEST`]; it crafts into no tools or weapons.
+pub const GOLD_INGOT: BlockId = 56;
+/// A chest: a solid, placeable storage block holding [`crate::inventory::CHEST_SLOTS`]
+/// slots. Right-click to open it. Reinforce a placed chest with [`GOLD_INGOT`]s to
+/// turn it into a [`LOCKED_CHEST`].
+pub const CHEST: BlockId = 57;
+/// A locked chest: a [`CHEST`] reinforced with gold and sealed with a password.
+/// It cannot be opened or broken without the password. Never held as an item —
+/// it only exists in the world, created by reinforcing a placed chest.
+pub const LOCKED_CHEST: BlockId = 58;
+
+/// Gold ingots consumed to reinforce a plain [`CHEST`] into a [`LOCKED_CHEST`].
+/// Shared by the server (which charges it) and the client (which shows the cost).
+pub const LOCKED_CHEST_GOLD_COST: u32 = 3;
 
 /// Definition of a single block type.
 pub struct BlockDef {
@@ -300,6 +323,16 @@ impl BlockRegistry {
         // stored per cell by the server, not in the block id).
         r.register("sign", false, true, true, 0.5);
         r.register("quest_board", false, true, true, 0.6);
+        // Gold: an underworld ore, its raw drop, and the smelted ingot. Gold makes
+        // no tools or weapons — its sole use is reinforcing chests (see below).
+        r.register("gold_ore", true, true, true, 2.2);
+        r.register("raw_gold", false, true, false, 0.0);
+        r.register("gold_ingot", false, true, false, 0.0);
+        // Chests: a normal storage chest, and the locked chest a placed chest
+        // becomes once reinforced with gold. The locked form is never held as an
+        // item (it is created in place), so it is registered unplaceable.
+        r.register("chest", true, true, true, 1.0);
+        r.register("locked_chest", true, true, false, 1.2);
         r
     }
 
@@ -394,6 +427,7 @@ pub fn required_tier(block: BlockId) -> u8 {
         CHARRED_ROCK => 1, // any pickaxe — the underworld's stone
         COAL_ORE => 1,     // any pickaxe
         IRON_ORE => 2,     // stone or iron pickaxe only
+        GOLD_ORE => 2,     // stone pickaxe or better — soft but deep
         TUNGSTEN_ORE => 3, // iron pickaxe or better — the underworld's hardest ore
         _ => 0,
     }
@@ -595,8 +629,12 @@ pub fn mined_drop(block: BlockId) -> BlockId {
     match block {
         IRON_ORE => RAW_IRON,
         TUNGSTEN_ORE => RAW_TUNGSTEN,
+        GOLD_ORE => RAW_GOLD,
         COAL_ORE => COAL,
         CAMPFIRE_LIT => CAMPFIRE,
+        // A broken locked chest reverts to a plain chest — the gold reinforcement
+        // is lost, not recovered.
+        LOCKED_CHEST => CHEST,
         // Whichever half of a door is struck, it drops one (closed) door item.
         DOOR_TOP | DOOR_OPEN | DOOR_OPEN_TOP => DOOR,
         other => other,
@@ -661,6 +699,22 @@ pub fn is_quest_board(block: BlockId) -> bool {
 /// has an associated [`BlockText`](crate::protocol::BlockText) entry.
 pub fn is_text_block(block: BlockId) -> bool {
     is_sign(block) || is_quest_board(block)
+}
+
+/// Whether `block` is a plain (unlocked) [`CHEST`].
+pub fn is_chest(block: BlockId) -> bool {
+    block == CHEST
+}
+
+/// Whether `block` is a [`LOCKED_CHEST`].
+pub fn is_locked_chest(block: BlockId) -> bool {
+    block == LOCKED_CHEST
+}
+
+/// Whether `block` is storage — a chest in either state — so it has an associated
+/// per-cell slot store (see [`crate::server`]).
+pub fn is_any_chest(block: BlockId) -> bool {
+    is_chest(block) || is_locked_chest(block)
 }
 
 /// Seconds of burn time one unit of `item` adds to a campfire when used as fuel,

@@ -22,6 +22,8 @@ pub const HOTBAR_SLOTS: usize = 9;
 pub const STORAGE_SLOTS: usize = 27;
 /// Total slots in an inventory: hotbar followed by storage.
 pub const TOTAL_SLOTS: usize = HOTBAR_SLOTS + STORAGE_SLOTS;
+/// Number of slots in a chest's storage (see [`crate::block::CHEST`]).
+pub const CHEST_SLOTS: usize = 27;
 /// Maximum number of identical blocks that fit in one slot.
 pub const STACK_MAX: u32 = 64;
 
@@ -61,6 +63,12 @@ impl Inventory {
     /// The slots, hotbar first then storage.
     pub fn slots(&self) -> &[Slot] {
         &self.slots
+    }
+
+    /// The slots as a mutable slice, for moving stacks between this inventory and
+    /// another container (see [`move_between`]).
+    pub fn slots_mut(&mut self) -> &mut [Slot] {
+        &mut self.slots
     }
 
     /// A snapshot of the slots for the wire or disk.
@@ -207,30 +215,7 @@ impl Inventory {
     /// whole stack; otherwise the two slots swap. No-op for equal/out-of-range
     /// indices or an empty source.
     pub fn move_stack(&mut self, from: usize, to: usize) {
-        if from == to || from >= self.slots.len() || to >= self.slots.len() {
-            return;
-        }
-        let Some((fb, fcount, fdur)) = self.slots[from] else {
-            return;
-        };
-        match self.slots[to] {
-            None => {
-                self.slots[to] = Some((fb, fcount, fdur));
-                self.slots[from] = None;
-            }
-            Some((tb, tcount, tdur)) if tb == fb => {
-                let room = max_stack(tb).saturating_sub(tcount);
-                let moved = room.min(fcount);
-                self.slots[to] = Some((tb, tcount + moved, tdur));
-                let left = fcount - moved;
-                self.slots[from] = if left == 0 {
-                    None
-                } else {
-                    Some((fb, left, fdur))
-                };
-            }
-            Some(_) => self.slots.swap(from, to),
-        }
+        move_within(&mut self.slots, from, to);
     }
 
     /// Spend `amount` durability on the first tool matching `item` (in slot
@@ -273,6 +258,69 @@ impl Inventory {
             }
         }
         false
+    }
+}
+
+/// Move the stack at `from` onto `to` within a single slot list. Same-block
+/// stacks merge up to [`STACK_MAX`] (any remainder stays at `from`); an empty `to`
+/// receives the whole stack; otherwise the two slots swap. No-op for equal or
+/// out-of-range indices or an empty source. Shared by [`Inventory::move_stack`]
+/// and chest storage.
+pub fn move_within(slots: &mut [Slot], from: usize, to: usize) {
+    if from == to || from >= slots.len() || to >= slots.len() {
+        return;
+    }
+    let Some((fb, fcount, fdur)) = slots[from] else {
+        return;
+    };
+    match slots[to] {
+        None => {
+            slots[to] = Some((fb, fcount, fdur));
+            slots[from] = None;
+        }
+        Some((tb, tcount, tdur)) if tb == fb => {
+            let room = max_stack(tb).saturating_sub(tcount);
+            let moved = room.min(fcount);
+            slots[to] = Some((tb, tcount + moved, tdur));
+            let left = fcount - moved;
+            slots[from] = if left == 0 {
+                None
+            } else {
+                Some((fb, left, fdur))
+            };
+        }
+        Some(_) => slots.swap(from, to),
+    }
+}
+
+/// Move the stack at `src[si]` onto `dst[di]`, where `src` and `dst` are *different*
+/// slot lists (e.g. a player inventory and a chest). Same merge/relocate/swap rules
+/// as [`move_within`]. No-op for an empty source or out-of-range indices.
+pub fn move_between(src: &mut [Slot], si: usize, dst: &mut [Slot], di: usize) {
+    if si >= src.len() || di >= dst.len() {
+        return;
+    }
+    let Some((fb, fcount, fdur)) = src[si] else {
+        return;
+    };
+    match dst[di] {
+        None => {
+            dst[di] = Some((fb, fcount, fdur));
+            src[si] = None;
+        }
+        Some((tb, tcount, tdur)) if tb == fb => {
+            let room = max_stack(tb).saturating_sub(tcount);
+            let moved = room.min(fcount);
+            dst[di] = Some((tb, tcount + moved, tdur));
+            let left = fcount - moved;
+            src[si] = if left == 0 {
+                None
+            } else {
+                Some((fb, left, fdur))
+            };
+        }
+        // Different blocks: swap the two slots across the lists.
+        Some(_) => std::mem::swap(&mut src[si], &mut dst[di]),
     }
 }
 
@@ -409,6 +457,26 @@ mod tests {
         inv.move_stack(0, 1);
         assert_eq!(inv.get(0), Some((DIRT, 5, 0)));
         assert_eq!(inv.get(1), Some((STONE, 16, 0)));
+    }
+
+    #[test]
+    fn move_between_relocates_merges_and_swaps_across_lists() {
+        // Simulate a player inventory and a chest as two separate slot lists.
+        let mut player = vec![Some((STONE, 50, 0)), Some((DIRT, 5, 0)), None];
+        let mut chest = vec![None; 3];
+        // Relocate into the empty chest slot.
+        move_between(&mut player, 0, &mut chest, 0);
+        assert_eq!(player[0], None);
+        assert_eq!(chest[0], Some((STONE, 50, 0)));
+        // Merge a like stack with a cap, leaving the remainder behind.
+        player[0] = Some((STONE, 30, 0));
+        move_between(&mut player, 0, &mut chest, 0);
+        assert_eq!(chest[0], Some((STONE, 64, 0)));
+        assert_eq!(player[0], Some((STONE, 16, 0)));
+        // Different blocks swap across the two lists.
+        move_between(&mut player, 1, &mut chest, 0);
+        assert_eq!(player[1], Some((STONE, 64, 0)));
+        assert_eq!(chest[0], Some((DIRT, 5, 0)));
     }
 
     #[test]

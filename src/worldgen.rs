@@ -10,8 +10,8 @@
 use fastnoise_lite::{FastNoiseLite, NoiseType};
 
 use crate::block::{
-    AIR, ASH, CHARRED_ROCK, COAL_ORE, DIRT, FIRE, GRASS, IRON_ORE, LEAVES, LOG, SAND, STONE,
-    TUNGSTEN_ORE, WATER,
+    AIR, ASH, CHARRED_ROCK, COAL_ORE, DIRT, FIRE, GOLD_ORE, GRASS, IRON_ORE, LEAVES, LOG, SAND,
+    STONE, TUNGSTEN_ORE, WATER,
 };
 use crate::entity::EntityKind;
 use crate::protocol::BlockId;
@@ -174,6 +174,12 @@ const TUNGSTEN_ORE_MIN_DEPTH: i32 = 6;
 /// Tungsten-noise value above which a deep charred-rock cell becomes tungsten ore.
 /// High, so the strongest material stays a rare reward for delving the underworld.
 const TUNGSTEN_ORE_THRESHOLD: f32 = 0.6;
+/// Gold ore only replaces charred rock at least this many cells below the
+/// underworld ceiling — shallower than tungsten, but still off the landing surface.
+const GOLD_ORE_MIN_DEPTH: i32 = 4;
+/// Gold-noise value above which a charred-rock cell becomes gold ore. Higher than
+/// the tungsten threshold, so gold veins are scarcer still.
+const GOLD_ORE_THRESHOLD: f32 = 0.72;
 
 /// Underworld biome noise below this threshold is an ash valley: its surface band
 /// is loose ash over the usual charred rock. Elsewhere the underworld is its
@@ -239,6 +245,9 @@ pub struct WorldGen {
     /// Vein field driving tungsten-ore placement in the underworld's charred rock,
     /// on its own seed so the strongest ore isn't correlated with the caves.
     tungsten_noise: FastNoiseLite,
+    /// Vein field driving gold-ore placement in the underworld's charred rock, on
+    /// its own seed so gold veins are independent of tungsten and the caves.
+    gold_noise: FastNoiseLite,
     /// The embedded structure scattered across the surface, parsed once. `None`
     /// if the embedded bytes fail to parse (then no structures are placed).
     structure: Option<Structure>,
@@ -303,6 +312,11 @@ impl WorldGen {
         let mut tungsten_noise = FastNoiseLite::with_seed(seed.wrapping_add(0x7079));
         tungsten_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
         tungsten_noise.set_frequency(Some(0.09));
+        // Gold veins: a similar compact field on its own seed, so gold scatters
+        // through the charred rock independently of tungsten.
+        let mut gold_noise = FastNoiseLite::with_seed(seed.wrapping_add(0x601D));
+        gold_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
+        gold_noise.set_frequency(Some(0.10));
         WorldGen {
             seed,
             height_noise,
@@ -316,6 +330,7 @@ impl WorldGen {
             uw_height_noise,
             uw_cave_noise,
             tungsten_noise,
+            gold_noise,
             structure: Structure::from_bytes(EMBEDDED_RUIN)
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -711,6 +726,15 @@ impl WorldGen {
                 .get_noise_3d(world_x as f32, world_y as f32, 0.0); // -1..1
             if v > TUNGSTEN_ORE_THRESHOLD {
                 return TUNGSTEN_ORE;
+            }
+        }
+        // Gold sits where tungsten didn't claim the cell — shallower and scarcer.
+        if depth >= GOLD_ORE_MIN_DEPTH {
+            let v = self
+                .gold_noise
+                .get_noise_3d(world_x as f32, world_y as f32, 0.0); // -1..1
+            if v > GOLD_ORE_THRESHOLD {
+                return GOLD_ORE;
             }
         }
         CHARRED_ROCK
@@ -1151,8 +1175,8 @@ mod tests {
     fn underworld_is_charred_rock_with_fire_and_a_floor() {
         use crate::world::Dimension;
         let worldgen = WorldGen::new(0xC0FFEE);
-        let (mut charred, mut fire, mut air, mut tungsten, mut ash) =
-            (0u32, 0u32, 0u32, 0u32, 0u32);
+        let (mut charred, mut fire, mut air, mut tungsten, mut gold, mut ash) =
+            (0u32, 0u32, 0u32, 0u32, 0u32, 0u32);
         for cx in -32..32 {
             for cy in 0..(WORLD_HEIGHT / CHUNK_SIZE) {
                 let chunk = worldgen.generate(Dimension::Underworld, cx, cy);
@@ -1163,6 +1187,7 @@ mod tests {
                             FIRE => fire += 1,
                             AIR => air += 1,
                             TUNGSTEN_ORE => tungsten += 1,
+                            GOLD_ORE => gold += 1,
                             ASH => ash += 1,
                             other => panic!("unexpected underworld block {other}"),
                         }
@@ -1184,6 +1209,9 @@ mod tests {
             tungsten < charred,
             "tungsten ore should be rarer than charred rock"
         );
+        // Gold ore is the underworld's other reward: present, but rarer than rock.
+        assert!(gold > 0, "expected gold ore veins in the underworld");
+        assert!(gold < charred, "gold ore should be rarer than charred rock");
         // Charred rock dominates: the underworld is mostly solid stone.
         assert!(charred > air, "underworld carved too hollow");
 
@@ -1195,7 +1223,7 @@ mod tests {
             for lx in 0..CHUNK_SIZE {
                 let cell = chunk.get(lx, CHUNK_SIZE - 1);
                 assert!(
-                    cell == CHARRED_ROCK || cell == TUNGSTEN_ORE,
+                    cell == CHARRED_ROCK || cell == TUNGSTEN_ORE || cell == GOLD_ORE,
                     "underworld floor carved open at chunk {cx}, column {lx}"
                 );
             }

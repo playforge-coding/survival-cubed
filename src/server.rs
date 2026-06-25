@@ -26,9 +26,12 @@ use crate::daylight;
 use crate::entity::{
     BONE_SIZE, Entities, Entity, EntityId, EntityKind, FIREBALL_SIZE, ITEM_SIZE, PLAYER_SIZE,
 };
-use crate::inventory::Inventory;
+use crate::inventory::{CHEST_SLOTS, Inventory, Slot, move_between, move_within};
 use crate::net::{VERSION_MISMATCH_CLOSE, fingerprint, read_msg, read_version, write_msg};
-use crate::protocol::{ALPN, BlockId, ClientMessage, PROTOCOL_VERSION, ServerMessage, Waypoint};
+use crate::protocol::{
+    ALPN, BlockId, ClientMessage, PASSWORD_MAX_LEN, PROTOCOL_VERSION, ServerMessage, SlotRef,
+    Waypoint,
+};
 use crate::save::{SavedPlayer, WorldMeta, WorldStore};
 use crate::world::{
     CHUNK_AREA, CHUNK_SIZE, ChunkCoord, Dimension, NUM_DIMENSIONS, TILE_SIZE, WORLD_HEIGHT, World,
@@ -722,6 +725,21 @@ struct Shared {
     /// board drops the entry. Synced to clients as they stream the chunk and on
     /// every edit, and persisted in [`WorldMeta`] so the writing survives a reload.
     block_text: Mutex<HashMap<(Dimension, i32, i32), crate::protocol::BlockText>>,
+    /// Contents of every chest (plain or locked) in the world, keyed by
+    /// `(dimension, x, y)`, each a [`CHEST_SLOTS`]-long slot list. Created lazily on
+    /// first open and dropped (its items spilled) when the chest is broken.
+    /// Persisted in [`WorldMeta`].
+    chest_store: Mutex<HashMap<(Dimension, i32, i32), Vec<Slot>>>,
+    /// Passwords of locked chests, keyed by `(dimension, x, y)`. A cell is present
+    /// only while its chest is locked. Persisted in [`WorldMeta`].
+    chest_locks: Mutex<HashMap<(Dimension, i32, i32), String>>,
+    /// Which chest each connected player currently has open, keyed by entity id, so
+    /// content updates are streamed only to a chest's active viewers. Runtime-only.
+    chest_viewers: Mutex<HashMap<EntityId, (Dimension, i32, i32)>>,
+    /// Locked chests each player has unlocked this session (entered the right
+    /// password for), keyed by entity id. A standing unlock lets them reopen and
+    /// break that chest without re-entering the password. Runtime-only.
+    chest_auth: Mutex<HashMap<EntityId, HashSet<(Dimension, i32, i32)>>>,
 }
 
 impl Shared {
@@ -850,6 +868,18 @@ impl Shared {
             .iter()
             .map(|(&(dim, x, y), text)| (dim, x, y, text.clone()))
             .collect();
+        let chests = self
+            .chest_store
+            .lock()
+            .iter()
+            .map(|(&(dim, x, y), slots)| (dim, x, y, slots.clone()))
+            .collect();
+        let chest_locks = self
+            .chest_locks
+            .lock()
+            .iter()
+            .map(|(&(dim, x, y), pw)| (dim, x, y, pw.clone()))
+            .collect();
         let spawned_structure_roots = self
             .spawned_structure_roots
             .lock()
@@ -868,6 +898,8 @@ impl Shared {
             campfires,
             placed_logs,
             block_text,
+            chests,
+            chest_locks,
             accounts: self
                 .accounts
                 .lock()
@@ -1797,6 +1829,196 @@ impl Shared {
         self.broadcast_dim(dim, ServerMessage::BlockText { dim, x, y, text });
     }
 
+    /// Whether player `id` has unlocked the locked chest at `(dim, x, y)` this
+    /// session (entered its password, or reinforced it), so they may open or break it.
+    fn chest_authed(&self, id: EntityId, dim: Dimension, x: i32, y: i32) -> bool {
+        self.chest_auth
+            .lock()
+            .get(&id)
+            .is_some_and(|s| s.contains(&(dim, x, y)))
+    }
+
+    /// Push the current contents of the chest at `(dim, x, y)` to every player who
+    /// has it open. Called after any change so all viewers stay in sync.
+    fn send_chest_contents(&self, dim: Dimension, x: i32, y: i32) {
+        let Some(slots) = self.chest_store.lock().get(&(dim, x, y)).cloned() else {
+            return;
+        };
+        let viewers: Vec<EntityId> = self
+            .chest_viewers
+            .lock()
+            .iter()
+            .filter(|(_, cell)| **cell == (dim, x, y))
+            .map(|(vid, _)| *vid)
+            .collect();
+        for vid in viewers {
+            self.send_to(
+                vid,
+                ServerMessage::ChestContents {
+                    x,
+                    y,
+                    slots: slots.clone(),
+                },
+            );
+        }
+    }
+
+    /// Open the chest at `(x, y)` for player `id`. A plain chest opens to anyone in
+    /// reach; a locked chest needs a standing session unlock or the right
+    /// `password`. On success the player becomes a viewer and is sent the contents;
+    /// on a failed unlock they get [`ServerMessage::ChestLocked`] instead.
+    fn open_chest(&self, id: EntityId, x: i32, y: i32, password: Option<String>) {
+        let dim = self.dim_of(id);
+        let block = self.world(dim).lock().get(x, y);
+        if !crate::block::is_any_chest(block) || !self.cell_in_reach(id, dim, x, y) {
+            return;
+        }
+        if crate::block::is_locked_chest(block) {
+            let ok = self.chest_authed(id, dim, x, y) || {
+                match (self.chest_locks.lock().get(&(dim, x, y)), &password) {
+                    (Some(stored), Some(p)) => stored == p,
+                    _ => false,
+                }
+            };
+            if !ok {
+                self.send_to(id, ServerMessage::ChestLocked { x, y });
+                return;
+            }
+            self.chest_auth
+                .lock()
+                .entry(id)
+                .or_default()
+                .insert((dim, x, y));
+        }
+        let slots = self
+            .chest_store
+            .lock()
+            .entry((dim, x, y))
+            .or_insert_with(|| vec![None; CHEST_SLOTS])
+            .clone();
+        self.chest_viewers.lock().insert(id, (dim, x, y));
+        self.send_to(id, ServerMessage::ChestContents { x, y, slots });
+    }
+
+    /// Player `id` stopped viewing whatever chest they had open.
+    fn close_chest(&self, id: EntityId) {
+        self.chest_viewers.lock().remove(&id);
+    }
+
+    /// Move a stack between player `id`'s inventory and/or the chest at `(x, y)`.
+    /// Validates the player is viewing that chest, in reach, and (for a locked
+    /// chest) unlocked, then resyncs both the player's inventory and every viewer.
+    fn move_chest_item(&self, id: EntityId, x: i32, y: i32, from: SlotRef, to: SlotRef) {
+        let dim = self.dim_of(id);
+        if self.chest_viewers.lock().get(&id) != Some(&(dim, x, y)) {
+            return;
+        }
+        let block = self.world(dim).lock().get(x, y);
+        if !crate::block::is_any_chest(block) || !self.cell_in_reach(id, dim, x, y) {
+            return;
+        }
+        if crate::block::is_locked_chest(block) && !self.chest_authed(id, dim, x, y) {
+            return;
+        }
+        {
+            let mut invs = self.inventories.lock();
+            let inv = invs.entry(id).or_default();
+            let mut store = self.chest_store.lock();
+            let chest = store
+                .entry((dim, x, y))
+                .or_insert_with(|| vec![None; CHEST_SLOTS]);
+            match (from, to) {
+                (SlotRef::Player(a), SlotRef::Player(b)) => inv.move_stack(a as usize, b as usize),
+                (SlotRef::Chest(a), SlotRef::Chest(b)) => {
+                    move_within(chest, a as usize, b as usize)
+                }
+                (SlotRef::Player(a), SlotRef::Chest(b)) => {
+                    move_between(inv.slots_mut(), a as usize, chest, b as usize)
+                }
+                (SlotRef::Chest(a), SlotRef::Player(b)) => {
+                    move_between(chest, a as usize, inv.slots_mut(), b as usize)
+                }
+            }
+        }
+        self.send_inventory(id);
+        self.send_chest_contents(dim, x, y);
+    }
+
+    /// Reinforce the plain chest at `(x, y)` into a locked chest sealed with
+    /// `password` for player `id`. Requires a plain chest in reach and
+    /// [`crate::block::LOCKED_CHEST_GOLD_COST`] gold ingots, which are consumed. The chest keeps
+    /// its contents; the reinforcing player is left unlocked for it.
+    fn reinforce_chest(&self, id: EntityId, x: i32, y: i32, password: String) {
+        let dim = self.dim_of(id);
+        if !crate::block::is_chest(self.world(dim).lock().get(x, y))
+            || !self.cell_in_reach(id, dim, x, y)
+        {
+            return;
+        }
+        let password: String = password.chars().take(PASSWORD_MAX_LEN).collect();
+        if password.trim().is_empty() {
+            return;
+        }
+        {
+            let mut invs = self.inventories.lock();
+            let inv = invs.entry(id).or_default();
+            if inv.count(crate::block::GOLD_INGOT) < crate::block::LOCKED_CHEST_GOLD_COST {
+                return;
+            }
+            inv.remove(
+                crate::block::GOLD_INGOT,
+                crate::block::LOCKED_CHEST_GOLD_COST,
+            );
+        }
+        self.world(dim).lock().set(x, y, crate::block::LOCKED_CHEST);
+        self.chest_locks.lock().insert((dim, x, y), password);
+        self.chest_auth
+            .lock()
+            .entry(id)
+            .or_default()
+            .insert((dim, x, y));
+        self.broadcast_dim(
+            dim,
+            ServerMessage::BlockUpdate {
+                dim,
+                x,
+                y,
+                block: crate::block::LOCKED_CHEST,
+            },
+        );
+        self.send_inventory(id);
+    }
+
+    /// Remove the chest at `(dim, x, y)` from the world's bookkeeping and spill its
+    /// contents onto the ground as dropped items. Called when a chest block is
+    /// broken (its block drop and removal are handled by the caller).
+    fn spill_chest(&self, dim: Dimension, x: i32, y: i32) {
+        let slots = self.chest_store.lock().remove(&(dim, x, y));
+        self.chest_locks.lock().remove(&(dim, x, y));
+        self.chest_viewers
+            .lock()
+            .retain(|_, &mut cell| cell != (dim, x, y));
+        for set in self.chest_auth.lock().values_mut() {
+            set.remove(&(dim, x, y));
+        }
+        if let Some(slots) = slots {
+            for (block, count, dur) in slots.into_iter().flatten() {
+                spawn_item(
+                    self,
+                    dim,
+                    block,
+                    count,
+                    dur,
+                    x as f32 * TILE_SIZE,
+                    y as f32 * TILE_SIZE,
+                    0.0,
+                    ITEM_POP_VELOCITY,
+                    ITEM_PICKUP_DELAY,
+                );
+            }
+        }
+    }
+
     /// Use the bucket in player `id`'s inventory `slot` on world cell `(x, y)`: an
     /// empty [`BUCKET`](crate::block::BUCKET) scoops up a [`WATER`](crate::block::WATER)
     /// cell (becoming a [`WATER_BUCKET`](crate::block::WATER_BUCKET)), and a water
@@ -2244,6 +2466,9 @@ impl Shared {
         // Record the new dimension before announcing, so dimension-scoped
         // broadcasts route correctly.
         self.client_dim.lock().insert(id, to);
+        // Any chest they had open belongs to the dimension they're leaving; stop
+        // viewing it so its updates don't follow them across.
+        self.chest_viewers.lock().remove(&id);
         // The avatar vanishes from the dimension it left...
         self.broadcast_dim_except(from, id, ServerMessage::EntityDespawn { id });
         // ...and appears in the one it entered.
@@ -2723,6 +2948,8 @@ fn build_endpoint(
     let mut placed_logs = HashSet::new();
     let mut spawned_structure_roots = HashSet::new();
     let mut block_text = HashMap::new();
+    let mut chest_store = HashMap::new();
+    let mut chest_locks = HashMap::new();
     if let Some(m) = &saved {
         for e in &m.entities {
             overworld_entities.insert(e.clone());
@@ -2744,6 +2971,14 @@ fn build_endpoint(
         }
         for (dim, x, y, text) in &m.block_text {
             block_text.insert((*dim, *x, *y), text.clone());
+        }
+        for (dim, x, y, slots) in &m.chests {
+            let mut slots = slots.clone();
+            slots.resize(CHEST_SLOTS, None);
+            chest_store.insert((*dim, *x, *y), slots);
+        }
+        for (dim, x, y, pw) in &m.chest_locks {
+            chest_locks.insert((*dim, *x, *y), pw.clone());
         }
         spawned_structure_roots.extend(m.spawned_structure_roots.iter().copied());
     }
@@ -2803,6 +3038,10 @@ fn build_endpoint(
         spectate_return: Mutex::new(HashMap::new()),
         fire_marks: Mutex::new(HashMap::new()),
         block_text: Mutex::new(block_text),
+        chest_store: Mutex::new(chest_store),
+        chest_locks: Mutex::new(chest_locks),
+        chest_viewers: Mutex::new(HashMap::new()),
+        chest_auth: Mutex::new(HashMap::new()),
     });
 
     // Only seed fresh creatures for a brand-new world; a loaded one keeps its own.
@@ -6681,6 +6920,24 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         );
                         continue;
                     }
+                    // A locked chest resists breaking: only a player who has
+                    // unlocked it this session (knows its password) may break it.
+                    // Otherwise reject and resync the cell.
+                    let target = shared.world(dim).lock().get(x, y);
+                    if crate::block::is_locked_chest(target)
+                        && !shared.chest_authed(id, dim, x, y)
+                    {
+                        shared.send_to(
+                            id,
+                            ServerMessage::BlockUpdate {
+                                dim,
+                                x,
+                                y,
+                                block: target,
+                            },
+                        );
+                        continue;
+                    }
                     // Breaking: clear the cell and drop its block on the ground
                     // for the player to walk over and collect.
                     let mined = {
@@ -6715,6 +6972,12 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         // it, so a fresh board placed in the same cell starts blank.
                         if crate::block::is_text_block(prev) {
                             shared.block_text.lock().remove(&(dim, x, y));
+                        }
+                        // A mined chest (plain or locked) spills its stored items
+                        // onto the ground and drops its block (a locked chest reverts
+                        // to a plain chest via mined_drop; the gold is lost).
+                        if crate::block::is_any_chest(prev) {
+                            shared.spill_chest(dim, x, y);
                         }
                         // Tool-gated blocks (stone, iron ore) only yield a drop
                         // when mined with a strong enough pickaxe; broken with too
@@ -7134,6 +7397,18 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 ClientMessage::WriteBlockText { x, y, text } => {
                     shared.write_block_text(id, x, y, text);
                 }
+                ClientMessage::OpenChest { x, y, password } => {
+                    shared.open_chest(id, x, y, password);
+                }
+                ClientMessage::CloseChest => {
+                    shared.close_chest(id);
+                }
+                ClientMessage::MoveChestItem { x, y, from, to } => {
+                    shared.move_chest_item(id, x, y, from, to);
+                }
+                ClientMessage::ReinforceChest { x, y, password } => {
+                    shared.reinforce_chest(id, x, y, password);
+                }
                 ClientMessage::Cook {
                     x,
                     y,
@@ -7506,6 +7781,10 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
     shared.knight_targets.lock().remove(&id);
     shared.spectate_return.lock().remove(&id);
     shared.creators.lock().remove(&id);
+    // Forget any chest this player had open and the session unlocks they earned
+    // (passwords must be re-entered after a reconnect).
+    shared.chest_viewers.lock().remove(&id);
+    shared.chest_auth.lock().remove(&id);
     let removed = shared.entities(dim).lock().remove(id);
     let inventory = shared.inventories.lock().remove(&id).unwrap_or_default();
     let respawn = shared.respawn_points.lock().remove(&id);

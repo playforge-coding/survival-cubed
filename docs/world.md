@@ -83,9 +83,11 @@ of ash that flings you skywards for a punishing fall, and of the fire-trailing
 **charred skeleton**. Below the floor, charred
 rock falls away to bedrock, riddled with caves where the tungsten hides.
 
-The underworld is the only source of **tungsten ore**, the top tier of gear. It
-sits in permanent dim, warm light (no day/night), and its creatures are active
-around the clock.
+The underworld is the only source of **tungsten ore**, the top tier of gear, and
+of **gold ore** — too soft for tools, but the key to reinforcing a
+[chest](blocks.md#special-blocks-in-detail) into a locked one. It sits in
+permanent dim, warm light (no day/night), and its creatures are active around the
+clock.
 
 To get there, craft a **[fire key](crafting.md#tools-and-utility-items)** (it
 needs tungsten itself, so your first trip down is the hard one) and right-click

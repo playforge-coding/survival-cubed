@@ -25,9 +25,12 @@ yields anything. The right [pickaxe or axe](crafting.md) mines much faster.
 |---|---|---|---|
 | Coal Ore | 1.5 | Any pickaxe | Coal |
 | Iron Ore | 2.0 | Stone pickaxe or better | Raw iron |
+| Gold Ore | 2.2 | Stone pickaxe or better | Raw gold (underworld only) |
 | Tungsten Ore | 2.6 | Iron pickaxe or better | Raw tungsten (underworld only) |
 
-Smelt raw iron and raw tungsten into ingots at a [forge](crafting.md#smelting).
+Smelt raw iron, raw gold, and raw tungsten into ingots at a
+[forge](crafting.md#smelting). **Gold** makes no tools or weapons — it is too
+soft. Its one use is reinforcing a chest into a **locked chest** (see below).
 
 ## Crafted & placeable blocks
 
@@ -42,6 +45,8 @@ Smelt raw iron and raw tungsten into ingots at a [forge](crafting.md#smelting).
 | Door | ✅ | 0.6 | Two cells tall; right-click to open/close |
 | Sign | ❌ | 0.5 | Right-click to write a short message (up to 5 lines) |
 | Quest Board | ❌ | 0.6 | Right-click to post several notes (up to 5) |
+| Chest | ✅ | 1.0 | 27-slot storage; right-click to open |
+| Locked Chest | ✅ | — | A chest reinforced with gold; needs its password to open or break |
 
 ### Special blocks in detail
 
@@ -62,6 +67,14 @@ Smelt raw iron and raw tungsten into ingots at a [forge](crafting.md#smelting).
 - **Quest Board** — like a sign, but holds up to **5 separate notes**, each its
   own message of up to 5 lines × 15 characters. Right-click to read the posted
   notes, add new ones, edit or delete existing ones, then **Save**.
+- **Chest** — right-click to open its **27-slot** storage. Click a slot then
+  another to move stacks between the chest and your bag. Breaking a chest spills
+  everything inside onto the ground. Its contents are saved with the world.
+- **Locked Chest** — reinforce a placed chest with **3 Gold Ingots** and a password
+  (from inside the open chest window) to lock it. A locked chest **can't be opened
+  or broken** without its password. Anyone who knows the password can open it; your
+  client remembers it until you disconnect, so you only type it once per session.
+  Breaking a locked chest (once unlocked) drops a plain chest — the gold is lost.
 
 ## Block properties summary
 

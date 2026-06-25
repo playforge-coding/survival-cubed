@@ -22,9 +22,11 @@ use crate::block::{AIR, BlockRegistry, CHARRED_ROCK, DIRT, FIRE, GRASS, LEAVES, 
 use crate::daylight;
 use crate::discovery::{DiscoveredServer, LanBrowser};
 use crate::entity::{Entities, EntityId, EntityKind, PLAYER_MAX_HEALTH};
-use crate::inventory::{HOTBAR_SLOTS, Inventory, STORAGE_SLOTS, Slot};
+use crate::inventory::{
+    CHEST_SLOTS, HOTBAR_SLOTS, Inventory, STORAGE_SLOTS, Slot, move_between, move_within,
+};
 use crate::net::Credentials;
-use crate::protocol::{BlockId, Waypoint};
+use crate::protocol::{BlockId, PASSWORD_MAX_LEN, SlotRef, Waypoint};
 use crate::server::{self, RunningServer};
 use crate::structure::Structure;
 use crate::world::{CHUNK_SIZE, Dimension, TILE_SIZE, WORLD_HEIGHT, World, to_chunk};
@@ -251,6 +253,27 @@ struct GameState {
     quest_open: bool,
     quest_cell: Option<(i32, i32)>,
     quest_draft: Vec<Vec<String>>,
+    /// Whether a chest window is open, which chest cell it belongs to, and a mirror
+    /// of that chest's contents (streamed from the server while open).
+    chest_open: bool,
+    chest_cell: Option<(i32, i32)>,
+    chest_slots: Vec<Slot>,
+    /// The slot picked as the source of a pending move in the chest window (a
+    /// player-inventory or chest slot); the next slot click completes the move.
+    chest_move_from: Option<SlotRef>,
+    /// Draft password typed into the chest window's reinforce field.
+    reinforce_input: String,
+    /// Passwords entered for locked chests this session, keyed by cell, so a chest
+    /// already unlocked doesn't prompt again until reconnect.
+    chest_passwords: HashMap<(i32, i32), String>,
+    /// Locked-chest cells this client has opened this session — used to allow
+    /// breaking them locally (the server enforces this authoritatively too).
+    chest_unlocked: HashSet<(i32, i32)>,
+    /// When set, the password prompt for the locked chest at this cell is showing.
+    chest_prompt: Option<(i32, i32)>,
+    chest_prompt_input: String,
+    /// Set after a wrong password so the prompt can show an error.
+    chest_prompt_error: bool,
     action_timer: f32,
     move_send_timer: f32,
     last_sent: Vec2,
@@ -362,6 +385,16 @@ impl GameState {
             quest_open: false,
             quest_cell: None,
             quest_draft: Vec::new(),
+            chest_open: false,
+            chest_cell: None,
+            chest_slots: Vec::new(),
+            chest_move_from: None,
+            reinforce_input: String::new(),
+            chest_passwords: HashMap::new(),
+            chest_unlocked: HashSet::new(),
+            chest_prompt: None,
+            chest_prompt_input: String::new(),
+            chest_prompt_error: false,
             action_timer: 0.0,
             move_send_timer: 0.0,
             last_sent: spawn,
@@ -841,6 +874,32 @@ impl App {
                     }
                 }
             }
+            NetEvent::ChestContents { x, y, slots } => {
+                if let Some(g) = &mut self.game {
+                    // Opening succeeded (or the open chest changed): show the window
+                    // for this cell and mirror its contents.
+                    g.chest_open = true;
+                    g.chest_cell = Some((x, y));
+                    g.chest_slots = slots;
+                    g.chest_move_from = None;
+                    g.chest_unlocked.insert((x, y));
+                    // Any password prompt for this chest is now resolved.
+                    if g.chest_prompt == Some((x, y)) {
+                        g.chest_prompt = None;
+                        g.chest_prompt_input.clear();
+                        g.chest_prompt_error = false;
+                    }
+                }
+            }
+            NetEvent::ChestLocked { x, y } => {
+                if let Some(g) = &mut self.game {
+                    // The password we tried was wrong (or none was sent): forget it
+                    // and (re-)open the prompt with an error.
+                    g.chest_passwords.remove(&(x, y));
+                    g.chest_prompt = Some((x, y));
+                    g.chest_prompt_error = true;
+                }
+            }
             NetEvent::BlocksUpdate { dim, cells } => {
                 if let Some(g) = &mut self.game {
                     if dim == g.dim {
@@ -871,6 +930,14 @@ impl App {
                     g.quest_open = false;
                     g.quest_cell = None;
                     g.block_text.clear();
+                    // Chest state is per-dimension (keyed by cell); reset it.
+                    g.chest_open = false;
+                    g.chest_cell = None;
+                    g.chest_slots.clear();
+                    g.chest_move_from = None;
+                    g.chest_prompt = None;
+                    g.chest_unlocked.clear();
+                    g.chest_passwords.clear();
                     g.pos = Vec2::new(x, y);
                     g.vel = Vec2::ZERO;
                     g.knockback_x = 0.0;
@@ -1222,6 +1289,12 @@ impl App {
                 }
                 if self.game.as_ref().is_some_and(|g| g.quest_open) {
                     self.quest_window(ui);
+                }
+                if self.game.as_ref().is_some_and(|g| g.chest_open) {
+                    self.chest_window(ui);
+                }
+                if self.game.as_ref().is_some_and(|g| g.chest_prompt.is_some()) {
+                    self.chest_prompt_window(ui);
                 }
                 if self.game.as_ref().is_some_and(|g| g.creator_allowed) {
                     self.creator_window(ui);
@@ -2437,6 +2510,299 @@ impl App {
             if save || close {
                 g.quest_open = false;
                 g.quest_cell = None;
+            }
+        }
+    }
+
+    /// The chest window: the chest's [`CHEST_SLOTS`] storage slots above the
+    /// player's own bag, with click-to-move between them. A plain chest also offers
+    /// a reinforce panel (password + gold) to lock it; a locked chest shows its
+    /// status instead.
+    fn chest_window(&mut self, ui: &mut egui::Ui) {
+        // Close (and tell the server) if the chest is gone or out of reach.
+        let (cell, locked) = {
+            let g = self.game.as_ref().unwrap();
+            match g.chest_cell {
+                Some((x, y)) => {
+                    let block = g.world.get_block(x, y);
+                    let valid = crate::block::is_any_chest(block) && cell_in_reach(g, x, y);
+                    (
+                        if valid { Some((x, y)) } else { None },
+                        crate::block::is_locked_chest(block),
+                    )
+                }
+                None => (None, false),
+            }
+        };
+        let Some((cx, cy)) = cell else {
+            if let Some(net) = &self.net {
+                let _ = net.commands.send(NetCommand::CloseChest);
+            }
+            if let Some(g) = self.game.as_mut() {
+                g.chest_open = false;
+                g.chest_cell = None;
+                g.chest_move_from = None;
+            }
+            return;
+        };
+
+        let registry = self.registry.clone();
+        let atlas = &self.atlas;
+        let tex = self.block_tex.as_ref().unwrap().id();
+        let (chest_slots, inv_slots, move_from, selected, gold) = {
+            let g = self.game.as_ref().unwrap();
+            (
+                g.chest_slots.clone(),
+                g.inventory.to_slots(),
+                g.chest_move_from,
+                g.selected_slot,
+                g.inventory.count(crate::block::GOLD_INGOT),
+            )
+        };
+        let mut pw = self
+            .game
+            .as_mut()
+            .map(|g| std::mem::take(&mut g.reinforce_input))
+            .unwrap_or_default();
+        let mut clicked: Option<SlotRef> = None;
+        let mut reinforce = false;
+        let mut close = false;
+        let cost = crate::block::LOCKED_CHEST_GOLD_COST;
+
+        egui::Window::new(if locked { "Locked Chest" } else { "Chest" })
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                ui.label("Chest");
+                for row in 0..(CHEST_SLOTS / 9) {
+                    ui.horizontal(|ui| {
+                        for col in 0..9 {
+                            let idx = row * 9 + col;
+                            let resp = slot_widget(
+                                ui,
+                                &registry,
+                                atlas,
+                                tex,
+                                chest_slots.get(idx).copied().flatten(),
+                                None,
+                                move_from == Some(SlotRef::Chest(idx as u8)),
+                                false,
+                            );
+                            if resp.clicked() {
+                                clicked = Some(SlotRef::Chest(idx as u8));
+                            }
+                        }
+                    });
+                }
+
+                ui.add_space(8.0);
+                ui.label("Your items");
+                for row in 0..(STORAGE_SLOTS / 9) {
+                    ui.horizontal(|ui| {
+                        for col in 0..9 {
+                            let idx = HOTBAR_SLOTS + row * 9 + col;
+                            let resp = slot_widget(
+                                ui,
+                                &registry,
+                                atlas,
+                                tex,
+                                inv_slots.get(idx).copied().flatten(),
+                                None,
+                                move_from == Some(SlotRef::Player(idx as u8)),
+                                false,
+                            );
+                            if resp.clicked() {
+                                clicked = Some(SlotRef::Player(idx as u8));
+                            }
+                        }
+                    });
+                }
+                ui.horizontal(|ui| {
+                    for idx in 0..HOTBAR_SLOTS {
+                        let resp = slot_widget(
+                            ui,
+                            &registry,
+                            atlas,
+                            tex,
+                            inv_slots.get(idx).copied().flatten(),
+                            Some(idx),
+                            move_from == Some(SlotRef::Player(idx as u8)),
+                            idx == selected,
+                        );
+                        if resp.clicked() {
+                            clicked = Some(SlotRef::Player(idx as u8));
+                        }
+                    }
+                });
+                ui.weak("Click a slot, then another, to move items between chest and bag");
+
+                ui.separator();
+                if locked {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(240, 200, 80),
+                        "🔒 Locked — reinforced with gold.",
+                    );
+                } else {
+                    ui.label(format!("Reinforce into a locked chest ({cost} Gold Ingot):"));
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut pw)
+                                .char_limit(PASSWORD_MAX_LEN)
+                                .hint_text("Set a password")
+                                .desired_width(160.0),
+                        );
+                        let can = gold >= cost && !pw.trim().is_empty();
+                        if ui
+                            .add_enabled(can, egui::Button::new("Lock"))
+                            .on_hover_text("Spends gold; the chest can't be opened or broken without this password")
+                            .clicked()
+                        {
+                            reinforce = true;
+                        }
+                    });
+                    ui.weak(format!("Gold ingots: {gold}"));
+                }
+
+                ui.add_space(4.0);
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+
+        // Resolve a slot click into a pending-move selection or a completed move.
+        if let Some(slot) = clicked {
+            let mut cmd: Option<(SlotRef, SlotRef)> = None;
+            if let Some(g) = self.game.as_mut() {
+                match g.chest_move_from {
+                    None => {
+                        let occupied = match slot {
+                            SlotRef::Chest(i) => {
+                                g.chest_slots.get(i as usize).copied().flatten().is_some()
+                            }
+                            SlotRef::Player(i) => g.inventory.get(i as usize).is_some(),
+                        };
+                        if occupied {
+                            g.chest_move_from = Some(slot);
+                        }
+                    }
+                    Some(from) if from == slot => g.chest_move_from = None,
+                    Some(from) => {
+                        // Optimistic local move; the server confirms with snapshots.
+                        apply_chest_move(g, from, slot);
+                        g.chest_move_from = None;
+                        cmd = Some((from, slot));
+                    }
+                }
+            }
+            if let (Some((from, to)), Some(net)) = (cmd, &self.net) {
+                let _ = net.commands.send(NetCommand::MoveChestItem {
+                    x: cx,
+                    y: cy,
+                    from,
+                    to,
+                });
+            }
+        }
+        if reinforce && let Some(net) = &self.net {
+            let _ = net.commands.send(NetCommand::ReinforceChest {
+                x: cx,
+                y: cy,
+                password: pw.clone(),
+            });
+        }
+        if close && let Some(net) = &self.net {
+            let _ = net.commands.send(NetCommand::CloseChest);
+        }
+        if let Some(g) = self.game.as_mut() {
+            // A successful reinforce clears the draft; otherwise keep what was typed.
+            g.reinforce_input = if reinforce { String::new() } else { pw };
+            if close {
+                g.chest_open = false;
+                g.chest_cell = None;
+                g.chest_move_from = None;
+            }
+        }
+    }
+
+    /// The locked-chest password prompt, shown when opening a locked chest the
+    /// client hasn't unlocked this session. A correct password (confirmed by the
+    /// server's [`NetEvent::ChestContents`]) opens the chest window.
+    fn chest_prompt_window(&mut self, ui: &mut egui::Ui) {
+        let cell = self.game.as_ref().and_then(|g| g.chest_prompt);
+        let Some((cx, cy)) = cell else {
+            return;
+        };
+        // Bail if the locked chest is gone or out of reach.
+        let valid = self.game.as_ref().is_some_and(|g| {
+            crate::block::is_locked_chest(g.world.get_block(cx, cy)) && cell_in_reach(g, cx, cy)
+        });
+        if !valid {
+            if let Some(g) = self.game.as_mut() {
+                g.chest_prompt = None;
+            }
+            return;
+        }
+
+        let mut input = self
+            .game
+            .as_mut()
+            .map(|g| std::mem::take(&mut g.chest_prompt_input))
+            .unwrap_or_default();
+        let error = self.game.as_ref().is_some_and(|g| g.chest_prompt_error);
+        let mut submit = false;
+        let mut cancel = false;
+
+        egui::Window::new("Locked Chest")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                ui.label("This chest is locked. Enter its password:");
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut input)
+                        .char_limit(PASSWORD_MAX_LEN)
+                        .password(true)
+                        .hint_text("Password")
+                        .desired_width(180.0),
+                );
+                if error {
+                    ui.colored_label(egui::Color32::from_rgb(220, 90, 90), "Wrong password.");
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("Open").clicked() {
+                        submit = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+                // Enter in the field also submits.
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    submit = true;
+                }
+            });
+
+        if submit && !input.trim().is_empty() {
+            if let Some(net) = &self.net {
+                let _ = net.commands.send(NetCommand::OpenChest {
+                    x: cx,
+                    y: cy,
+                    password: Some(input.clone()),
+                });
+            }
+            if let Some(g) = self.game.as_mut() {
+                // Remember it so a successful open won't prompt again; cleared if wrong.
+                g.chest_passwords.insert((cx, cy), input.clone());
+                g.chest_prompt_error = false;
+            }
+        }
+        if let Some(g) = self.game.as_mut() {
+            g.chest_prompt_input = input;
+            if cancel {
+                g.chest_prompt = None;
+                g.chest_prompt_input.clear();
+                g.chest_prompt_error = false;
             }
         }
     }
@@ -4021,6 +4387,8 @@ fn handle_block_actions(
         || game.campfire_open
         || game.sign_open
         || game.quest_open
+        || game.chest_open
+        || game.chest_prompt.is_some()
     {
         game.break_target = None;
         game.break_progress = 0.0;
@@ -4141,7 +4509,8 @@ fn handle_block_actions(
             Some(crate::protocol::BlockText::Sign(lines)) => lines.clone(),
             _ => Vec::new(),
         };
-        game.sign_draft.resize(crate::protocol::TEXT_ROWS, String::new());
+        game.sign_draft
+            .resize(crate::protocol::TEXT_ROWS, String::new());
         game.sign_open = true;
         game.sign_cell = Some((tx, ty));
         game.action_timer = ACTION_COOLDOWN;
@@ -4161,6 +4530,44 @@ fn handle_block_actions(
         };
         game.quest_open = true;
         game.quest_cell = Some((tx, ty));
+        game.action_timer = ACTION_COOLDOWN;
+        return;
+    }
+
+    // Right-clicking a chest opens it. A plain chest opens straight away; a locked
+    // chest opens with a remembered or freshly-typed password (the server confirms
+    // and replies with the contents, which actually shows the window).
+    if input.placing
+        && game.action_timer <= 0.0
+        && crate::block::is_any_chest(game.world.get_block(tx, ty))
+        && cell_in_reach(game, tx, ty)
+    {
+        let block = game.world.get_block(tx, ty);
+        let cell = (tx, ty);
+        if crate::block::is_locked_chest(block) && !game.chest_unlocked.contains(&cell) {
+            match game.chest_passwords.get(&cell).cloned() {
+                // We know a password for it: try it directly.
+                Some(pw) => {
+                    let _ = net.commands.send(NetCommand::OpenChest {
+                        x: tx,
+                        y: ty,
+                        password: Some(pw),
+                    });
+                }
+                // Otherwise ask for one.
+                None => {
+                    game.chest_prompt = Some(cell);
+                    game.chest_prompt_input.clear();
+                    game.chest_prompt_error = false;
+                }
+            }
+        } else {
+            let _ = net.commands.send(NetCommand::OpenChest {
+                x: tx,
+                y: ty,
+                password: game.chest_passwords.get(&cell).cloned(),
+            });
+        }
         game.action_timer = ACTION_COOLDOWN;
         return;
     }
@@ -4435,6 +4842,13 @@ fn mine_block(
         game.break_progress = 0.0;
         return;
     }
+    // A locked chest can't be broken until it's been unlocked this session — don't
+    // even start chipping at it (the server would reject the break anyway).
+    if crate::block::is_locked_chest(current) && !game.chest_unlocked.contains(&(tx, ty)) {
+        game.break_target = None;
+        game.break_progress = 0.0;
+        return;
+    }
 
     // Restart progress whenever the targeted cell changes.
     if game.break_target != Some((tx, ty)) {
@@ -4483,6 +4897,34 @@ fn creature_at(game: &GameState, world: Vec2) -> Option<EntityId> {
         }
     }
     None
+}
+
+/// Apply a chest-window move locally (optimistic; the server confirms with fresh
+/// snapshots), shuffling a stack between the player's bag and the open chest.
+fn apply_chest_move(game: &mut GameState, from: SlotRef, to: SlotRef) {
+    if game.chest_slots.len() < CHEST_SLOTS {
+        game.chest_slots.resize(CHEST_SLOTS, None);
+    }
+    match (from, to) {
+        (SlotRef::Player(a), SlotRef::Player(b)) => {
+            game.inventory.move_stack(a as usize, b as usize)
+        }
+        (SlotRef::Chest(a), SlotRef::Chest(b)) => {
+            move_within(&mut game.chest_slots, a as usize, b as usize)
+        }
+        (SlotRef::Player(a), SlotRef::Chest(b)) => move_between(
+            game.inventory.slots_mut(),
+            a as usize,
+            &mut game.chest_slots,
+            b as usize,
+        ),
+        (SlotRef::Chest(a), SlotRef::Player(b)) => move_between(
+            &mut game.chest_slots,
+            a as usize,
+            game.inventory.slots_mut(),
+            b as usize,
+        ),
+    }
 }
 
 /// Whether cell `(tx, ty)` is close enough to place into — gated by the same
@@ -4693,8 +5135,15 @@ impl App {
                         || g.campfire_open
                         || g.sign_open
                         || g.quest_open
+                        || g.chest_open
+                        || g.chest_prompt.is_some()
                 });
                 if menu_open {
+                    // Closing a chest tells the server to stop streaming its updates.
+                    let close_chest = self.game.as_ref().is_some_and(|g| g.chest_open);
+                    if close_chest && let Some(net) = &self.net {
+                        let _ = net.commands.send(NetCommand::CloseChest);
+                    }
                     if let Some(g) = &mut self.game {
                         g.inventory_open = false;
                         g.move_from = None;
@@ -4706,6 +5155,10 @@ impl App {
                         g.sign_cell = None;
                         g.quest_open = false;
                         g.quest_cell = None;
+                        g.chest_open = false;
+                        g.chest_cell = None;
+                        g.chest_move_from = None;
+                        g.chest_prompt = None;
                     }
                 } else {
                     self.leave();

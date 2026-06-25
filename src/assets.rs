@@ -121,6 +121,11 @@ blocks!(
     "boat",
     "sign",
     "quest_board",
+    "gold_ore",
+    "raw_gold",
+    "gold_ingot",
+    "chest",
+    "locked_chest",
 );
 
 sprites!(

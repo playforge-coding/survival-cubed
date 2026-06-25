@@ -27,7 +27,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::entity::Entity;
-use crate::inventory::Inventory;
+use crate::inventory::{Inventory, Slot};
 use crate::protocol::{BlockId, Waypoint};
 use crate::world::{CHUNK_AREA, Chunk, ChunkCoord, Dimension};
 
@@ -40,7 +40,7 @@ const UNDERWORLD_CHUNKS_DIR: &str = "chunks_underworld";
 /// Magic prefix on `world.dat` ("SCWD" — Survival Cubed World Data).
 const MAGIC: u32 = 0x5343_5744;
 /// On-disk format version; bump on any incompatible layout change.
-const VERSION: u32 = 11;
+const VERSION: u32 = 12;
 
 /// Subdirectory name holding a dimension's chunks.
 fn chunks_dir_name(dim: Dimension) -> &'static str {
@@ -109,6 +109,15 @@ pub struct WorldMeta {
     /// the writing on every board survives a save/reload (see [`crate::server`]).
     #[serde(default)]
     pub block_text: Vec<(Dimension, i32, i32, crate::protocol::BlockText)>,
+    /// Chest contents as `(dimension, x, y, slots)`, so everything stored in a
+    /// chest (plain or locked) survives a save/reload. Each entry's slot list is
+    /// [`CHEST_SLOTS`](crate::inventory::CHEST_SLOTS) long.
+    #[serde(default)]
+    pub chests: Vec<(Dimension, i32, i32, Vec<Slot>)>,
+    /// Locked-chest passwords as `(dimension, x, y, password)`, so a locked chest
+    /// stays locked with the same password across a reload.
+    #[serde(default)]
+    pub chest_locks: Vec<(Dimension, i32, i32, String)>,
     /// Per-account password records as `(player name, encoded hash)` — see
     /// [`crate::auth`]. Holds the authentication credentials for everyone who has
     /// registered on this world, so logins are verified across restarts. Passwords
@@ -450,6 +459,13 @@ mod tests {
                     ]),
                 ),
             ],
+            chests: vec![(Dimension::Underworld, 2, 3, {
+                let mut slots = vec![None; crate::inventory::CHEST_SLOTS];
+                slots[0] = Some((STONE, 30, 0));
+                slots[5] = Some((DIRT, 12, 0));
+                slots
+            })],
+            chest_locks: vec![(Dimension::Underworld, 2, 3, "hunter2".into())],
             accounts: vec![(
                 "ada".into(),
                 "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2g".into(),
@@ -477,6 +493,8 @@ mod tests {
         assert_eq!(got.players[0].dim, Dimension::Underworld);
         assert_eq!(got.players[0].respawn, Some((Dimension::Underworld, 3, -5)));
         assert_eq!(got.block_text, meta.block_text);
+        assert_eq!(got.chests, meta.chests);
+        assert_eq!(got.chest_locks, meta.chest_locks);
         assert_eq!(got.players[0].waypoints, meta.players[0].waypoints);
         assert_eq!(got.underworld_entities.len(), 1);
         assert_eq!(got.underworld_entities[0].id, 8);
