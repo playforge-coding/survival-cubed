@@ -137,12 +137,24 @@ const STEEP_THRESHOLD: i32 = 5;
 
 // --- Underworld ----------------------------------------------------------
 
-/// Average ceiling row of the underworld: the topmost solid charred rock in a
-/// column. Sits high up so a player falling in from the overworld drops only a
-/// short way onto the charred surface, and the open rows above it form the
-/// underworld's "sky" — the gap a player climbs back up through to leave.
-const UNDERWORLD_SURFACE_BASE: i32 = 12;
+/// Average row of the underworld's solid charred-rock **ceiling**: the roof fills
+/// every column from the very top of the world (row 0) down to here, and the
+/// first open cavern cell hangs just beneath it. Its gently undulating underside
+/// is the ceiling a player sees overhead — the underworld is a closed vault, not
+/// open sky. A player climbing back up must dig through this roof to leave.
+const UNDERWORLD_CEILING_BASE: i32 = 10;
 /// Surface deviation amplitude (cells) of the gently uneven charred-rock ceiling.
+const UNDERWORLD_CEILING_AMP: f32 = 4.0;
+/// Height (cells) of the open cavern between the ceiling and the charred-rock
+/// floor below. Tall, so the underworld reads as a vast vaulted hall a player can
+/// build and climb up through — far more headroom than a low crawlspace.
+const UNDERWORLD_CAVERN_HEIGHT: i32 = 80;
+/// Average **floor** row of the underworld: the topmost solid charred rock a
+/// player walks on, a full cavern's height below the ceiling. The player warps in
+/// onto this floor; everything from here down to bedrock is the diggable charred
+/// depths (tungsten, ash valleys, caves).
+const UNDERWORLD_SURFACE_BASE: i32 = UNDERWORLD_CEILING_BASE + UNDERWORLD_CAVERN_HEIGHT;
+/// Surface deviation amplitude (cells) of the gently uneven charred-rock floor.
 const UNDERWORLD_SURFACE_AMP: f32 = 4.0;
 /// Per-mille chance that an exposed charred-rock floor cell (open above, solid
 /// below) sprouts a tongue of natural fire. Sparse, so the underworld glows with
@@ -578,16 +590,31 @@ impl WorldGen {
         }
     }
 
-    /// Ceiling row (topmost solid charred rock) of the underworld for a world
-    /// column. Open air sits above it — the gap the player climbs to escape.
+    /// Floor row (topmost solid charred rock the player walks on) of the
+    /// underworld for a world column. The open cavern rises above it up to the
+    /// [`underworld_ceiling`](Self::underworld_ceiling); the charred depths fall
+    /// away below it to bedrock.
     pub fn underworld_surface(&self, world_x: i32) -> i32 {
         let n = self.uw_height_noise.get_noise_2d(world_x as f32, 0.0); // -1..1
         (UNDERWORLD_SURFACE_BASE as f32 + n * UNDERWORLD_SURFACE_AMP).round() as i32
     }
 
-    /// How steeply the underworld ceiling rises or falls across this column,
+    /// Ceiling row of the underworld for a world column: solid charred rock fills
+    /// `0..row` (the roof), and the topmost open cavern cell is at `row`. Undulates
+    /// gently per column — offset off the floor's noise so roof and floor aren't
+    /// mirror images — so the visible ceiling reads as natural rock.
+    pub fn underworld_ceiling(&self, world_x: i32) -> i32 {
+        let n = self
+            .uw_height_noise
+            .get_noise_2d(world_x as f32 + 1000.0, 0.0); // -1..1
+        (UNDERWORLD_CEILING_BASE as f32 + n * UNDERWORLD_CEILING_AMP)
+            .round()
+            .max(1.0) as i32
+    }
+
+    /// How steeply the underworld floor rises or falls across this column,
     /// measured like [`surface_slope`](Self::surface_slope). Used to decide
-    /// whether a cave may open through the charred ceiling here.
+    /// whether a cave may open through the charred floor here.
     fn underworld_slope(&self, world_x: i32) -> i32 {
         (self.underworld_surface(world_x + SLOPE_SPAN)
             - self.underworld_surface(world_x - SLOPE_SPAN))
@@ -595,7 +622,7 @@ impl WorldGen {
     }
 
     /// Surface row for `dim`'s spawn/landing helpers: the overworld grass line or
-    /// the underworld's charred ceiling.
+    /// the underworld's charred floor (the cavern floor a warped-in player lands on).
     pub fn surface_for(&self, dim: Dimension, world_x: i32) -> i32 {
         match dim {
             Dimension::Overworld => self.surface_height(world_x),
@@ -603,18 +630,18 @@ impl WorldGen {
         }
     }
 
-    /// Whether the underworld cell at `(world_x, world_y)` is hollowed into a cave.
-    /// One winding/cavern field is carved as a band around its zero contour, wide
-    /// and frequent so the charred rock is riddled with connected pockets. The
-    /// [`SURFACE_CRUST`] below the charred ceiling is carved only where the ceiling
-    /// drops away steeply, so caves open to the underworld sky on the side of a
+    /// Whether the charred cell at `(world_x, world_y)` below the floor is hollowed
+    /// into a cave. One winding/cavern field is carved as a band around its zero
+    /// contour, wide and frequent so the charred depths are riddled with connected
+    /// pockets. The [`SURFACE_CRUST`] below the charred floor is carved only where
+    /// the floor drops away steeply, so caves open into the cavern on the side of a
     /// ledge — never as a hole in the floor the player lands on. The bottom-most
     /// rows are spared too, so nothing opens into the void below the world.
     fn is_underworld_cave(&self, world_x: i32, world_y: i32, surface: i32) -> bool {
         if world_y >= WORLD_HEIGHT - BEDROCK_FLOOR {
             return false;
         }
-        // As in the overworld, keep a solid crust over the charred ceiling except
+        // As in the overworld, keep a solid crust beneath the charred floor except
         // where it drops away steeply, so caves open in the side of a ledge and
         // never as a hole in the floor the player lands on.
         if world_y - surface < SURFACE_CRUST && self.underworld_slope(world_x) < STEEP_THRESHOLD {
@@ -626,10 +653,19 @@ impl WorldGen {
             < 0.14
     }
 
-    /// Whether the underworld cell at `(world_x, world_y)` is solid charred rock:
-    /// at or below the ceiling and not carved out as a cave.
-    fn underworld_solid(&self, world_x: i32, world_y: i32, surface: i32) -> bool {
-        world_y >= surface && !self.is_underworld_cave(world_x, world_y, surface)
+    /// Whether the underworld cell at `(world_x, world_y)` is solid charred rock.
+    /// Three bands stack down a column: the solid **roof** (`0..ceiling`), the open
+    /// **cavern** (`ceiling..floor`), and the solid charred **depths**
+    /// (`floor..`) — the last riddled with caves.
+    fn underworld_solid(&self, world_x: i32, world_y: i32, ceiling: i32, floor: i32) -> bool {
+        if world_y < ceiling {
+            return true; // the roof: solid charred rock from the top of the world
+        }
+        if world_y < floor {
+            return false; // the open cavern between roof and floor
+        }
+        // The charred depths below the floor, hollowed by caves.
+        !self.is_underworld_cave(world_x, world_y, floor)
     }
 
     /// Which underworld biome the given world column belongs to. Picks an ash
@@ -644,18 +680,22 @@ impl WorldGen {
         }
     }
 
-    /// Which block a solid underworld cell becomes: a band of [`ASH`] over the
-    /// surface of an ash valley, otherwise charred rock — or a vein of
-    /// [`TUNGSTEN_ORE`] where the tungsten field peaks well below the ceiling.
-    fn underworld_block(&self, world_x: i32, world_y: i32, surface: i32) -> BlockId {
-        // Ash valleys blanket their charred-rock surface in a band of loose ash,
-        // shallower than tungsten ever sits, so the two never conflict.
-        if world_y - surface < ASH_DEPTH
+    /// Which block a solid underworld cell becomes, given the column's `floor`
+    /// row: a band of [`ASH`] over the floor of an ash valley, a vein of
+    /// [`TUNGSTEN_ORE`] where the tungsten field peaks well below the floor, and
+    /// plain charred rock everywhere else (including the whole roof, which sits
+    /// above the floor and so matches neither band).
+    fn underworld_block(&self, world_x: i32, world_y: i32, floor: i32) -> BlockId {
+        let depth = world_y - floor;
+        // Ash valleys blanket their charred-rock floor in a band of loose ash,
+        // shallower than tungsten ever sits, so the two never conflict. Guarded to
+        // the floor band so the roof (negative depth) stays charred rock.
+        if (0..ASH_DEPTH).contains(&depth)
             && self.underworld_biome_at(world_x) == UnderworldBiome::AshValley
         {
             return ASH;
         }
-        if world_y - surface >= TUNGSTEN_ORE_MIN_DEPTH {
+        if depth >= TUNGSTEN_ORE_MIN_DEPTH {
             let v = self
                 .tungsten_noise
                 .get_noise_3d(world_x as f32, world_y as f32, 0.0); // -1..1
@@ -666,26 +706,28 @@ impl WorldGen {
         CHARRED_ROCK
     }
 
-    /// Generate one charred-rock chunk of the underworld. Charred rock fills every
-    /// column from its ceiling down to the bedrock floor, riddled with caves, and a
-    /// scattering of natural fire flickers on exposed floors (and along the ceiling
-    /// surface). Everything above the ceiling is open air — the underworld's sky.
+    /// Generate one charred-rock chunk of the underworld. A solid charred roof caps
+    /// the column at the top of the world; beneath it opens a tall cavern; below the
+    /// floor, charred rock falls away to bedrock, riddled with caves. A scattering
+    /// of natural fire flickers on exposed floors (the cavern floor and cave ledges).
     fn generate_underworld_chunk(&self, cx: i32, cy: i32) -> Chunk {
         let mut chunk = Chunk::empty();
         let base_x = cx * CHUNK_SIZE;
         let base_y = cy * CHUNK_SIZE;
         for lx in 0..CHUNK_SIZE {
             let world_x = base_x + lx;
-            let surface = self.underworld_surface(world_x);
+            let ceiling = self.underworld_ceiling(world_x);
+            let floor = self.underworld_surface(world_x);
             for ly in 0..CHUNK_SIZE {
                 let world_y = base_y + ly;
-                if self.underworld_solid(world_x, world_y, surface) {
-                    chunk.set(lx, ly, self.underworld_block(world_x, world_y, surface));
+                if self.underworld_solid(world_x, world_y, ceiling, floor) {
+                    chunk.set(lx, ly, self.underworld_block(world_x, world_y, floor));
                     continue;
                 }
-                // Open cell (cave or sky): kindle a flame on any floor it exposes —
-                // a charred-rock cell directly beneath it — by a sparse roll.
-                if self.underworld_solid(world_x, world_y + 1, surface)
+                // Open cell (cavern or cave): kindle a flame on any floor it exposes
+                // — a charred-rock cell directly beneath it — by a sparse roll. The
+                // roof's underside has open air below it, so it never catches fire.
+                if self.underworld_solid(world_x, world_y + 1, ceiling, floor)
                     && self.cell_hash(world_x, world_y, 0xF12E) % 1000 < UNDERWORLD_FIRE_CHANCE
                 {
                     chunk.set(lx, ly, FIRE);

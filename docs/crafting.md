@@ -122,9 +122,11 @@ Eat the food in your selected hotbar slot with <kbd>F</kbd>.
   right-click again to step out. It's a reusable vehicle (never consumed) and rides
   on the water surface; see **[Boats](gameplay.md#boats)**.
 - **Fire Key** — a reusable artifact that warps you between the **overworld** and
-  the **underworld**. Right-click to use it; the server picks a safe landing spot.
-  Crafting one requires reaching the underworld for tungsten first — see
-  **[The World](world.md#the-underworld)**.
+  the **underworld**. Right-click to use it. It remembers where you last fired it
+  on each side and returns you there, so the two anchors act like a linked pair of
+  portals; the first time you cross into a dimension (no anchor yet) the server
+  picks a safe landing spot. Crafting one requires reaching the underworld for
+  tungsten first — see **[The World](world.md#the-underworld)**.
 
 ## Materials reference
 

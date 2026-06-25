@@ -67,10 +67,13 @@ paste them into any world — see **[Creator Mode](creator-mode.md#the-structure
 
 ## The underworld
 
-Beneath the overworld lies the **underworld**: a cavernous realm of **charred
-rock** under a low ceiling, with basins of loose **ash** (the *ash valley* zones).
-Scattered patches of natural **fire** burn on exposed floors — a real hazard, so
-watch your step.
+Beneath the overworld lies the **underworld**: a vast vaulted hall of **charred
+rock**. A solid charred **ceiling** caps it overhead, and far below stretches the
+charred floor you walk on — between them opens a tall cavern with plenty of
+headroom to build and climb through. The floor's *ash valley* zones are blanketed
+in loose **ash**, and scattered patches of natural **fire** burn on exposed
+floors — a real hazard, so watch your step. Below the floor, charred rock falls
+away to bedrock, riddled with caves where the tungsten hides.
 
 The underworld is the only source of **tungsten ore**, the top tier of gear. It
 sits in permanent dim, warm light (no day/night), and its creatures — including
@@ -78,7 +81,10 @@ the fire-trailing **charred skeleton** — are active around the clock.
 
 To get there, craft a **[fire key](crafting.md#tools-and-utility-items)** (it
 needs tungsten itself, so your first trip down is the hard one) and right-click
-to warp between dimensions.
+to warp between dimensions. The key remembers where you last used it on each
+side, so warping back drops you at the exact spot you keyed out from rather than
+a generic landing — your first crossing into a dimension picks a fresh spot, and
+every crossing after returns you to where you left.
 
 ## Weather
 

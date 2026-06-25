@@ -682,6 +682,13 @@ struct Shared {
     /// removed — when the admin stops spectating, so `/spectate` always returns
     /// them whence they came. Empty for anyone not currently spectating.
     spectate_return: Mutex<HashMap<EntityId, (Dimension, f32, f32)>>,
+    /// Where each connected player last *used the fire key* in each dimension, as a
+    /// world-pixel position indexed by [`Dimension::index`] and keyed by entity id.
+    /// Firing the key returns the player to the spot they last fired it from in the
+    /// destination dimension, so the key behaves like a linked pair of portals (one
+    /// anchor per dimension). `None` for a dimension the player has not yet keyed
+    /// from — then a fresh landing spot is chosen instead. Runtime-only.
+    fire_marks: Mutex<HashMap<EntityId, [Option<(f32, f32)>; NUM_DIMENSIONS]>>,
 }
 
 impl Shared {
@@ -2249,7 +2256,11 @@ impl Shared {
 
     /// Use the fire key in hotbar `slot`: if it really holds a
     /// [`fire_key`](crate::block::FIRE_KEY), warp player `id` to the *other*
-    /// dimension, landing them at that dimension's surface in their current column.
+    /// dimension. The key remembers where it was last fired from in each dimension
+    /// (see [`Shared::fire_marks`]), so it drops the player back at the spot they
+    /// last keyed out from on the far side — the two anchors act like a linked pair
+    /// of portals. The very first crossing into a dimension (no anchor yet) falls
+    /// back to a fresh landing spot via [`default_landing`](Self::default_landing).
     /// The key is a reusable artifact — it is not consumed. A no-op (resyncing the
     /// client's inventory) if the slot no longer holds the key, e.g. after an
     /// inventory move raced with the use.
@@ -2259,25 +2270,43 @@ impl Shared {
             return;
         }
         let from = self.dim_of(id);
-        // The column the player is standing in, used to pick a sensible landing
-        // spot on the far side (the same logic as a natural dimension crossing).
-        let x = match self.entities(from).lock().get(id) {
-            Some(p) => p.x,
+        let to = match from {
+            Dimension::Overworld => Dimension::Underworld,
+            Dimension::Underworld => Dimension::Overworld,
+        };
+        // Where the player is standing now — recorded as this dimension's anchor so
+        // a later key from the far side returns them to exactly here.
+        let (x, y) = match self.entities(from).lock().get(id) {
+            Some(p) => (p.x, p.y),
             None => return,
         };
+        let dest = {
+            let mut marks = self.fire_marks.lock();
+            let anchors = marks.entry(id).or_default();
+            anchors[from.index()] = Some((x, y));
+            anchors[to.index()]
+        };
+        let (nx, ny) = match dest {
+            // Return to where the player last fired the key on the far side.
+            Some(pos) => pos,
+            // Never keyed out of there before: pick a fresh spot in their column.
+            None => self.default_landing(to, x),
+        };
+        self.enter_dimension(id, to, nx, ny);
+    }
+
+    /// A fresh landing position in dimension `to` for a player crossing from world
+    /// x-pixel `x`, used when the fire key has no remembered anchor there yet.
+    /// Entering the underworld drops onto its charred floor in the same column;
+    /// surfacing in the overworld carves an air pocket at its floor to stand in.
+    fn default_landing(&self, to: Dimension, x: f32) -> (f32, f32) {
         let cell_x = (x / TILE_SIZE).floor() as i32;
-        match from {
-            // Overworld → underworld: drop onto the charred surface of this column.
-            Dimension::Overworld => {
-                let surface = self.world(Dimension::Underworld).lock().surface(cell_x);
-                let ny = ((surface - 3).max(0) as f32) * TILE_SIZE;
-                self.enter_dimension(id, Dimension::Underworld, x, ny);
-            }
-            // Underworld → overworld: carve a landing pocket at the overworld floor.
+        match to {
             Dimension::Underworld => {
-                let (nx, ny) = self.carve_overworld_landing(cell_x);
-                self.enter_dimension(id, Dimension::Overworld, nx, ny);
+                let surface = self.world(Dimension::Underworld).lock().surface(cell_x);
+                (x, ((surface - 3).max(0) as f32) * TILE_SIZE)
             }
+            Dimension::Overworld => self.carve_overworld_landing(cell_x),
         }
     }
 
@@ -2684,6 +2713,7 @@ fn build_endpoint(
         banned_ips: Mutex::new(banned_ips),
         bans_path,
         spectate_return: Mutex::new(HashMap::new()),
+        fire_marks: Mutex::new(HashMap::new()),
     });
 
     // Only seed fresh creatures for a brand-new world; a loaded one keeps its own.
@@ -7103,6 +7133,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
     shared.clients.lock().remove(&id);
     shared.client_dim.lock().remove(&id);
     shared.fire_cd.lock().remove(&id);
+    shared.fire_marks.lock().remove(&id);
     shared.knight_targets.lock().remove(&id);
     shared.spectate_return.lock().remove(&id);
     shared.creators.lock().remove(&id);
