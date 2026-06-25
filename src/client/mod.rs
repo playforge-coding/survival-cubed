@@ -2978,6 +2978,12 @@ impl App {
                     if ui.button("Enchanted Demon").clicked() {
                         spawn = Some(EntityKind::EnchantedDemon);
                     }
+                    if ui.button("Necromancer").clicked() {
+                        spawn = Some(EntityKind::Necromancer);
+                    }
+                    if ui.button("Skull").clicked() {
+                        spawn = Some(EntityKind::Skull);
+                    }
                     if ui.button("Knight").clicked() {
                         spawn = Some(EntityKind::Knight { owner: None });
                     }

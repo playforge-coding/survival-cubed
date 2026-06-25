@@ -95,8 +95,10 @@ Most monsters only **hunt at night** (or in dark caves). Build shelter and keep 
 | **Demon** | 28 | Underworld charred expanse (rare) | Keeps its distance and hurls **fireballs** that burst into flame; active at all hours |
 | **Orc** | 50 | Underworld charred expanse | Slow, hulking brute; plants its feet for a telegraphed **slam** that hits brutally hard; active at all hours |
 | **Orc Mage** | 30 | Underworld charred expanse (rare) | A robed support caster; lands **no blows of its own** — it shies from you and **enchants nearby demons** instead; active at all hours |
-| **Enchanted Demon** | 40 | Underworld charred expanse | A demon a mage has empowered: it **flies** and hurls **purple magic fireballs** that reach farther and hit harder; never spawns on its own |
+| **Enchanted Demon** | 40 | Underworld charred expanse | A demon a mage has empowered: it **flies** and looses **three purple magic fireballs at once** (one straight, two fanned up and down) that reach farther and hit harder; never spawns on its own |
 | **Ash Twister** | 18 | Underworld **ash valleys** | A whirling column of ash; on contact it **flings you high into the air** — the fall does the damage; active at all hours |
+| **Necromancer** | 26 | Overworld **deserts** & underworld **ash valleys** | Hooded caster; keeps its distance and hurls **summoner fireballs** that burst into bouncing skulls; **burns up at daybreak** in the desert (roams the depths around the clock) |
+| **Skull** | 8 | Summoned by necromancers | A bouncing skeleton skull that hops toward you and gnashes on contact; frail and short-lived; **burns up at daybreak** in the overworld |
 
 !!! danger "Mind the drop after an ash twister hits you"
     An **ash twister** barely scratches you on contact — but it hurls you skyward,
@@ -123,11 +125,22 @@ Most monsters only **hunt at night** (or in dark caves). Build shelter and keep 
     An **orc mage** never attacks you directly — it hangs back and **enchants the
     demons around it**, turning each into a flying **enchanted demon** that chases
     you through the air and pelts you with **purple fireballs** that reach farther
-    and hit harder than ordinary ones. A mage heals a demon to full as it empowers
+    and hit harder than ordinary ones — and it fires them **three at a time**, in a
+    fan you can't simply duck under. A mage heals a demon to full as it empowers
     it, so a worn-down demon suddenly comes back stronger. If you see a mage, run
     it down before it builds an air force — but watch its enchanted demons, which can
     dive on you from any angle. Their magic fireballs still leave only ordinary fire
     where they burst.
+
+!!! danger "Necromancers raise a tide of skulls"
+    A **necromancer** never closes in — it kites you and lobs **summoner fireballs**,
+    each of which bursts into a bouncing **skull** wherever it lands. The skulls hop
+    after you and gnash on contact, so a necromancer left alone quickly buries you
+    under them. Rush it down (it's frail) before the floor fills with skulls; the
+    skulls themselves pop in a hit or two and give out on their own after a while.
+    Necromancers and their skulls **burn up at daybreak** in the desert and overworld —
+    but the **underworld is eternal night**, so there (in the ash valleys) they never
+    burn, and neither do zombies or skeletons that wander down.
 
 Monsters are hostile to **[knights](#the-knight)** as well as to you — they will
 chase down and attack a man-at-arms whether or not you have recruited it, and a
@@ -155,6 +168,8 @@ In **creator mode** you are invisible to monsters and take no damage from them.
 - **Magic fireball** — the purple bolt an enchanted demon hurls; it flies farther
   and hits harder than an ordinary fireball, but likewise bursts into a tongue of
   fire where it lands.
+- **Summoner fireball** — the bolt a necromancer hurls; it deals light damage on a
+  direct hit but, instead of fire, **bursts into a bouncing skull** wherever it lands.
 - **Dropped items** — block and tool stacks lying on the ground (from mining,
   drops, or the <kbd>Q</kbd> key). Walk into them to pick them up; dropped tools
   keep their durability.

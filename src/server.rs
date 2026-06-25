@@ -25,7 +25,7 @@ use crate::block::BlockRegistry;
 use crate::daylight;
 use crate::entity::{
     BONE_SIZE, Entities, Entity, EntityId, EntityKind, FIREBALL_SIZE, ITEM_SIZE,
-    MAGIC_FIREBALL_SIZE, PLAYER_SIZE,
+    MAGIC_FIREBALL_SIZE, PLAYER_SIZE, SUMMONER_FIREBALL_SIZE,
 };
 use crate::inventory::{CHEST_SLOTS, Inventory, Slot, move_between, move_within};
 use crate::net::{VERSION_MISMATCH_CLOSE, fingerprint, read_msg, read_version, write_msg};
@@ -277,6 +277,10 @@ const ENCHANTED_DEMON_SHOOT_RANGE: f32 = 260.0;
 const ENCHANTED_DEMON_KEEP_DIST: f32 = 120.0;
 /// Seconds an enchanted demon waits between magic fireballs.
 const ENCHANTED_DEMON_SHOOT_INTERVAL: f32 = 2.0;
+/// Spread (radians) of an enchanted demon's volley: rather than one bolt it looses
+/// three at a time — one straight at the target and two fanned this far above and
+/// below it — so the player must dodge a wider arc.
+const ENCHANTED_DEMON_SPREAD: f32 = 0.32;
 /// Flight speed of a hurled magic fireball, in pixels/second — faster than an
 /// ordinary fireball.
 const MAGIC_FIREBALL_SPEED: f32 = 170.0;
@@ -339,6 +343,52 @@ const ASH_TWISTER_ATTACK_INTERVAL: f32 = 2.0;
 const ASH_TWISTER_CHUNK_CHANCE: u32 = 40;
 /// Most ash twisters a single fresh underworld chunk seeds at once.
 const ASH_TWISTER_CHUNK_MAX: u32 = 2;
+/// Stalking speed of a necromancer, in pixels/second — it kites the player like a
+/// skeleton, repositioning for a clean shot rather than charging in.
+const NECROMANCER_SPEED: f32 = 22.0;
+/// How far (px) a necromancer notices a player and begins stalking/summoning.
+const NECROMANCER_AGGRO: f32 = 240.0;
+/// Maximum gap (px between AABBs) at which a necromancer looses a summoner fireball.
+const NECROMANCER_SHOOT_RANGE: f32 = 200.0;
+/// Standoff gap (px between AABBs) a necromancer tries to keep, backing away from a
+/// player closer than this so it can keep summoning from range.
+const NECROMANCER_KEEP_DIST: f32 = 110.0;
+/// Seconds a necromancer waits between summoner fireballs — slower than a skeleton's
+/// bone cadence, since each shot conjures a skull.
+const NECROMANCER_SHOOT_INTERVAL: f32 = 2.8;
+/// Of the night undead the server spawns near players, the percent that arrive as a
+/// necromancer instead of a zombie/skeleton — but only when the spawn lands on the
+/// **desert** surface, the necromancer's overworld haunt. So like its skulls it is a
+/// nighttime desert threat that burns off at daybreak.
+const NECROMANCER_NIGHT_PERCENT: u32 = 35;
+/// Percent chance that a fresh **ash valley** (underworld) chunk seeds a necromancer.
+const NECROMANCER_ASH_CHUNK_CHANCE: u32 = 22;
+/// Flight speed of a hurled summoner fireball, in pixels/second.
+const SUMMONER_FIREBALL_SPEED: f32 = 130.0;
+/// Damage a summoner fireball deals on directly striking a player — light, since its
+/// real menace is the skull it bursts into.
+const SUMMONER_FIREBALL_DAMAGE: i32 = 4;
+/// Seconds a summoner fireball stays airborne before it gives out and bursts.
+const SUMMONER_FIREBALL_LIFETIME: f32 = 2.5;
+/// Maximum gap (px between AABBs) at which an in-flight summoner fireball counts as
+/// striking a player.
+const SUMMONER_FIREBALL_HIT_RANGE: f32 = 2.0;
+/// Horizontal hop speed of a bouncing skull, in pixels/second.
+const SKULL_SPEED: f32 = 64.0;
+/// Upward velocity (px/s, negative is up) a skull springs with each time it lands —
+/// a brisk, lively bounce a couple of tiles high.
+const SKULL_BOUNCE_VELOCITY: f32 = -340.0;
+/// How far (px) a skull notices a player and steers its hops toward them.
+const SKULL_AGGRO: f32 = 220.0;
+/// Maximum gap (px between AABBs) at which a skull gnashes the player on contact.
+const SKULL_ATTACK_RANGE: f32 = 3.0;
+/// Damage a skull deals when it catches the player.
+const SKULL_DAMAGE: i32 = 5;
+/// Seconds a skull waits between bites so a player it's bouncing on isn't chewed
+/// every tick.
+const SKULL_ATTACK_INTERVAL: f32 = 0.8;
+/// Seconds a summoned skull caroms around before it gives out and despawns.
+const SKULL_LIFETIME: f32 = 14.0;
 /// Marching speed of a knight on foot, in pixels/second — brisk enough to keep up
 /// with a walking owner and run down the foes it's sent against.
 const KNIGHT_SPEED: f32 = 40.0;
@@ -3818,6 +3868,48 @@ fn maybe_spawn_ash_twisters(shared: &Shared, cx: i32, cy: i32) {
     }
 }
 
+/// Possibly seed a necromancer into a freshly generated **ash valley** (underworld)
+/// chunk, like the ash twister — skipping any column that isn't an ash valley, and
+/// dropping onto the first floor (open cell above, solid below) the column holds.
+/// Deterministic per chunk via [`chunk_hash`] on its own salt range. The underworld is
+/// always dark, so these necromancers roam around the clock.
+fn maybe_spawn_necromancers_ash(shared: &Shared, cx: i32, cy: i32) {
+    let mut world = shared.world(Dimension::Underworld).lock();
+    let seed = world.generator.seed();
+    if chunk_hash(seed, cx, cy, 430) % 100 >= NECROMANCER_ASH_CHUNK_CHANCE {
+        return;
+    }
+
+    let base_x = cx * CHUNK_SIZE;
+    let chunk_top = cy * CHUNK_SIZE;
+    let chunk_bottom = chunk_top + CHUNK_SIZE;
+    let (_, h) = EntityKind::Necromancer.size();
+
+    let lx = chunk_hash(seed, cx, cy, 431) % CHUNK_SIZE as u32;
+    let cell_x = base_x + lx as i32;
+    if world.generator.underworld_biome_at(cell_x) != crate::worldgen::UnderworldBiome::AshValley {
+        return;
+    }
+    let mut placed = None;
+    for ty in (chunk_top..chunk_bottom).rev() {
+        if !world.solid(cell_x, ty) && world.solid(cell_x, ty + 1) {
+            placed = Some((ty + 1) as f32 * TILE_SIZE - h);
+            break;
+        }
+    }
+    let Some(y) = placed else { return };
+
+    let id = shared.alloc_id();
+    let entity = Entity::new(id, EntityKind::Necromancer, cell_x as f32 * TILE_SIZE, y);
+    shared
+        .entities(Dimension::Underworld)
+        .lock()
+        .insert(entity.clone());
+    drop(world);
+
+    shared.broadcast_dim(Dimension::Underworld, ServerMessage::EntitySpawn { entity });
+}
+
 /// Possibly seed spiders into a freshly generated chunk. Spiders keep to two
 /// haunts: the tree-shadowed **forest** surface and the **caverns** deep
 /// underground. A forest chunk that holds the grass line drops them onto the
@@ -3935,11 +4027,17 @@ fn maybe_spawn_zombies(shared: &Shared, rng: &mut u32) {
     if players.is_empty() {
         return;
     }
-    // Skeletons share the zombie's nightly budget, so the two undead together
-    // stay capped per player rather than each filling the cap on their own.
+    // Skeletons and desert necromancers share the zombie's nightly budget, so the
+    // night undead together stay capped per player rather than each filling the cap
+    // on their own.
     let undead = entities
         .values()
-        .filter(|e| matches!(e.kind, EntityKind::Zombie | EntityKind::Skeleton))
+        .filter(|e| {
+            matches!(
+                e.kind,
+                EntityKind::Zombie | EntityKind::Skeleton | EntityKind::Necromancer
+            )
+        })
         .count();
     if undead >= players.len() * ZOMBIE_MAX_PER_PLAYER {
         return;
@@ -3953,17 +4051,20 @@ fn maybe_spawn_zombies(shared: &Shared, rng: &mut u32) {
     next_rng(rng);
     let span = (ZOMBIE_SPAWN_MAX_DIST - ZOMBIE_SPAWN_MIN_DIST) as u32;
     let dist = ZOMBIE_SPAWN_MIN_DIST + (*rng % span.max(1)) as f32;
+    let cell_x = ((px + side * dist) / TILE_SIZE).floor() as i32;
+    let surface = world.surface(cell_x);
 
-    // Some of the night's undead arrive as ranged skeletons instead of zombies.
+    // Pick what arrives. The desert raises necromancers at night; elsewhere (and on
+    // the rest of the desert rolls) the night yields ranged skeletons or plain zombies.
     next_rng(rng);
-    let kind = if *rng % 100 < SKELETON_SPAWN_PERCENT {
+    let kind = if world.biome(cell_x) == Biome::Desert && *rng % 100 < NECROMANCER_NIGHT_PERCENT {
+        EntityKind::Necromancer
+    } else if *rng % 100 < SKELETON_SPAWN_PERCENT {
         EntityKind::Skeleton
     } else {
         EntityKind::Zombie
     };
     let (_, h) = kind.size();
-    let cell_x = ((px + side * dist) / TILE_SIZE).floor() as i32;
-    let surface = world.surface(cell_x);
     let x = cell_x as f32 * TILE_SIZE;
     let y = surface as f32 * TILE_SIZE - h;
     // Skip spawns that land jarringly far above the player (e.g. across a deep
@@ -4142,7 +4243,10 @@ struct Step {
 /// Locks `dim`'s `world` then its `entities` for the whole step, matching the
 /// order used elsewhere so the two can never deadlock.
 fn step_entities(shared: &Shared, dim: Dimension) -> Step {
-    let night = daylight::is_night(shared.time_of_day());
+    // The underworld is sunless — it counts as night there around the clock, so
+    // creatures that hunt only after dark (slimes) stay aggressive and undead that
+    // burn at daybreak (zombies, skeletons, necromancers, skulls) never burn up below.
+    let night = dim == Dimension::Underworld || daylight::is_night(shared.time_of_day());
     let mut world = shared.world(dim).lock();
     let mut entities = shared.entities(dim).lock();
 
@@ -4290,6 +4394,21 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     let orc_mage_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::OrcMage))
+        .map(|e| e.id)
+        .collect();
+    let necromancer_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Necromancer))
+        .map(|e| e.id)
+        .collect();
+    let skull_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Skull))
+        .map(|e| e.id)
+        .collect();
+    let summoner_fireball_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::SummonerFireball))
         .map(|e| e.id)
         .collect();
     let knight_ids: Vec<EntityId> = entities
@@ -5442,6 +5561,203 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         broadcasts.push(ServerMessage::EntitySpawn { entity: bone });
     }
 
+    // Necromancers: hooded ranged casters that kite the player like a skeleton but,
+    // instead of bones, hurl summoner fireballs that burst into bouncing skulls. They
+    // burn up at daybreak (in the overworld; the underworld is always "night").
+    let mut necromancer_despawns: Vec<EntityId> = Vec::new();
+    // Summoner fireballs loosed this tick, spawned after the loop so we aren't holding
+    // a mutable borrow of the caster while inserting. Each is `(x, y, vx, vy)`.
+    let mut summons: Vec<(f32, f32, f32, f32)> = Vec::new();
+    for id in necromancer_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+
+        // Daybreak: burn up and vanish on the spot (like the skeleton).
+        if !night {
+            necromancer_despawns.push(id);
+            continue;
+        }
+
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let home = *e.home_x.get_or_insert(e.x);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+        let target = nearest_prey(&hostile_players, &knight_boxes, scx, scy, NECROMANCER_AGGRO);
+        let chasing = target.is_some();
+
+        // Kiting heading: close in when out of range, back off when crowded, else hold.
+        let (dir, gap, aim) = match target {
+            Some(p) => {
+                let gap = aabb_gap(e.x, e.y, w, h, p.x, p.y, p.w, p.h);
+                let toward = if p.x + p.w * 0.5 >= scx { 1.0 } else { -1.0 };
+                let dir = if gap < NECROMANCER_KEEP_DIST {
+                    -toward // too close: retreat
+                } else if gap > NECROMANCER_SHOOT_RANGE {
+                    toward // too far: advance
+                } else {
+                    0.0 // in the sweet spot: stand and summon
+                };
+                (dir, gap, Some((p.x, p.y, p.w, p.h)))
+            }
+            None => (wander_dir(scx, e.vx, home), f32::INFINITY, None),
+        };
+
+        let m = step_ground(
+            &mut world,
+            (e.x, e.y, w, h),
+            e.vy,
+            dir,
+            NECROMANCER_SPEED,
+            chasing,
+        );
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        // Point the reported vx's sign at the target so it faces the player it's
+        // fighting even while backing away (as the skeleton does).
+        let bcast_vx = match aim {
+            Some((px, _, pw, _)) => {
+                let cx = m.x + w * 0.5;
+                let toward = if px + pw * 0.5 >= cx { 1.0 } else { -1.0 };
+                toward * m.vx.abs()
+            }
+            None => m.vx,
+        };
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: bcast_vx,
+            vy: m.vy,
+        });
+
+        // Loose a summoner fireball when a target is within range and we're off
+        // cooldown, aiming from the caster's upper body at the target's center.
+        if let Some((px, py, pw, ph)) = aim {
+            if e.attack_cd <= 0.0 && gap <= NECROMANCER_SHOOT_RANGE {
+                e.attack_cd = NECROMANCER_SHOOT_INTERVAL;
+                let (fw, fh) = SUMMONER_FIREBALL_SIZE;
+                let sx = m.x + w * 0.5 - fw * 0.5;
+                let sy = m.y + h * 0.3 - fh * 0.5;
+                let tx = px + pw * 0.5;
+                let ty = py + ph * 0.5;
+                let dx = tx - (sx + fw * 0.5);
+                let dy = ty - (sy + fh * 0.5);
+                let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                summons.push((
+                    sx,
+                    sy,
+                    dx / len * SUMMONER_FIREBALL_SPEED,
+                    dy / len * SUMMONER_FIREBALL_SPEED,
+                ));
+            }
+        }
+    }
+    for id in necromancer_despawns {
+        entities.remove(id);
+        broadcasts.push(ServerMessage::EntityDespawn { id });
+    }
+    // Spawn the summoner fireballs loosed this tick (not in `summoner_fireball_ids`, so
+    // they begin flying next tick rather than being simulated again immediately).
+    for (x, y, vx, vy) in summons {
+        let fid = shared.alloc_id();
+        let mut fb = Entity::new(fid, EntityKind::SummonerFireball, x, y);
+        fb.vx = vx;
+        fb.vy = vy;
+        fb.attack_cd = SUMMONER_FIREBALL_LIFETIME; // reused as the airborne lifetime timer
+        entities.insert(fb.clone());
+        broadcasts.push(ServerMessage::EntitySpawn { entity: fb });
+    }
+
+    // Skulls: bouncing skeleton skulls a necromancer summoned. They carom around under
+    // gravity — springing off floors, ricocheting off walls — and steer their hops
+    // toward nearby players to gnash at them, giving out after a short life. They burn
+    // up at daybreak in the overworld (but bound freely through the always-dark depths).
+    let mut skull_despawns: Vec<EntityId> = Vec::new();
+    for id in skull_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+
+        // Daybreak: burn up and vanish (like its summoner).
+        if !night {
+            skull_despawns.push(id);
+            continue;
+        }
+
+        // Run out its short life, then despawn.
+        e.flee = (e.flee - TICK_DT).max(0.0); // `flee` repurposed as the skull's life timer
+        if e.flee <= 0.0 {
+            skull_despawns.push(id);
+            continue;
+        }
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+        let target = nearest_prey(&hostile_players, &knight_boxes, scx, scy, SKULL_AGGRO);
+
+        // Ballistic bounce: gravity pulls it down; it reflects off walls and springs
+        // back up off floors, biasing each hop toward the player it can see.
+        e.vy = (e.vy + GRAVITY * TICK_DT).min(MAX_FALL);
+        let (nx, hit_x) = move_x(&mut world, e.x, e.y, w, h, e.vx * TICK_DT);
+        if hit_x {
+            e.vx = -e.vx; // ricochet off the wall
+        }
+        let (ny, hit_y) = move_y(&mut world, nx, e.y, w, h, e.vy * TICK_DT);
+        e.x = nx;
+        e.y = ny;
+        if hit_y {
+            if e.vy > 0.0 {
+                // Landed: spring back up and steer this hop toward the player.
+                e.vy = SKULL_BOUNCE_VELOCITY;
+                e.vx = match target {
+                    Some(ref p) if p.x + p.w * 0.5 < scx => -SKULL_SPEED,
+                    Some(_) => SKULL_SPEED,
+                    None if e.vx < 0.0 => -SKULL_SPEED,
+                    None => SKULL_SPEED,
+                };
+            } else {
+                e.vy = 0.0; // bonked a ceiling: kill the upward run
+            }
+        }
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: nx,
+            y: ny,
+            vx: e.vx,
+            vy: e.vy,
+        });
+
+        // Gnash the player on contact, on its own cadence.
+        if let Some(p) = target {
+            if e.attack_cd <= 0.0
+                && aabb_gap(nx, ny, w, h, p.x, p.y, p.w, p.h) <= SKULL_ATTACK_RANGE
+            {
+                e.attack_cd = SKULL_ATTACK_INTERVAL;
+                let kdir = if p.x + p.w * 0.5 >= nx + w * 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                hit_prey(
+                    &mut bites,
+                    &mut knight_hits,
+                    &p,
+                    (kdir * KNOCKBACK_X, -KNOCKBACK_Y),
+                    SKULL_DAMAGE,
+                );
+            }
+        }
+    }
+    for id in skull_despawns {
+        entities.remove(id);
+        broadcasts.push(ServerMessage::EntityDespawn { id });
+    }
+
     // Charred skeletons: the underworld's relentless brawlers. They charge any
     // player on sight (at all hours — the underworld is always dark), hit harder
     // than a zombie, and lay down a trail of fire behind them while closing in.
@@ -5716,8 +6032,10 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             vy,
         });
 
-        // Hurl a magic fireball when a target is within range and we're off cooldown,
-        // aiming from the demon's upper body straight at the target's center.
+        // Loose a volley of magic fireballs when a target is within range and we're
+        // off cooldown, aiming from the demon's upper body at the target's center.
+        // Rather than one bolt it fires three: one straight at the target and two
+        // fanned above and below it (the unit aim vector rotated by ±the spread).
         if let Some((px, py, pw, ph, gap)) = aim {
             if e.attack_cd <= 0.0 && gap <= ENCHANTED_DEMON_SHOOT_RANGE {
                 e.attack_cd = ENCHANTED_DEMON_SHOOT_INTERVAL;
@@ -5729,12 +6047,18 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
                 let ddx = tx - (sx + fw * 0.5);
                 let ddy = ty - (sy + fh * 0.5);
                 let dlen = (ddx * ddx + ddy * ddy).sqrt().max(1.0);
-                magic_fireball_throws.push((
-                    sx,
-                    sy,
-                    ddx / dlen * MAGIC_FIREBALL_SPEED,
-                    ddy / dlen * MAGIC_FIREBALL_SPEED,
-                ));
+                let (ux, uy) = (ddx / dlen, ddy / dlen);
+                for a in [0.0, ENCHANTED_DEMON_SPREAD, -ENCHANTED_DEMON_SPREAD] {
+                    let (s, c) = a.sin_cos();
+                    let rx = ux * c - uy * s;
+                    let ry = ux * s + uy * c;
+                    magic_fireball_throws.push((
+                        sx,
+                        sy,
+                        rx * MAGIC_FIREBALL_SPEED,
+                        ry * MAGIC_FIREBALL_SPEED,
+                    ));
+                }
             }
         }
     }
@@ -6260,6 +6584,83 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         broadcasts.push(ServerMessage::EntityDespawn { id });
     }
 
+    // Summoner fireballs in flight: like the others they travel in a straight line
+    // (no gravity), but where they burst — on a wall, on a player, or when their life
+    // runs out — they summon a bouncing skull rather than leaving fire behind.
+    let mut summoner_despawns: Vec<EntityId> = Vec::new();
+    // Skulls conjured this tick, as `(x, y, vx_sign)`, spawned after the loop so we
+    // aren't holding a mutable borrow of the bursting fireball while inserting.
+    let mut skull_summons: Vec<(f32, f32, f32)> = Vec::new();
+    for id in summoner_fireball_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+
+        let (nx, hit_x) = move_x(&mut world, e.x, e.y, w, h, e.vx * TICK_DT);
+        let (ny, hit_y) = move_y(&mut world, nx, e.y, w, h, e.vy * TICK_DT);
+        e.x = nx;
+        e.y = ny;
+
+        // Did it directly strike a player or knight this tick? Light damage and a knock.
+        let kx = if e.vx >= 0.0 {
+            KNOCKBACK_X
+        } else {
+            -KNOCKBACK_X
+        };
+        let mut struck = false;
+        for &(pid, px, py) in &players {
+            if aabb_gap(nx, ny, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1)
+                <= SUMMONER_FIREBALL_HIT_RANGE
+            {
+                bites.push((pid, (kx, -KNOCKBACK_Y), SUMMONER_FIREBALL_DAMAGE));
+                struck = true;
+                break;
+            }
+        }
+        if !struck {
+            for &(kid, kx2, ky, kw, kh) in &knight_boxes {
+                if aabb_gap(nx, ny, w, h, kx2, ky, kw, kh) <= SUMMONER_FIREBALL_HIT_RANGE {
+                    knight_hits.push((kid, SUMMONER_FIREBALL_DAMAGE));
+                    struck = true;
+                    break;
+                }
+            }
+        }
+
+        // Burst on a wall, on a player or knight, or when its life runs out: summon a
+        // skull where it died (popping up in its flight direction), then despawn.
+        if hit_x || hit_y || struck || e.attack_cd <= 0.0 {
+            let sign = if e.vx >= 0.0 { 1.0 } else { -1.0 };
+            skull_summons.push((nx, ny, sign));
+            summoner_despawns.push(id);
+            continue;
+        }
+
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: nx,
+            y: ny,
+            vx: e.vx,
+            vy: e.vy,
+        });
+    }
+    for id in summoner_despawns {
+        entities.remove(id);
+        broadcasts.push(ServerMessage::EntityDespawn { id });
+    }
+    // Conjure the skulls summoned this tick, springing up in the bolt's direction.
+    for (x, y, sign) in skull_summons {
+        let sid = shared.alloc_id();
+        let mut skull = Entity::new(sid, EntityKind::Skull, x, y);
+        skull.vx = sign * SKULL_SPEED;
+        skull.vy = SKULL_BOUNCE_VELOCITY;
+        skull.flee = SKULL_LIFETIME; // `flee` repurposed as the skull's life timer
+        entities.insert(skull.clone());
+        broadcasts.push(ServerMessage::EntitySpawn { entity: skull });
+    }
+
     // Dropped items: fall under gravity, then get collected by any player that
     // is touching them once their pickup delay has elapsed.
     'items: for id in item_ids {
@@ -6631,6 +7032,8 @@ fn is_hostile(kind: &EntityKind) -> bool {
             | EntityKind::AshTwister
             | EntityKind::OrcMage
             | EntityKind::EnchantedDemon
+            | EntityKind::Necromancer
+            | EntityKind::Skull
     )
 }
 
@@ -7329,6 +7732,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                 maybe_spawn_orcs(&shared, cx, cy);
                                 maybe_spawn_orc_mages(&shared, cx, cy);
                                 maybe_spawn_ash_twisters(&shared, cx, cy);
+                                maybe_spawn_necromancers_ash(&shared, cx, cy);
                             }
                         }
                     }
@@ -8161,7 +8565,12 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     if !kind.is_player() {
                         let dim = shared.dim_of(id);
                         let eid = shared.alloc_id();
-                        let entity = Entity::new(eid, kind, x, y);
+                        let mut entity = Entity::new(eid, kind, x, y);
+                        // A skull rides its life on the `flee` timer; a creator-spawned
+                        // one needs it primed or it would wink out on its first tick.
+                        if matches!(entity.kind, EntityKind::Skull) {
+                            entity.flee = SKULL_LIFETIME;
+                        }
                         shared.entities(dim).lock().insert(entity.clone());
                         shared.broadcast_dim(dim, ServerMessage::EntitySpawn { entity });
                     }

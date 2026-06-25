@@ -281,6 +281,26 @@ pub static ENCHANTED_DEMON_SPRITE: SpriteDef = SpriteDef {
     fps: 8.0,
 };
 
+/// Necromancer: a hooded underworld/desert caster that strides along its walk cycle
+/// as it kites the player and summons skulls.
+pub static NECROMANCER_SPRITE: SpriteDef = SpriteDef {
+    name: "necromancer",
+    frame_w: 9,
+    frame_h: 13,
+    frames: 4,
+    fps: 8.0,
+};
+
+/// Skull: a bouncing skeleton skull a necromancer summons. A single frame that
+/// caroms around the screen.
+pub static SKULL_SPRITE: SpriteDef = SpriteDef {
+    name: "skull",
+    frame_w: 10,
+    frame_h: 11,
+    frames: 1,
+    fps: 1.0,
+};
+
 /// Knight (on foot): a man-at-arms that strides along on its walk cycle.
 pub static KNIGHT_SPRITE: SpriteDef = SpriteDef {
     name: "knight",
@@ -350,8 +370,18 @@ pub static MAGIC_FIREBALL_SPRITE: SpriteDef = SpriteDef {
     fps: 1.0,
 };
 
+/// Summoner fireball: the bolt a necromancer hurls, a single frame that flies until
+/// it bursts into a skull.
+pub static SUMMONER_FIREBALL_SPRITE: SpriteDef = SpriteDef {
+    name: "summoner_fireball",
+    frame_w: 10,
+    frame_h: 7,
+    frames: 1,
+    fps: 1.0,
+};
+
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 33] {
+pub fn all() -> [&'static SpriteDef; 36] {
     [
         &PLAYER_SPRITE,
         &BOAT_SPRITE,
@@ -379,6 +409,8 @@ pub fn all() -> [&'static SpriteDef; 33] {
         &ORC_MAGE_SPRITE,
         &ORC_MAGE_CAST_SPRITE,
         &ENCHANTED_DEMON_SPRITE,
+        &NECROMANCER_SPRITE,
+        &SKULL_SPRITE,
         &KNIGHT_SPRITE,
         &KNIGHT_ATTACK_SPRITE,
         &KNIGHT_HORSE_SPRITE,
@@ -386,6 +418,7 @@ pub fn all() -> [&'static SpriteDef; 33] {
         &BONE_SPRITE,
         &FIREBALL_SPRITE,
         &MAGIC_FIREBALL_SPRITE,
+        &SUMMONER_FIREBALL_SPRITE,
     ]
 }
 
@@ -422,6 +455,9 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         EntityKind::OrcMage => &ORC_MAGE_SPRITE,
         EntityKind::EnchantedDemon => &ENCHANTED_DEMON_SPRITE,
         EntityKind::MagicFireball => &MAGIC_FIREBALL_SPRITE,
+        EntityKind::Necromancer => &NECROMANCER_SPRITE,
+        EntityKind::Skull => &SKULL_SPRITE,
+        EntityKind::SummonerFireball => &SUMMONER_FIREBALL_SPRITE,
         // A knight's mounted and attack poses are handled by the scene builder (off
         // its `riding` and lunge state); this on-foot walk sheet is its base.
         EntityKind::Knight { .. } => &KNIGHT_SPRITE,

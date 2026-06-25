@@ -68,6 +68,12 @@ pub const ORC_SIZE: (f32, f32) = (12.0, 15.0);
 /// Collision/draw size (width, height) in pixels of an ash twister — a tall,
 /// narrow column of whirling ash drawn from a 16x16 sheet.
 pub const ASH_TWISTER_SIZE: (f32, f32) = (12.0, 16.0);
+/// Collision/draw size (width, height) in pixels of a necromancer — a hooded
+/// ranged caster, the lean build of its art.
+pub const NECROMANCER_SIZE: (f32, f32) = (9.0, 13.0);
+/// Collision/draw size (width, height) in pixels of a skull — a small, bouncing
+/// skeleton skull a necromancer summons.
+pub const SKULL_SIZE: (f32, f32) = (10.0, 11.0);
 /// Collision/draw size (width, height) in pixels of a knight — a compact armoured
 /// humanoid on foot. When mounted it is drawn from its larger horse sheet, but its
 /// collision box stays this on-foot size (as a ridden player keeps their own box).
@@ -82,6 +88,9 @@ pub const FIREBALL_SIZE: (f32, f32) = (10.0, 7.0);
 /// bolt of purple flame an [`EntityKind::EnchantedDemon`] flings, the same low,
 /// small bolt as the ordinary [`FIREBALL_SIZE`].
 pub const MAGIC_FIREBALL_SIZE: (f32, f32) = (10.0, 7.0);
+/// Collision/draw size (width, height) in pixels of a summoner fireball — the bolt
+/// a [`EntityKind::Necromancer`] hurls, the same low, small bolt as the others.
+pub const SUMMONER_FIREBALL_SIZE: (f32, f32) = (10.0, 7.0);
 /// Collision/draw size (width, height) in pixels of a dropped block item.
 pub const ITEM_SIZE: (f32, f32) = (8.0, 8.0);
 
@@ -177,6 +186,13 @@ pub const ORC_MAX_HEALTH: i32 = 50;
 /// frailer than the underworld's brawlers, since it threatens by flinging the
 /// player skyward (for a punishing fall) rather than by soaking up blows.
 pub const ASH_TWISTER_MAX_HEALTH: i32 = 18;
+/// Maximum health of a necromancer, in hit points. A frail ranged caster — like the
+/// skeleton it relies on keeping its distance and summoning skulls rather than on
+/// soaking up blows.
+pub const NECROMANCER_MAX_HEALTH: i32 = 26;
+/// Maximum health of a skull, in hit points. Very frail — a bouncing summoned skull
+/// pops after a hit or two.
+pub const SKULL_MAX_HEALTH: i32 = 8;
 /// Maximum health of a knight, in hit points. A sturdy man-at-arms — hardier than
 /// any pet, so a recruited knight can trade blows with the monsters it hunts.
 pub const KNIGHT_MAX_HEALTH: i32 = 40;
@@ -345,6 +361,27 @@ pub enum EntityKind {
     /// [`Entity::vy`] carry its flight velocity. Server-simulated. Appended last so
     /// older saves and the wire format keep their variant indices.
     MagicFireball,
+    /// A necromancer: a hooded ranged caster. Like the [`EntityKind::Skeleton`] it
+    /// keeps its distance and kites the player, but instead of bones it hurls
+    /// [`EntityKind::SummonerFireball`]s that burst into bouncing [`EntityKind::Skull`]s.
+    /// It haunts the underworld's **ash valleys** and the overworld's **deserts**; in
+    /// the overworld it **burns up at daybreak** (the underworld is always dark, so it
+    /// roams there around the clock). Server-simulated. Appended last so older saves
+    /// and the wire format keep their variant indices.
+    Necromancer,
+    /// A skull: a bouncing skeleton skull a [`EntityKind::Necromancer`] summons — it
+    /// never spawns on its own. It caroms around under gravity, bounding off floors and
+    /// walls and hopping toward nearby players to gnash at them, and gives out after a
+    /// short life. Like the necromancer it **burns up at daybreak** in the overworld
+    /// (but roams the always-dark underworld freely). Server-simulated. Appended last
+    /// so older saves and the wire format keep their variant indices.
+    Skull,
+    /// A bolt hurled by a [`EntityKind::Necromancer`], flying in a straight line until
+    /// it strikes a player or a wall (or its short life runs out) — where it bursts it
+    /// summons a bouncing [`EntityKind::Skull`] rather than leaving fire. Its
+    /// [`Entity::vx`]/[`Entity::vy`] carry its flight velocity. Server-simulated.
+    /// Appended last so older saves and the wire format keep their variant indices.
+    SummonerFireball,
 }
 
 impl EntityKind {
@@ -372,6 +409,9 @@ impl EntityKind {
             EntityKind::OrcMage => ORC_MAGE_SIZE,
             EntityKind::EnchantedDemon => ENCHANTED_DEMON_SIZE,
             EntityKind::MagicFireball => MAGIC_FIREBALL_SIZE,
+            EntityKind::Necromancer => NECROMANCER_SIZE,
+            EntityKind::Skull => SKULL_SIZE,
+            EntityKind::SummonerFireball => SUMMONER_FIREBALL_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -479,6 +519,11 @@ impl EntityKind {
             // A magic fireball is an inert projectile; 1 keeps health == max_health so
             // no health bar shows and a stray melee swing can't meaningfully "kill" it.
             EntityKind::MagicFireball => 1,
+            EntityKind::Necromancer => NECROMANCER_MAX_HEALTH,
+            EntityKind::Skull => SKULL_MAX_HEALTH,
+            // A summoner fireball is an inert projectile; 1 keeps health == max_health so
+            // no health bar shows and a stray melee swing can't meaningfully "kill" it.
+            EntityKind::SummonerFireball => 1,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }
