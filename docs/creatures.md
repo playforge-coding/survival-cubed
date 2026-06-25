@@ -92,8 +92,8 @@ Most monsters only **hunt at night** (or in dark caves). Build shelter and keep 
 | **Snake** | 14 | Desert | Ambusher; coils for ~0.7 s, then lunges |
 | **Skeleton** | 24 | All biomes, night | Keeps its distance and throws **bone projectiles**; burns at daybreak |
 | **Charred Skeleton** | 36 | Underworld **ash valleys** | Charges into melee and **leaves a trail of fire**; active at all hours |
-| **Demon** | 28 | Underworld (rare) | Keeps its distance and hurls **fireballs** that burst into flame; active at all hours |
-| **Orc** | 50 | Underworld | Slow, hulking brute; plants its feet for a telegraphed **slam** that hits brutally hard; active at all hours |
+| **Demon** | 28 | Underworld charred expanse (rare) | Keeps its distance and hurls **fireballs** that burst into flame; active at all hours |
+| **Orc** | 50 | Underworld charred expanse | Slow, hulking brute; plants its feet for a telegraphed **slam** that hits brutally hard; active at all hours |
 | **Ash Twister** | 18 | Underworld **ash valleys** | A whirling column of ash; on contact it **flings you high into the air** — the fall does the damage; active at all hours |
 
 !!! danger "Mind the drop after an ash twister hits you"

@@ -3229,9 +3229,10 @@ fn maybe_spawn_charred_skeletons(shared: &Shared, cx: i32, cy: i32) {
     }
 }
 
-/// Possibly seed demons into a freshly generated underworld chunk. Like the
-/// charred skeleton they drop onto any charred-rock floor (open cell above, solid
-/// below) the chunk contains, but they appear more rarely (see
+/// Possibly seed demons into a freshly generated underworld chunk. They keep to
+/// the main **charred** expanse (the ash valleys belong to the twisters and
+/// charred skeletons), dropping onto any charred-rock floor (open cell above,
+/// solid below) the chunk contains, but they appear more rarely (see
 /// [`DEMON_CHUNK_CHANCE`]). Deterministic per chunk via [`chunk_hash`] on its own
 /// salt range, so re-exploring the same terrain never double-spawns, and it runs
 /// independently of [`maybe_spawn_charred_skeletons`].
@@ -3249,6 +3250,11 @@ fn maybe_spawn_demons(shared: &Shared, cx: i32, cy: i32) {
 
     let lx = chunk_hash(seed, cx, cy, 211) % CHUNK_SIZE as u32;
     let cell_x = base_x + lx as i32;
+    // Demons keep to the main charred expanse, ceding the ash valleys to the
+    // twisters and charred skeletons — bail if this column is an ash valley.
+    if world.generator.underworld_biome_at(cell_x) != crate::worldgen::UnderworldBiome::Charred {
+        return;
+    }
     // Find an open cell in this column with solid charred rock beneath — a floor to
     // stand on — scanning from the chunk's bottom upward.
     let mut placed = None;
@@ -3271,8 +3277,9 @@ fn maybe_spawn_demons(shared: &Shared, cx: i32, cy: i32) {
     shared.broadcast_dim(Dimension::Underworld, ServerMessage::EntitySpawn { entity });
 }
 
-/// Possibly seed orcs into a freshly generated underworld chunk. Like the charred
-/// skeleton they drop onto any charred-rock floor (open cell above, solid below)
+/// Possibly seed orcs into a freshly generated underworld chunk. They keep to the
+/// main **charred** expanse (the ash valleys belong to the twisters and charred
+/// skeletons), dropping onto any charred-rock floor (open cell above, solid below)
 /// the chunk contains. Deterministic per chunk via [`chunk_hash`] on its own salt
 /// range, so re-exploring the same terrain never double-spawns, and it runs
 /// independently of the other underworld spawners.
@@ -3295,6 +3302,13 @@ fn maybe_spawn_orcs(shared: &Shared, cx: i32, cy: i32) {
         for n in 0..count {
             let lx = chunk_hash(seed, cx, cy, 222 + n) % CHUNK_SIZE as u32;
             let cell_x = base_x + lx as i32;
+            // Orcs keep to the main charred expanse, ceding the ash valleys to the
+            // twisters and charred skeletons — skip an ash-valley column.
+            if world.generator.underworld_biome_at(cell_x)
+                != crate::worldgen::UnderworldBiome::Charred
+            {
+                continue;
+            }
             // Find an open cell in this column with solid charred rock beneath —
             // a floor to stand on — scanning from the chunk's bottom upward.
             let mut placed = None;
