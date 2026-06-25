@@ -238,10 +238,12 @@ pub struct WorldGen {
     cavern_noise: FastNoiseLite,
     /// Field shaping the underworld's charred-rock ceiling height.
     uw_height_noise: FastNoiseLite,
-    /// Field whose zero-contour is carved into the underworld's caverns and
-    /// tunnels, hollowing the otherwise solid charred rock into something
-    /// explorable.
+    /// Field whose zero-contour is carved into the underworld's winding tunnels,
+    /// the charred-depths counterpart of [`cave_noise`](WorldGen::cave_noise).
     uw_cave_noise: FastNoiseLite,
+    /// Low-frequency field carving large open caverns deep in the charred
+    /// depths, the underworld counterpart of [`cavern_noise`](WorldGen::cavern_noise).
+    uw_cavern_noise: FastNoiseLite,
     /// Vein field driving tungsten-ore placement in the underworld's charred rock,
     /// on its own seed so the strongest ore isn't correlated with the caves.
     tungsten_noise: FastNoiseLite,
@@ -299,14 +301,18 @@ impl WorldGen {
         cavern_noise.set_frequency(Some(0.022));
         // Underworld fields, on their own seeds so the charred layer's shape is
         // independent of the surface above it. The ceiling rolls slowly; the cave
-        // field is wider and more abundant than the overworld's, so the underworld
-        // reads as a riddled, cavernous expanse.
+        // and cavern fields mirror the overworld's frequencies, so the charred
+        // depths are riddled with the same kind of winding tunnels and deep open
+        // caverns found beneath the surface above.
         let mut uw_height_noise = FastNoiseLite::with_seed(seed.wrapping_add(0x4DEE));
         uw_height_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
         uw_height_noise.set_frequency(Some(0.02));
         let mut uw_cave_noise = FastNoiseLite::with_seed(seed.wrapping_add(0x4CA7));
         uw_cave_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
-        uw_cave_noise.set_frequency(Some(0.05));
+        uw_cave_noise.set_frequency(Some(0.014));
+        let mut uw_cavern_noise = FastNoiseLite::with_seed(seed.wrapping_add(0x4C77));
+        uw_cavern_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
+        uw_cavern_noise.set_frequency(Some(0.022));
         // Tungsten veins through the charred rock: a compact, high-frequency field
         // like the overworld ore veins, on its own seed.
         let mut tungsten_noise = FastNoiseLite::with_seed(seed.wrapping_add(0x7079));
@@ -329,6 +335,7 @@ impl WorldGen {
             cavern_noise,
             uw_height_noise,
             uw_cave_noise,
+            uw_cavern_noise,
             tungsten_noise,
             gold_noise,
             structure: Structure::from_bytes(EMBEDDED_RUIN)
@@ -656,12 +663,15 @@ impl WorldGen {
     }
 
     /// Whether the charred cell at `(world_x, world_y)` below the floor is hollowed
-    /// into a cave. One winding/cavern field is carved as a band around its zero
-    /// contour, wide and frequent so the charred depths are riddled with connected
-    /// pockets. The [`SURFACE_CRUST`] below the charred floor is carved only where
-    /// the floor drops away steeply, so caves open into the cavern on the side of a
-    /// ledge — never as a hole in the floor the player lands on. The bottom-most
-    /// rows are spared too, so nothing opens into the void below the world.
+    /// into a cave. Mirrors the overworld [`is_cave`](WorldGen::is_cave): thin
+    /// **winding tunnels** along the zero contour of one field, plus large
+    /// **caverns** deep down where a low-frequency field peaks — the same
+    /// [`TUNNEL_WIDTH`], [`CAVERN_THRESHOLD`], and [`CAVERN_MIN_DEPTH`], just on
+    /// the underworld's own seeds. The [`SURFACE_CRUST`] below the charred floor
+    /// is carved only where the floor drops away steeply, so caves open into the
+    /// cavern on the side of a ledge — never as a hole in the floor the player
+    /// lands on. The bottom-most rows are spared too, so nothing opens into the
+    /// void below the world.
     fn is_underworld_cave(&self, world_x: i32, world_y: i32, surface: i32) -> bool {
         if world_y >= WORLD_HEIGHT - BEDROCK_FLOOR {
             return false;
@@ -672,10 +682,18 @@ impl WorldGen {
         if world_y - surface < SURFACE_CRUST && self.underworld_slope(world_x) < STEEP_THRESHOLD {
             return false;
         }
-        self.uw_cave_noise
-            .get_noise_2d(world_x as f32, world_y as f32)
-            .abs()
-            < 0.14
+        let (x, y) = (world_x as f32, world_y as f32);
+        // Winding tunnels: carve a band either side of the field's zero contour.
+        if self.uw_cave_noise.get_noise_2d(x, y).abs() < TUNNEL_WIDTH {
+            return true;
+        }
+        // Deep caverns: big open rooms, only well below the charred floor.
+        if world_y - surface >= CAVERN_MIN_DEPTH
+            && self.uw_cavern_noise.get_noise_2d(x, y) > CAVERN_THRESHOLD
+        {
+            return true;
+        }
+        false
     }
 
     /// Whether the underworld cell at `(world_x, world_y)` is solid charred rock.

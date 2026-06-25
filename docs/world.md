@@ -81,7 +81,8 @@ floors — a real hazard, so watch your step. The ash valleys are also the only
 haunt of the **[ash twister](creatures.md#hostile-monsters)**, a whirling column
 of ash that flings you skywards for a punishing fall, and of the fire-trailing
 **charred skeleton**. Below the floor, charred
-rock falls away to bedrock, riddled with caves where the tungsten hides.
+rock falls away to bedrock, riddled with the same **winding tunnels** and deep
+**caverns** as the overworld's caves — where the tungsten hides.
 
 The underworld is the only source of **tungsten ore**, the top tier of gear, and
 of **gold ore** — too soft for tools, but the key to reinforcing a
