@@ -40,6 +40,33 @@ macro_rules! sprites {
     };
 }
 
+/// Generate [`music_ogg`] and [`music_track_count`]: a (dimension, track) →
+/// embedded-OGG lookup over the files in `assets/music/<dimension>/<track>.ogg`.
+/// Each dimension lists its own track ids, so a dimension can carry any number
+/// of looping tracks (`"overworld" => [0, 1, 2]`).
+macro_rules! music {
+    ($($dim:literal => [$($track:literal),+ $(,)?]),* $(,)?) => {
+        /// Raw OGG/Vorbis bytes for one music track of a dimension (`None` if not embedded).
+        pub fn music_ogg(dim: &str, track: u32) -> Option<&'static [u8]> {
+            match (dim, track) {
+                $($(
+                    ($dim, $track) => Some(include_bytes!(concat!(
+                        "../assets/music/", $dim, "/", stringify!($track), ".ogg"))),
+                )+)*
+                _ => None,
+            }
+        }
+
+        /// How many music tracks a dimension has (`0` if the dimension is unknown).
+        pub fn music_track_count(dim: &str) -> u32 {
+            match dim {
+                $($dim => [$($track),+].len() as u32,)*
+                _ => 0,
+            }
+        }
+    };
+}
+
 blocks!(
     "stone",
     "dirt",
@@ -110,4 +137,9 @@ sprites!(
     "skeleton" => [0, 1, 2, 3, 4, 5],
     "charred_skeleton" => [0, 1, 2, 3, 4, 5],
     "bone" => [0, 1, 2, 3],
+);
+
+music!(
+    "overworld" => [0],
+    "underworld" => [0],
 );

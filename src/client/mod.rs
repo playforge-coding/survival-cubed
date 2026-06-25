@@ -1,6 +1,7 @@
 //! Client application: window + event loop (winit), egui UI, input, player
 //! physics, and the bridge to the networking thread.
 
+mod audio;
 mod net;
 mod render;
 mod screenshot;
@@ -410,6 +411,8 @@ struct App {
     /// Background mDNS browser feeding the menu's LAN server list, if discovery
     /// could be started.
     lan: Option<LanBrowser>,
+    /// Background music player, if an audio device was available at startup.
+    music: Option<audio::Music>,
 
     input: Input,
     last_frame: Instant,
@@ -461,6 +464,7 @@ impl App {
                     None
                 }
             },
+            music: audio::Music::new(),
             input: Input::default(),
             last_frame: Instant::now(),
             anim_time: 0.0,
@@ -675,6 +679,9 @@ impl App {
         self.game = None;
         self.pending_tofu = None;
         self.pending_credential = None;
+        if let Some(m) = &mut self.music {
+            m.stop();
+        }
         self.input = Input::default();
         self.screen = Screen::Menu;
     }
@@ -723,9 +730,15 @@ impl App {
                 // admin/host always may, and so may everyone on a creator server.
                 // Creator mode itself starts off; the player toggles it in-game.
                 game.creator_allowed = creator_allowed;
+                let dim = game.dim;
                 self.game = Some(game);
                 self.screen = Screen::InGame;
                 self.status.clear();
+                // Players spawn in the overworld; start its music. A following
+                // EnterDimension would switch it if the server moves them.
+                if let Some(m) = &mut self.music {
+                    m.play_for(dim);
+                }
             }
             NetEvent::Chunk {
                 dim,
@@ -779,6 +792,10 @@ impl App {
                     g.knockback_x = 0.0;
                     g.air_min_y = y;
                     g.last_sent = g.pos;
+                }
+                // Swap to the new dimension's (randomly chosen) music.
+                if let Some(m) = &mut self.music {
+                    m.play_for(dim);
                 }
             }
             NetEvent::EntitySpawn { entity } => {
@@ -924,6 +941,9 @@ impl App {
                 self.net = None;
                 self.server = None;
                 self.game = None;
+                if let Some(m) = &mut self.music {
+                    m.stop();
+                }
                 self.pending_tofu = None;
                 // The connection was refused or dropped: don't remember a password
                 // that may have been rejected.

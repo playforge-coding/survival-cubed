@@ -65,11 +65,12 @@ git lfs pull
 cargo run --release
 ```
 
-On Linux you also need the windowing/input system libraries:
+On Linux you also need the windowing/input system libraries plus ALSA (for
+audio):
 
 ```sh
 sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev \
-  libxcursor-dev libxi-dev libxrandr-dev
+  libxcursor-dev libxi-dev libxrandr-dev libasound2-dev
 ```
 
 ## Documentation
@@ -84,6 +85,7 @@ The full game guide lives in [`docs/`](docs/) and is published to GitHub Pages.
 - **[Creatures](docs/creatures.md)** — mobs, pets, and combat.
 - **[Multiplayer](docs/multiplayer.md)** and **[Creator Mode](docs/creator-mode.md)**.
 - **[Saves & Files](docs/saves.md)** — where everything is stored.
+- **[Credits](docs/credits.md)** — third-party asset attributions.
 
 To preview the docs locally:
 
@@ -91,6 +93,16 @@ To preview the docs locally:
 pip install zensical
 zensical serve
 ```
+
+## Credits
+
+Survival Cubed bundles third-party assets. The background music is from
+OpenGameArt.org: the overworld track (`assets/music/overworld/0.ogg`) by
+[bart](https://opengameart.org/users/bart), used under the GPL-3.0 option (rather
+than CC BY-SA 3.0) so it can be embedded in the binary, and the underworld track
+(`assets/music/underworld/0.ogg`) by
+[remaxim](https://opengameart.org/users/remaxim). See
+[docs/credits.md](docs/credits.md) for the full list.
 
 ## License
 

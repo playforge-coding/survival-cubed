@@ -23,6 +23,10 @@ fastnoise-lite = "1.1"
 # Image loading (block textures) and screenshot encoding (PNG + web JPEG)
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
+# Audio playback (background music). Only the Vorbis decoder is pulled in, since
+# the embedded music tracks are .ogg.
+rodio = { version = "0.20", default-features = false, features = ["vorbis"] }
+
 # Networking (QUIC)
 quinn = "0.11"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
