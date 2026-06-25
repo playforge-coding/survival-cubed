@@ -241,6 +241,16 @@ pub static ORC_SLAM_SPRITE: SpriteDef = SpriteDef {
     fps: 6.0,
 };
 
+/// Ash twister: a whirling column of underworld ash. A single drifting frame
+/// (the swirl reads the same however it is rotated), 16x16 like its sheet.
+pub static ASH_TWISTER_SPRITE: SpriteDef = SpriteDef {
+    name: "ash_twister",
+    frame_w: 16,
+    frame_h: 16,
+    frames: 1,
+    fps: 1.0,
+};
+
 /// Knight (on foot): a man-at-arms that strides along on its walk cycle.
 pub static KNIGHT_SPRITE: SpriteDef = SpriteDef {
     name: "knight",
@@ -301,7 +311,7 @@ pub static FIREBALL_SPRITE: SpriteDef = SpriteDef {
 };
 
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 28] {
+pub fn all() -> [&'static SpriteDef; 29] {
     [
         &PLAYER_SPRITE,
         &BOAT_SPRITE,
@@ -325,6 +335,7 @@ pub fn all() -> [&'static SpriteDef; 28] {
         &DEMON_SPRITE,
         &ORC_SPRITE,
         &ORC_SLAM_SPRITE,
+        &ASH_TWISTER_SPRITE,
         &KNIGHT_SPRITE,
         &KNIGHT_ATTACK_SPRITE,
         &KNIGHT_HORSE_SPRITE,
@@ -361,6 +372,7 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         // An orc's slam pose is handled by the scene builder off its lunge timer;
         // this walk sheet is its plodding stride.
         EntityKind::Orc => &ORC_SPRITE,
+        EntityKind::AshTwister => &ASH_TWISTER_SPRITE,
         // A knight's mounted and attack poses are handled by the scene builder (off
         // its `riding` and lunge state); this on-foot walk sheet is its base.
         EntityKind::Knight { .. } => &KNIGHT_SPRITE,

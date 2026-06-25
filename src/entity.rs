@@ -58,6 +58,9 @@ pub const DEMON_SIZE: (f32, f32) = (10.0, 15.0);
 /// Collision/draw size (width, height) in pixels of an orc — a stocky underworld
 /// brute, broader than the lanky skeletons it shares the depths with.
 pub const ORC_SIZE: (f32, f32) = (12.0, 15.0);
+/// Collision/draw size (width, height) in pixels of an ash twister — a tall,
+/// narrow column of whirling ash drawn from a 16x16 sheet.
+pub const ASH_TWISTER_SIZE: (f32, f32) = (12.0, 16.0);
 /// Collision/draw size (width, height) in pixels of a knight — a compact armoured
 /// humanoid on foot. When mounted it is drawn from its larger horse sheet, but its
 /// collision box stays this on-foot size (as a ridden player keeps their own box).
@@ -145,6 +148,10 @@ pub const DEMON_MAX_HEALTH: i32 = 28;
 /// Maximum health of an orc, in hit points. The toughest thing in the underworld —
 /// a slow brute that soaks up punishment and answers with a devastating slam.
 pub const ORC_MAX_HEALTH: i32 = 50;
+/// Maximum health of an ash twister, in hit points. A whirling column of ash —
+/// frailer than the underworld's brawlers, since it threatens by flinging the
+/// player skyward (for a punishing fall) rather than by soaking up blows.
+pub const ASH_TWISTER_MAX_HEALTH: i32 = 18;
 /// Maximum health of a knight, in hit points. A sturdy man-at-arms — hardier than
 /// any pet, so a recruited knight can trade blows with the monsters it hunts.
 pub const KNIGHT_MAX_HEALTH: i32 = 40;
@@ -281,6 +288,12 @@ pub enum EntityKind {
     /// respawn point as a *wild* knight that must be recruited afresh. Server-simulated.
     /// Appended last so older saves and the wire format keep their variant indices.
     Knight { owner: Option<String> },
+    /// An ash twister: a whirling column of ash that forms in the underworld's
+    /// **ash valleys**. It drifts toward players and, on contact, flings them high
+    /// into the air — the punishing fall back to the ground does the real damage,
+    /// not the buffeting itself. Roams the ash valleys at all hours. Server-simulated.
+    /// Appended last so older saves and the wire format keep their variant indices.
+    AshTwister,
 }
 
 impl EntityKind {
@@ -304,6 +317,7 @@ impl EntityKind {
             EntityKind::Fireball => FIREBALL_SIZE,
             EntityKind::Orc => ORC_SIZE,
             EntityKind::Knight { .. } => KNIGHT_SIZE,
+            EntityKind::AshTwister => ASH_TWISTER_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -405,6 +419,7 @@ impl EntityKind {
             EntityKind::Fireball => 1,
             EntityKind::Orc => ORC_MAX_HEALTH,
             EntityKind::Knight { .. } => KNIGHT_MAX_HEALTH,
+            EntityKind::AshTwister => ASH_TWISTER_MAX_HEALTH,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }

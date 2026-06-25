@@ -12,11 +12,16 @@ below, linked by the [fire key](crafting.md#tools-and-utility-items).
 
 | Biome | Surface | Features |
 |---|---|---|
-| **Plains** | Grass | Gently rolling hills, sparse trees (~3% of columns) |
+| **Plains** | Grass | Gently rolling hills, sparse trees (~3% of columns); the dominant biome — broad, sweeping grasslands |
 | **Forest** | Grass | Dense, near-continuous tree canopy (~34% of columns) |
-| **Mountains** | Bare stone | Rugged peaks rising well above the plains; the richest iron |
-| **Desert** | Sand | Flat, treeless dunes |
+| **Mountains** | Bare stone | Rugged peaks rising well above the plains; the richest iron — now an uncommon range cresting out of the grassland |
+| **Desert** | Sand | Flat, treeless dunes — an uncommon feature, not a staple |
 | **Ocean** | Sand seabed | Broad, deep seas — open water over a sandy floor; treeless and (for now) lifeless |
+
+Plains cover roughly 40% of the world, with forest and ocean the next most
+common; **mountains and deserts are deliberately rare** (a few percent each), so
+they read as occasional landmarks punctuating the open plains rather than the
+norm.
 
 Trees are 4–6 logs tall with a rounded leaf crown. They don't grow on deserts,
 mountain stone, oceans, flooded columns, or over cave mouths.
@@ -72,8 +77,10 @@ rock**. A solid charred **ceiling** caps it overhead, and far below stretches th
 charred floor you walk on — between them opens a tall cavern with plenty of
 headroom to build and climb through. The floor's *ash valley* zones are blanketed
 in loose **ash**, and scattered patches of natural **fire** burn on exposed
-floors — a real hazard, so watch your step. Below the floor, charred rock falls
-away to bedrock, riddled with caves where the tungsten hides.
+floors — a real hazard, so watch your step. The ash valleys are also the only
+haunt of the **[ash twister](creatures.md#hostile-monsters)**, a whirling column
+of ash that flings you skywards for a punishing fall. Below the floor, charred
+rock falls away to bedrock, riddled with caves where the tungsten hides.
 
 The underworld is the only source of **tungsten ore**, the top tier of gear. It
 sits in permanent dim, warm light (no day/night), and its creatures — including

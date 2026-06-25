@@ -87,6 +87,15 @@ Most monsters only **hunt at night** (or in dark caves). Build shelter and keep 
 | **Charred Skeleton** | 36 | Underworld | Charges into melee and **leaves a trail of fire**; active at all hours |
 | **Demon** | 28 | Underworld (rare) | Keeps its distance and hurls **fireballs** that burst into flame; active at all hours |
 | **Orc** | 50 | Underworld | Slow, hulking brute; plants its feet for a telegraphed **slam** that hits brutally hard; active at all hours |
+| **Ash Twister** | 18 | Underworld **ash valleys** | A whirling column of ash; on contact it **flings you high into the air** — the fall does the damage; active at all hours |
+
+!!! danger "Mind the drop after an ash twister hits you"
+    An **ash twister** barely scratches you on contact — but it hurls you skyward,
+    and the fall back to the ground deals heavy **fall damage** when you land
+    (roughly half your health from open ground, more if you come down a pit). It
+    only haunts the underworld's **ash valleys**. Kill it from range or back off
+    before it reaches you; if you are thrown, try to steer your landing onto a
+    ledge to shorten the drop. It is frail, so a couple of solid hits put it down.
 
 !!! danger "Skeletons and demons shoot back"
     Skeletons fire bones and demons hurl fireballs in a straight line. The

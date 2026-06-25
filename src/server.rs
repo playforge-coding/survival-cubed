@@ -259,6 +259,34 @@ const ORC_SLAM_INTERVAL: f32 = 1.5;
 const ORC_CHUNK_CHANCE: u32 = 28;
 /// Most orcs a single fresh underworld chunk seeds at once.
 const ORC_CHUNK_MAX: u32 = 2;
+/// Drifting speed of an ash twister, in pixels/second — it whirls toward players
+/// at a steady, unhurried pace.
+const ASH_TWISTER_SPEED: f32 = 30.0;
+/// How far (px) an ash twister notices a player and begins drifting after them.
+const ASH_TWISTER_AGGRO: f32 = 200.0;
+/// Maximum gap (px between AABBs) at which an ash twister can catch a player and
+/// fling them skyward.
+const ASH_TWISTER_ATTACK_RANGE: f32 = 4.0;
+/// Upward launch velocity (px/s) an ash twister flings a caught player with. Far
+/// stronger than the small [`KNOCKBACK_Y`] pop of an ordinary hit: tuned (against
+/// the client's gravity) to throw the player ~20 tiles up so the fall back down
+/// comfortably clears the safe-fall window and deals fall damage on landing.
+const ASH_TWISTER_LAUNCH: f32 = 950.0;
+/// Sideways toss (px/s) added to the launch, so the player is flung up *and* away
+/// rather than straight back down onto the twister.
+const ASH_TWISTER_TOSS: f32 = 90.0;
+/// Direct damage an ash twister's buffeting deals on contact. Deliberately small —
+/// the threat is the fall the launch sets up, not the touch itself.
+const ASH_TWISTER_DAMAGE: i32 = 2;
+/// Seconds an ash twister waits between throws, long enough that a flung player has
+/// landed (and can scramble clear) before it can catch them again.
+const ASH_TWISTER_ATTACK_INTERVAL: f32 = 2.0;
+/// Percent chance that a fresh underworld chunk seeds ash twisters. Only ash-valley
+/// columns actually take one (see [`maybe_spawn_ash_twisters`]), so the effective
+/// rate across the whole underworld is lower than this.
+const ASH_TWISTER_CHUNK_CHANCE: u32 = 40;
+/// Most ash twisters a single fresh underworld chunk seeds at once.
+const ASH_TWISTER_CHUNK_MAX: u32 = 2;
 /// Marching speed of a knight on foot, in pixels/second — brisk enough to keep up
 /// with a walking owner and run down the foes it's sent against.
 const KNIGHT_SPEED: f32 = 40.0;
@@ -3280,6 +3308,61 @@ fn maybe_spawn_orcs(shared: &Shared, cx: i32, cy: i32) {
     }
 }
 
+/// Possibly seed ash twisters into a freshly generated underworld chunk. Unlike the
+/// other underworld monsters they are native to the **ash valleys** alone, so a
+/// candidate spawn column is skipped unless it belongs to one (see
+/// [`crate::worldgen::WorldGen::underworld_biome_at`]). They drop onto any charred
+/// (or ash) floor — open cell above, solid below — the chunk contains. Deterministic
+/// per chunk via [`chunk_hash`] on its own salt range, so re-exploring the same
+/// terrain never double-spawns, and it runs independently of the other spawners.
+fn maybe_spawn_ash_twisters(shared: &Shared, cx: i32, cy: i32) {
+    let mut world = shared.world(Dimension::Underworld).lock();
+    let seed = world.generator.seed();
+    if chunk_hash(seed, cx, cy, 230) % 100 >= ASH_TWISTER_CHUNK_CHANCE {
+        return;
+    }
+
+    let base_x = cx * CHUNK_SIZE;
+    let chunk_top = cy * CHUNK_SIZE;
+    let chunk_bottom = chunk_top + CHUNK_SIZE;
+    let count = 1 + chunk_hash(seed, cx, cy, 231) % ASH_TWISTER_CHUNK_MAX;
+    let (_, h) = EntityKind::AshTwister.size();
+
+    let mut spawned = Vec::new();
+    {
+        let mut entities = shared.entities(Dimension::Underworld).lock();
+        for n in 0..count {
+            let lx = chunk_hash(seed, cx, cy, 232 + n) % CHUNK_SIZE as u32;
+            let cell_x = base_x + lx as i32;
+            // Twisters only haunt the ash valleys — skip a column that isn't one.
+            if world.generator.underworld_biome_at(cell_x)
+                != crate::worldgen::UnderworldBiome::AshValley
+            {
+                continue;
+            }
+            // Find an open cell in this column with a solid floor beneath, scanning
+            // from the chunk's bottom upward.
+            let mut placed = None;
+            for ty in (chunk_top..chunk_bottom).rev() {
+                if !world.solid(cell_x, ty) && world.solid(cell_x, ty + 1) {
+                    placed = Some((ty + 1) as f32 * TILE_SIZE - h);
+                    break;
+                }
+            }
+            let Some(y) = placed else { continue };
+            let id = shared.alloc_id();
+            let entity = Entity::new(id, EntityKind::AshTwister, cell_x as f32 * TILE_SIZE, y);
+            entities.insert(entity.clone());
+            spawned.push(entity);
+        }
+    }
+    drop(world);
+
+    for entity in spawned {
+        shared.broadcast_dim(Dimension::Underworld, ServerMessage::EntitySpawn { entity });
+    }
+}
+
 /// Possibly seed spiders into a freshly generated chunk. Spiders keep to two
 /// haunts: the tree-shadowed **forest** surface and the **caverns** deep
 /// underground. A forest chunk that holds the grass line drops them onto the
@@ -3737,6 +3820,11 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     let orc_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::Orc))
+        .map(|e| e.id)
+        .collect();
+    let ash_twister_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::AshTwister))
         .map(|e| e.id)
         .collect();
     let knight_ids: Vec<EntityId> = entities
@@ -5180,6 +5268,72 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         });
     }
 
+    // Ash twisters: whirling columns of ash that haunt the ash valleys. They drift
+    // toward players at all hours (the underworld is always dark) and, on contact,
+    // fling the player high into the air rather than biting — the punishing fall
+    // back down is what hurts. The contact buffeting itself deals only a token blow.
+    for id in ash_twister_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let home = *e.home_x.get_or_insert(e.x);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+
+        let target = nearest_player(&hostile_players, scx, scy, ASH_TWISTER_AGGRO);
+        let chasing = target.is_some();
+        let dir = match target {
+            Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -1.0,
+            Some(_) => 1.0,
+            None => wander_dir(scx, e.vx, home),
+        };
+
+        let m = step_ground(
+            &mut world,
+            (e.x, e.y, w, h),
+            e.vy,
+            dir,
+            ASH_TWISTER_SPEED,
+            chasing,
+        );
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: m.vx,
+            vy: m.vy,
+        });
+
+        // In reach and off cooldown: catch the player and hurl them skyward. The big
+        // upward knockback (and a sideways toss) rides the EntityHit to the owning
+        // client, which launches its avatar — the fall that follows deals the real
+        // damage (see the client's fall-damage handling).
+        if let Some((pid, px, py)) = target {
+            if e.attack_cd <= 0.0
+                && aabb_gap(m.x, m.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1)
+                    <= ASH_TWISTER_ATTACK_RANGE
+            {
+                e.attack_cd = ASH_TWISTER_ATTACK_INTERVAL;
+                let kdir = if px + PLAYER_SIZE.0 * 0.5 >= m.x + w * 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                bites.push((
+                    pid,
+                    (kdir * ASH_TWISTER_TOSS, -ASH_TWISTER_LAUNCH),
+                    ASH_TWISTER_DAMAGE,
+                ));
+            }
+        }
+    }
+
     // Bones in flight: travel in a straight line (no gravity), striking the first
     // player they overlap or winking out on a wall or when their short life ends.
     let mut bone_despawns: Vec<EntityId> = Vec::new();
@@ -5581,6 +5735,7 @@ fn is_hostile(kind: &EntityKind) -> bool {
             | EntityKind::CharredSkeleton
             | EntityKind::Demon
             | EntityKind::Orc
+            | EntityKind::AshTwister
     )
 }
 
@@ -5595,6 +5750,9 @@ fn melee_damage(kind: &EntityKind) -> i32 {
         EntityKind::Snake => SNAKE_DAMAGE,
         EntityKind::CharredSkeleton => CHARRED_SKELETON_DAMAGE,
         EntityKind::Orc => ORC_SLAM_DAMAGE,
+        // It can't fling a server-simulated knight skyward, so in melee it only
+        // deals its token buffeting.
+        EntityKind::AshTwister => ASH_TWISTER_DAMAGE,
         _ => 0,
     }
 }
@@ -6276,6 +6434,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                 maybe_spawn_charred_skeletons(&shared, cx, cy);
                                 maybe_spawn_demons(&shared, cx, cy);
                                 maybe_spawn_orcs(&shared, cx, cy);
+                                maybe_spawn_ash_twisters(&shared, cx, cy);
                             }
                         }
                     }

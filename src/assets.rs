@@ -147,6 +147,7 @@ sprites!(
     "demon" => [0, 1, 2, 3],
     "orc" => [0, 1, 2, 3, 4],
     "orc/slam" => [0, 1, 2, 3, 4, 5],
+    "ash_twister" => [0],
     "knight" => [0, 1, 2, 3, 4],
     "knight/attack" => [0, 1, 2, 3],
     "knight/horse" => [0, 1, 2, 3],

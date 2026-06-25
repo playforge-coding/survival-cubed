@@ -48,16 +48,24 @@ const MOUNTAIN_AMP: f32 = 40.0;
 const MOUNTAIN_LIFT: i32 = 14;
 
 /// Biome noise above this threshold is mountains; below `FOREST_THRESHOLD` is
-/// forest; the band between is plains. Biased so plains stay the common biome.
-const MOUNTAIN_THRESHOLD: f32 = 0.30;
-/// Biome noise below this threshold is forest (flat, tree-dense grassland).
+/// forest; the wide band between is plains. The field is nearly uniform over its
+/// `-1..1` range, so this sits far out near the top: only the noise's rare peaks
+/// rise into mountains, leaving them an occasional range cresting out of the
+/// grassland rather than a common biome. The plains they used to interrupt merge
+/// into broad sweeps as a result.
+const MOUNTAIN_THRESHOLD: f32 = 0.85;
+/// Biome noise below this threshold is forest (flat, tree-dense grassland). The
+/// lower bookend of the wide plains band.
 const FOREST_THRESHOLD: f32 = -0.30;
 /// Value of the dedicated desert field (see [`WorldGen::desert_noise`]) above
 /// which a non-mountain column becomes desert: flat, sandy, treeless terrain at
 /// plains height. The field is low-frequency and independent of the main biome
 /// axis, so deserts form broad, contiguous swaths many chunks across rather than
-/// thin strips squeezed between forest and plains. Lower means larger deserts.
-const DESERT_THRESHOLD: f32 = 0.25;
+/// thin strips squeezed between forest and plains. Like the mountain cutoff this
+/// sits far out near the top of the (near-uniform) field, so only its rare peaks
+/// turn to sand — deserts are an uncommon feature, not a staple. Lower means more
+/// (and larger) deserts.
+const DESERT_THRESHOLD: f32 = 0.85;
 /// Value of the dedicated ocean field (see [`WorldGen::ocean_noise`]) above which
 /// a column becomes ocean: its surface sinks far below sea level so the column
 /// floods into a deep, open body of water over a sandy floor. The field is its own
@@ -241,11 +249,13 @@ impl WorldGen {
         let mut height_noise = FastNoiseLite::with_seed(seed);
         height_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
         height_noise.set_frequency(Some(0.012));
-        // A separate, lower-frequency field so biomes span many columns. Offset
-        // the seed so the biome map isn't correlated with the height map.
+        // A separate, low-frequency field so biomes span many columns. Offset the
+        // seed so the biome map isn't correlated with the height map. The frequency
+        // is kept low so each biome — above all the dominant plains — stretches over
+        // broad, sweeping regions rather than small, frequently-changing patches.
         let mut biome_noise = FastNoiseLite::with_seed(seed.wrapping_add(0x5EED));
         biome_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
-        biome_noise.set_frequency(Some(0.004));
+        biome_noise.set_frequency(Some(0.003));
         // A second low-frequency field, on its own seed, laid over the biome map
         // to carve broad deserts. Its frequency sets desert size — lower spreads
         // them wider; this is tuned for swaths several chunks across.
@@ -1133,15 +1143,17 @@ mod tests {
         assert!(above.iter().all(|(_, _, r, _)| *r != root));
     }
 
-    /// The underworld is built from charred rock — riddled with caves and dotted
-    /// with fire — beneath an open ceiling, with a solid floor at the very bottom.
+    /// The underworld stacks a solid charred roof, a tall open cavern, and a
+    /// charred floor that — riddled with caves and dotted with fire — falls away to
+    /// a solid bedrock floor at the very bottom. Scanned over a wide span so the
+    /// low-frequency ash-valley field is sure to be sampled.
     #[test]
     fn underworld_is_charred_rock_with_fire_and_a_floor() {
         use crate::world::Dimension;
         let worldgen = WorldGen::new(0xC0FFEE);
         let (mut charred, mut fire, mut air, mut tungsten, mut ash) =
             (0u32, 0u32, 0u32, 0u32, 0u32);
-        for cx in -4..4 {
+        for cx in -32..32 {
             for cy in 0..(WORLD_HEIGHT / CHUNK_SIZE) {
                 let chunk = worldgen.generate(Dimension::Underworld, cx, cy);
                 for lx in 0..CHUNK_SIZE {
@@ -1162,7 +1174,7 @@ mod tests {
         // Ash valleys blanket part of the underworld surface in loose ash.
         assert!(ash > 0, "expected ash valleys to lay down some ash");
         assert!(fire > 0, "expected some natural fire in the underworld");
-        assert!(air > 0, "expected open air (caves and the ceiling sky)");
+        assert!(air > 0, "expected open air (the cavern and its caves)");
         // Tungsten ore is the underworld's reward: present, but rarer than its rock.
         assert!(
             tungsten > 0,
