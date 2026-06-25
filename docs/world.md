@@ -16,16 +16,22 @@ below, linked by the [fire key](crafting.md#tools-and-utility-items).
 | **Forest** | Grass | Dense, near-continuous tree canopy (~34% of columns) |
 | **Mountains** | Bare stone | Rugged peaks rising well above the plains; the richest iron |
 | **Desert** | Sand | Flat, treeless dunes |
+| **Ocean** | Sand seabed | Broad, deep seas — open water over a sandy floor; treeless and (for now) lifeless |
 
 Trees are 4–6 logs tall with a rounded leaf crown. They don't grow on deserts,
-mountain stone, flooded columns, or over cave mouths.
+mountain stone, oceans, flooded columns, or over cave mouths.
 
 ## Terrain & water
 
 Low-lying basins flood with **water** from sea level down, forming ponds and
-lakes. Water placed by the world (or by you with a bucket) is inert — it doesn't
-spread. The very bottom of the world is solid bedrock, so there's no void to fall
-into.
+lakes. **Oceans** go much further — a dedicated biome where the seabed drops far
+below sea level, so the whole column fills with deep open water over a sandy
+floor. The water is too deep and slow to swim across comfortably; build a
+**[boat](crafting.md)** to cross one (see [Boats](gameplay.md#boats)). Water
+placed by the world (or by you with a bucket) is inert — it doesn't spread. The
+very bottom of the world is solid bedrock, so there's no void to fall into.
+
+The world spawn is always chosen on dry land, so you never start adrift in a sea.
 
 ## Caves
 

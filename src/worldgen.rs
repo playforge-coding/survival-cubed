@@ -1,10 +1,11 @@
 //! Procedural terrain generation using `fastnoise-lite`.
 //!
-//! The world is split into [`Biome`]s by a low-frequency noise field: broad
-//! flat **plains** (the common case), lush **forest** (flat like plains but
-//! thick with trees) and rugged **mountains**. Each biome picks its own surface
-//! roughness, block palette and tree density, so a single column's height and
-//! blocks are decided entirely by the biome it falls in.
+//! The world is split into [`Biome`]s by low-frequency noise fields: broad flat
+//! **plains** (the common case), lush **forest** (flat like plains but thick with
+//! trees), rugged **mountains**, sandy **desert**, and deep **ocean** (a column
+//! sunk below sea level and flooded with water over a sandy seabed). Each biome
+//! picks its own surface roughness, block palette and tree density, so a single
+//! column's height and blocks are decided entirely by the biome it falls in.
 
 use fastnoise_lite::{FastNoiseLite, NoiseType};
 
@@ -57,6 +58,21 @@ const FOREST_THRESHOLD: f32 = -0.30;
 /// axis, so deserts form broad, contiguous swaths many chunks across rather than
 /// thin strips squeezed between forest and plains. Lower means larger deserts.
 const DESERT_THRESHOLD: f32 = 0.25;
+/// Value of the dedicated ocean field (see [`WorldGen::ocean_noise`]) above which
+/// a column becomes ocean: its surface sinks far below sea level so the column
+/// floods into a deep, open body of water over a sandy floor. The field is its own
+/// low-frequency axis, so oceans form broad, contiguous seas many chunks across
+/// rather than thin channels. Lower means more (and larger) oceans.
+const OCEAN_THRESHOLD: f32 = 0.38;
+/// Half-width (in ocean-noise units) of the band over which a column's surface is
+/// blended from land height down to the ocean floor, so the shore slopes into the
+/// depths instead of dropping off a cliff. The midpoint flips [`WorldGen::biome_at`].
+const OCEAN_BLEND: f32 = 0.12;
+/// Cells the ocean floor sits below [`SEA_LEVEL`]: the depth of open water over the
+/// seabed at the heart of an ocean (the shore is shallower as the floor blends up).
+const OCEAN_DEPTH: i32 = 20;
+/// Surface deviation amplitude (cells) of the gently undulating sea floor.
+const OCEAN_FLOOR_AMP: f32 = 3.0;
 
 /// Per-mille chance that any individual plains column roots a tree — sparse,
 /// the odd lonely tree dotting the grassland.
@@ -160,6 +176,9 @@ pub enum Biome {
     Mountains,
     /// Flat, treeless dunes: sand over stone.
     Desert,
+    /// A deep, open sea: the column floods with water from sea level down to a
+    /// sandy floor far below. Treeless and (for now) lifeless — cross it by boat.
+    Ocean,
 }
 
 /// A region of the *underworld*, the charred layer beneath the overworld.
@@ -179,6 +198,9 @@ pub struct WorldGen {
     /// A dedicated low-frequency field carving broad deserts out of the lower,
     /// non-mountainous ground, independent of the plains/forest split.
     desert_noise: FastNoiseLite,
+    /// A dedicated low-frequency field, on its own seed, carving broad oceans:
+    /// where it peaks the surface is sunk far below sea level into a deep sea.
+    ocean_noise: FastNoiseLite,
     ore_noise: FastNoiseLite,
     /// A second vein field, on its own seed, driving coal-ore placement
     /// independently of the iron veins.
@@ -218,6 +240,11 @@ impl WorldGen {
         let mut desert_noise = FastNoiseLite::with_seed(seed.wrapping_add(0xDE5E));
         desert_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
         desert_noise.set_frequency(Some(0.0045));
+        // The ocean field: another low-frequency axis on its own seed, lower in
+        // frequency than the desert field so seas spread wide and contiguous.
+        let mut ocean_noise = FastNoiseLite::with_seed(seed.wrapping_add(0x0CEA));
+        ocean_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
+        ocean_noise.set_frequency(Some(0.0035));
         // A higher-frequency field driving compact ore veins, on its own seed so
         // ore placement is independent of terrain and biome shape.
         let mut ore_noise = FastNoiseLite::with_seed(seed.wrapping_add(0x0A11));
@@ -259,6 +286,7 @@ impl WorldGen {
             height_noise,
             biome_noise,
             desert_noise,
+            ocean_noise,
             ore_noise,
             coal_noise,
             cave_noise,
@@ -291,10 +319,29 @@ impl WorldGen {
         )
     }
 
+    /// How strongly a column is ocean, from `0.0` (dry land) to `1.0` (deep open
+    /// sea), ramped smoothly across the shore so the seabed can be blended down.
+    /// Crosses `0.5` exactly at [`OCEAN_THRESHOLD`], keeping it consistent with
+    /// [`biome_at`].
+    fn ocean_weight(&self, world_x: i32) -> f32 {
+        let n = self.ocean_noise.get_noise_2d(world_x as f32, 0.0); // -1..1
+        smoothstep(
+            OCEAN_THRESHOLD - OCEAN_BLEND,
+            OCEAN_THRESHOLD + OCEAN_BLEND,
+            n,
+        )
+    }
+
     /// Which biome the given world column belongs to. A hard classification
     /// (used for the block palette and creature spawns); the terrain *height*
-    /// still blends across the boundary via [`mountain_weight`].
+    /// still blends across the boundary via [`mountain_weight`] and
+    /// [`ocean_weight`](Self::ocean_weight).
     pub fn biome_at(&self, world_x: i32) -> Biome {
+        // A deep ocean overrides the land biomes: its own field has already sunk
+        // the surface below sea level, so the column is open water over a seabed.
+        if self.ocean_weight(world_x) >= 0.5 {
+            return Biome::Ocean;
+        }
         let n = self.biome_noise.get_noise_2d(world_x as f32, 0.0); // -1..1
         // Mountains win outright — no sand peaks.
         if n > MOUNTAIN_THRESHOLD {
@@ -319,8 +366,27 @@ impl WorldGen {
         let n = self.height_noise.get_noise_2d(world_x as f32, 0.0); // -1..1
         let plains_h = SURFACE_BASE as f32 + n * PLAINS_AMP;
         let mountain_h = (SURFACE_BASE - MOUNTAIN_LIFT) as f32 + n * MOUNTAIN_AMP;
-        let w = self.mountain_weight(world_x);
-        (plains_h + (mountain_h - plains_h) * w).round() as i32
+        let land_h = plains_h + (mountain_h - plains_h) * self.mountain_weight(world_x);
+        // Oceans pull the surface deep below sea level (blended in along the shore),
+        // so the column floods into open water over a sandy seabed.
+        let ocean_h = (SEA_LEVEL + OCEAN_DEPTH) as f32 + n * OCEAN_FLOOR_AMP;
+        (land_h + (ocean_h - land_h) * self.ocean_weight(world_x)).round() as i32
+    }
+
+    /// A column near the origin fit to spawn a player on: dry land (surface above
+    /// sea level, so not in a pond or ocean) that no cave has broken open. Scans
+    /// outward from `x = 0` so a world whose origin happens to fall in the sea
+    /// still drops the player onto a nearby shore rather than into deep water.
+    pub fn land_spawn_x(&self) -> i32 {
+        for d in 0..10_000 {
+            for x in [d, -d] {
+                let s = self.surface_height(x);
+                if self.biome_at(x) != Biome::Ocean && s < SEA_LEVEL && !self.is_cave(x, s, s) {
+                    return x;
+                }
+            }
+        }
+        0
     }
 
     /// How steeply the overworld surface rises or falls across this column,
@@ -341,6 +407,16 @@ impl WorldGen {
             Biome::Mountains => STONE,
             // The desert is a band of sand over stone — no grass, no dirt.
             Biome::Desert => {
+                if world_y <= surface + SAND_DEPTH {
+                    SAND
+                } else {
+                    STONE
+                }
+            }
+            // The ocean floor is a sandy seabed over stone — the same band as the
+            // desert, only it lies deep underwater (the column above it is flooded
+            // with water by the caller down to this surface).
+            Biome::Ocean => {
                 if world_y <= surface + SAND_DEPTH {
                     SAND
                 } else {
@@ -650,8 +726,8 @@ impl WorldGen {
         let chance = match self.biome_at(world_x) {
             Biome::Forest => FOREST_TREE_CHANCE,
             Biome::Plains => PLAINS_TREE_CHANCE,
-            // Bare stone mountains and barren sand deserts grow no trees.
-            Biome::Mountains | Biome::Desert => 0,
+            // Bare stone mountains, barren deserts, and open ocean grow no trees.
+            Biome::Mountains | Biome::Desert | Biome::Ocean => 0,
         };
         self.col_hash(world_x, 0) % 1000 < chance
     }
@@ -827,6 +903,40 @@ mod tests {
             }
         }
         assert!(water > 0, "expected some basins to flood with water");
+    }
+
+    /// An ocean biome generates somewhere, and where it does the column is a deep
+    /// body of open water over a sandy seabed: the floor sits well below sea level,
+    /// the cells from sea level down to the floor are all water, and the floor cell
+    /// itself is sand.
+    #[test]
+    fn ocean_biome_is_deep_water_over_a_sand_floor() {
+        use crate::block::SAND;
+        use crate::world::to_chunk;
+
+        let worldgen = WorldGen::new(0xC0FFEE);
+        // Find an ocean column; oceans are broad, so a wide scan must hit one.
+        let x = (-8000..8000)
+            .find(|&x| worldgen.biome_at(x) == Biome::Ocean)
+            .expect("an ocean should generate somewhere across 16000 columns");
+
+        // The seabed sits deep below the waterline (larger row = lower down).
+        let floor = worldgen.surface_height(x);
+        assert!(
+            floor > SEA_LEVEL,
+            "ocean floor at row {floor} should be below sea level {SEA_LEVEL}"
+        );
+
+        // Every cell from the sea surface down to just above the floor is water.
+        let block_at = |wx: i32, wy: i32| {
+            let ((cx, cy), (lx, ly)) = to_chunk(wx, wy);
+            worldgen.generate_chunk(cx, cy).get(lx, ly)
+        };
+        for wy in SEA_LEVEL..floor {
+            assert_eq!(block_at(x, wy), WATER, "ocean column dry at row {wy}");
+        }
+        // The seabed the water rests on is sand.
+        assert_eq!(block_at(x, floor), SAND, "ocean floor should be sand");
     }
 
     /// Caves hollow out a meaningful amount of underground rock, but nowhere near

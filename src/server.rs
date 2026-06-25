@@ -2282,7 +2282,7 @@ fn build_endpoint(
     let spawn = saved
         .as_ref()
         .map(|m| m.spawn)
-        .unwrap_or_else(|| spawn_point(&generator, 0));
+        .unwrap_or_else(|| spawn_point(&generator, generator.land_spawn_x()));
 
     // Offset the clock so a loaded world resumes at the time of day it was saved.
     let start = match saved.as_ref() {
@@ -2427,8 +2427,10 @@ fn spawn_creatures(shared: &Shared) {
     for i in 0..SPAWN_SLOTS {
         let cell_x = (i - SPAWN_SLOTS / 2) * SPAWN_SPACING;
         // Alternate hostile/placid creatures in mountains; `i` parity keeps the
-        // original mix around the origin.
-        let kind = creature_for_biome(world.biome(cell_x), i % 2 == 0);
+        // original mix around the origin. Biomes with no life (ocean) seed nothing.
+        let Some(kind) = creature_for_biome(world.biome(cell_x), i % 2 == 0) else {
+            continue;
+        };
         let (_, h) = kind.size();
         let surface = world.surface(cell_x);
         let id = shared.alloc_id();
@@ -2438,22 +2440,23 @@ fn spawn_creatures(shared: &Shared) {
     }
 }
 
-/// Which creature a column's biome supports. `hostile_slot` selects between the
-/// two mountain dwellers (slime when true, goat when false) so callers can mix
-/// them; plains always yield a chicken.
-fn creature_for_biome(biome: Biome, hostile_slot: bool) -> EntityKind {
+/// Which creature a column's biome supports, or `None` for a biome with no
+/// ambient life. `hostile_slot` selects between the two mountain dwellers (slime
+/// when true, goat when false) so callers can mix them; plains always yield a
+/// chicken.
+fn creature_for_biome(biome: Biome, hostile_slot: bool) -> Option<EntityKind> {
     match biome {
         // Plains and forest: peaceful chickens beneath the trees. Deserts, too —
         // a lone chicken pecking the dunes is the only life out there.
-        Biome::Plains | Biome::Forest | Biome::Desert => EntityKind::Chicken,
+        Biome::Plains | Biome::Forest | Biome::Desert => Some(EntityKind::Chicken),
         // Mountains: hostile slimes interspersed with placid goats.
-        Biome::Mountains => {
-            if hostile_slot {
-                EntityKind::Slime
-            } else {
-                EntityKind::Goat
-            }
-        }
+        Biome::Mountains => Some(if hostile_slot {
+            EntityKind::Slime
+        } else {
+            EntityKind::Goat
+        }),
+        // The open ocean has no creatures for now (sea life may come later).
+        Biome::Ocean => None,
     }
 }
 
@@ -2505,7 +2508,9 @@ fn maybe_spawn_in_chunk(shared: &Shared, cx: i32, cy: i32) {
             if surface < chunk_top || surface >= chunk_bottom {
                 continue;
             }
-            let kind = creature_for_biome(world.biome(cell_x), n % 2 == 0);
+            let Some(kind) = creature_for_biome(world.biome(cell_x), n % 2 == 0) else {
+                continue;
+            };
             let (_, h) = kind.size();
             let id = shared.alloc_id();
             let x = cell_x as f32 * TILE_SIZE;
