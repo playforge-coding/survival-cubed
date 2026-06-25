@@ -38,6 +38,18 @@ targeted block shows mining progress.
 The selected hotbar slot determines which block you place and which food you eat.
 See **[Crafting & Tools](crafting.md)** for the inventory layout and recipes.
 
+## View
+
+| Key | Action |
+|---|---|
+| <kbd>=</kbd> / <kbd>+</kbd> (or numpad <kbd>+</kbd>) | Zoom the camera in (bigger tiles, less world on screen) |
+| <kbd>-</kbd> / <kbd>_</kbd> (or numpad <kbd>-</kbd>) | Zoom the camera out (smaller tiles, more world on screen) |
+
+Zoom ranges from **1.5×** (most zoomed out) to **6.0×** (most zoomed in) in 0.5×
+steps, starting at **3.0×**. The level is per-session and a status message confirms
+each change. Mining, placing, and chunk loading all follow the current zoom, so the
+cursor always targets the block it's over.
+
 ## Waypoints
 
 | Key | Action |

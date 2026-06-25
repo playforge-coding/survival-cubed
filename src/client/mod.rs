@@ -100,7 +100,15 @@ const HORSE_RIDE_SPEED_MULT: f32 = 1.7;
 // The local player is just a (special) entity; reuse its shared size.
 const PLAYER_W: f32 = crate::entity::PLAYER_SIZE.0;
 const PLAYER_H: f32 = crate::entity::PLAYER_SIZE.1;
+/// Default camera zoom (physical pixels drawn per world pixel) for a fresh world,
+/// and the fallback used before a game exists.
 const ZOOM: f32 = 3.0;
+/// How far the player may zoom out (more world on screen) and in (bigger tiles),
+/// and the step applied per keypress. Clamped so the view never inverts or shrinks
+/// the world to nothing.
+const ZOOM_MIN: f32 = 1.5;
+const ZOOM_MAX: f32 = 6.0;
+const ZOOM_STEP: f32 = 0.5;
 /// How often (seconds) a held mouse button places a block or swings a melee hit.
 const ACTION_COOLDOWN: f32 = 0.12;
 /// Extra chunks loaded beyond the screen edges.
@@ -346,6 +354,10 @@ struct GameState {
     /// Where the player last died, in world pixels. Shown as a death marker until
     /// they walk back to it (then it clears). Derived locally from death respawns.
     death: Option<Vec2>,
+    /// Camera zoom: physical pixels drawn per world pixel. Adjusted live by the
+    /// zoom keybinds, clamped to [`ZOOM_MIN`]..=[`ZOOM_MAX`]. Higher means tiles are
+    /// bigger and less of the world is visible.
+    zoom: f32,
 }
 
 /// One received chat line: who said it and what they said.
@@ -426,6 +438,7 @@ impl GameState {
             // Until the server's first sync arrives, treat world spawn as home.
             home: Some(spawn),
             death: None,
+            zoom: ZOOM,
         }
     }
 }
@@ -1626,9 +1639,9 @@ impl App {
         };
         let ctx = ui.ctx();
         let screen = ctx.content_rect();
-        // Points per world pixel: the world is drawn at `ZOOM` physical pixels per
-        // world pixel, and egui works in points (physical / pixels_per_point).
-        let scale = ZOOM / ctx.pixels_per_point();
+        // Points per world pixel: the world is drawn at `g.zoom` physical pixels
+        // per world pixel, and egui works in points (physical / pixels_per_point).
+        let scale = g.zoom / ctx.pixels_per_point();
         let player_center = g.pos + Vec2::new(PLAYER_W * 0.5, PLAYER_H * 0.5);
         let center_pt = screen.center();
         // Keep markers clear of the top HUD bar and the bottom hotbar.
@@ -1714,7 +1727,7 @@ impl App {
         }
         let ctx = ui.ctx();
         let screen = ctx.content_rect();
-        let scale = ZOOM / ctx.pixels_per_point();
+        let scale = g.zoom / ctx.pixels_per_point();
         let player_center = g.pos + Vec2::new(PLAYER_W * 0.5, PLAYER_H * 0.5);
         let center_pt = screen.center();
         // World pixel -> screen point, matching the camera the tiles are drawn with.
@@ -1754,10 +1767,11 @@ impl App {
 
         // Paste preview: the loaded structure's footprint at the cursor cell.
         if let (Some(s), Some(gfx)) = (&g.pending_paste, self.gfx.as_ref()) {
-            let view_w = gfx.size.width.max(1) as f32 / ZOOM;
-            let view_h = gfx.size.height.max(1) as f32 / ZOOM;
+            let view_w = gfx.size.width.max(1) as f32 / g.zoom;
+            let view_h = gfx.size.height.max(1) as f32 / g.zoom;
             let offset = player_center - Vec2::new(view_w * 0.5, view_h * 0.5);
-            let world = offset + Vec2::new(self.input.mouse.0 / ZOOM, self.input.mouse.1 / ZOOM);
+            let world =
+                offset + Vec2::new(self.input.mouse.0 / g.zoom, self.input.mouse.1 / g.zoom);
             let tx = (world.x / TILE_SIZE).floor() as i32;
             let ty = (world.y / TILE_SIZE).floor() as i32;
             let rect = cell_rect(tx, ty, tx + s.width as i32 - 1, ty + s.height as i32 - 1);
@@ -3277,8 +3291,8 @@ impl App {
             return (Vec::new(), CameraUniform::new([0.0, 0.0], [vw, vh], ZOOM));
         };
 
-        let view_w = vw / ZOOM;
-        let view_h = vh / ZOOM;
+        let view_w = vw / g.zoom;
+        let view_h = vh / g.zoom;
         let center = view_center(g);
         let offset = center - Vec2::new(view_w * 0.5, view_h * 0.5);
 
@@ -3599,7 +3613,7 @@ impl App {
 
         (
             tiles,
-            CameraUniform::new([offset.x, offset.y], [vw, vh], ZOOM),
+            CameraUniform::new([offset.x, offset.y], [vw, vh], g.zoom),
         )
     }
 }
@@ -4359,8 +4373,8 @@ fn request_chunks(game: &mut GameState, gfx: Option<&Gfx>, net: Option<&NetHandl
     let (Some(gfx), Some(net)) = (gfx, net) else {
         return;
     };
-    let view_w = gfx.size.width.max(1) as f32 / ZOOM;
-    let view_h = gfx.size.height.max(1) as f32 / ZOOM;
+    let view_w = gfx.size.width.max(1) as f32 / game.zoom;
+    let view_h = gfx.size.height.max(1) as f32 / game.zoom;
     let center = view_center(game);
     let min = center - Vec2::new(view_w * 0.5, view_h * 0.5);
     let max = center + Vec2::new(view_w * 0.5, view_h * 0.5);
@@ -4420,11 +4434,11 @@ fn handle_block_actions(
     };
 
     // Mouse (physical px) -> world point + cell.
-    let view_w = gfx.size.width.max(1) as f32 / ZOOM;
-    let view_h = gfx.size.height.max(1) as f32 / ZOOM;
+    let view_w = gfx.size.width.max(1) as f32 / game.zoom;
+    let view_h = gfx.size.height.max(1) as f32 / game.zoom;
     let center = game.pos + Vec2::new(PLAYER_W * 0.5, PLAYER_H * 0.5);
     let offset = center - Vec2::new(view_w * 0.5, view_h * 0.5);
-    let world = offset + Vec2::new(input.mouse.0 / ZOOM, input.mouse.1 / ZOOM);
+    let world = offset + Vec2::new(input.mouse.0 / game.zoom, input.mouse.1 / game.zoom);
     let tx = (world.x / TILE_SIZE).floor() as i32;
     let ty = (world.y / TILE_SIZE).floor() as i32;
 
@@ -5141,6 +5155,11 @@ impl App {
             // nearest to them.
             KeyCode::KeyM if pressed => self.add_waypoint(),
             KeyCode::KeyN if pressed => self.remove_nearest_waypoint(),
+            // = / + (and numpad +) zoom the camera in; - / _ (and numpad -) zoom out.
+            // The two keys on the same physical button cover both with and without
+            // Shift so they work regardless of layout.
+            KeyCode::Equal | KeyCode::NumpadAdd if pressed => self.adjust_zoom(ZOOM_STEP),
+            KeyCode::Minus | KeyCode::NumpadSubtract if pressed => self.adjust_zoom(-ZOOM_STEP),
             // F2 captures a screenshot of the world (without the HUD) on the
             // next rendered frame.
             KeyCode::F2 if pressed => self.screenshot_requested = true,
@@ -5185,6 +5204,17 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Step the camera zoom by `delta` physical-pixels-per-world-pixel, clamped to
+    /// [`ZOOM_MIN`]..=[`ZOOM_MAX`]. The new level affects rendering, chunk streaming,
+    /// and mouse→world mapping uniformly, so the cursor stays over the same block.
+    fn adjust_zoom(&mut self, delta: f32) {
+        if let Some(g) = &mut self.game {
+            g.zoom = (g.zoom + delta).clamp(ZOOM_MIN, ZOOM_MAX);
+            let z = g.zoom;
+            self.status = format!("Zoom: {z:.1}x");
         }
     }
 
