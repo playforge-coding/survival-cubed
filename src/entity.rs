@@ -58,6 +58,10 @@ pub const DEMON_SIZE: (f32, f32) = (10.0, 15.0);
 /// Collision/draw size (width, height) in pixels of an orc — a stocky underworld
 /// brute, broader than the lanky skeletons it shares the depths with.
 pub const ORC_SIZE: (f32, f32) = (12.0, 15.0);
+/// Collision/draw size (width, height) in pixels of a knight — a compact armoured
+/// humanoid on foot. When mounted it is drawn from its larger horse sheet, but its
+/// collision box stays this on-foot size (as a ridden player keeps their own box).
+pub const KNIGHT_SIZE: (f32, f32) = (10.0, 13.0);
 /// Collision/draw size (width, height) in pixels of a thrown bone — a small
 /// tumbling projectile.
 pub const BONE_SIZE: (f32, f32) = (12.0, 12.0);
@@ -84,6 +88,13 @@ pub const SNAKE_LUNGE_TIME: f32 = 0.7;
 /// frame where the fists hit the ground — so an alert player can back out of reach
 /// during the wind-up. Reuses the [`Entity::lunge`] timer the snake strike rides on.
 pub const ORC_SLAM_TIME: f32 = 1.1;
+
+/// Seconds a knight's attack swing animation plays. Like the snake lunge and orc
+/// slam it rides on the [`Entity::lunge`] timer: the server kicks it off (broadcasting
+/// [`crate::protocol::ServerMessage::EntityLunging`]) each time the knight lands a
+/// blow, and the client plays the attack sheet for this long. Purely cosmetic — the
+/// damage is dealt server-side on the [`Entity::attack_cd`] cadence.
+pub const KNIGHT_ATTACK_TIME: f32 = 0.45;
 
 /// Seconds a snake spends writhing through its death animation when killed,
 /// before it despawns. Shared by both sides so the server's despawn timing and
@@ -134,6 +145,9 @@ pub const DEMON_MAX_HEALTH: i32 = 28;
 /// Maximum health of an orc, in hit points. The toughest thing in the underworld —
 /// a slow brute that soaks up punishment and answers with a devastating slam.
 pub const ORC_MAX_HEALTH: i32 = 50;
+/// Maximum health of a knight, in hit points. A sturdy man-at-arms — hardier than
+/// any pet, so a recruited knight can trade blows with the monsters it hunts.
+pub const KNIGHT_MAX_HEALTH: i32 = 40;
 
 /// What an entity *is*. Adding a new creature/object means adding a variant
 /// here plus (for server-simulated kinds) a branch in the server tick loop.
@@ -254,6 +268,19 @@ pub enum EntityKind {
     /// it. Roams the underworld at all hours. Server-simulated. Appended last so
     /// older saves and the wire format keep their variant indices.
     Orc,
+    /// A knight: a wandering man-at-arms that spawns rarely on the **plains**. A wild
+    /// knight (`owner` = `None`) just roams and **cannot be attacked** by players;
+    /// giving it a **tungsten ingot** recruits it, stamping the giver's **name** into
+    /// `owner` (stored by name, not a volatile id, so the bond survives a restart). A
+    /// recruited knight follows its owner everywhere — it even crosses dimensions with
+    /// them — teleporting over when they stray too far (like a pet), and charges into
+    /// battle against whatever enemy its owner last struck. If a *wild* (untamed) horse
+    /// is nearby it will mount up, riding into the fray; the horse soaks blows on the
+    /// knight's behalf until it is slain, after which the knight fights on foot. Unlike
+    /// a pet it does **not** respawn loyal: a slain knight reappears at its owner's
+    /// respawn point as a *wild* knight that must be recruited afresh. Server-simulated.
+    /// Appended last so older saves and the wire format keep their variant indices.
+    Knight { owner: Option<String> },
 }
 
 impl EntityKind {
@@ -276,6 +303,7 @@ impl EntityKind {
             EntityKind::Bone => BONE_SIZE,
             EntityKind::Fireball => FIREBALL_SIZE,
             EntityKind::Orc => ORC_SIZE,
+            EntityKind::Knight { .. } => KNIGHT_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -309,6 +337,13 @@ impl EntityKind {
         matches!(self, EntityKind::Horse { .. })
     }
 
+    /// Whether this is a knight (recruited or wild). A knight is not a [pet](Self::is_pet)
+    /// — it can't be sat and doesn't respawn loyal — but it shares some companion rules
+    /// (immune to player attacks, exempt from distance despawn, follows its owner).
+    pub fn is_knight(&self) -> bool {
+        matches!(self, EntityKind::Knight { .. })
+    }
+
     /// Whether this is a tameable companion (a cat, a puppy, or a horse). Pets share
     /// a bundle of special rules: immune to player attacks, exempt from distance
     /// despawn, singed by fire (their one mortal hazard), and — once tamed —
@@ -338,7 +373,8 @@ impl EntityKind {
         match self {
             EntityKind::Cat { owner, .. }
             | EntityKind::Puppy { owner, .. }
-            | EntityKind::Horse { owner } => owner.as_deref(),
+            | EntityKind::Horse { owner }
+            | EntityKind::Knight { owner } => owner.as_deref(),
             _ => None,
         }
     }
@@ -368,6 +404,7 @@ impl EntityKind {
             // health bar shows and a stray melee swing can't meaningfully "kill" it.
             EntityKind::Fireball => 1,
             EntityKind::Orc => ORC_MAX_HEALTH,
+            EntityKind::Knight { .. } => KNIGHT_MAX_HEALTH,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }
@@ -462,8 +499,22 @@ pub struct Entity {
     /// defaults `None` on the client. The server uses it each tick to glue the
     /// ridden horse beneath its rider; clients use it to draw the rider on the
     /// combined `player/horse` sprite and to hide the now-mounted horse entity.
+    ///
+    /// A [`EntityKind::Knight`] also sets this — to the id of the wild horse it has
+    /// mounted — so clients draw it on the combined `knight/horse` sprite. (A knight
+    /// *absorbs* the horse it mounts rather than gluing a live one beneath it; the
+    /// id here is just a non-`None` "is mounted" marker and the absorbed horse's
+    /// [`Self::mount_health`] is the shield it rides behind.)
     #[serde(skip)]
     pub riding: Option<EntityId>,
+    /// Server-only: a mounted [`EntityKind::Knight`]'s remaining mount (horse) hit
+    /// points — the shield it rides behind. `> 0` means the knight is mounted; blows
+    /// it would take are subtracted from this until it hits `0`, at which point the
+    /// knight is thrown and fights on foot. `0` for everything else. Never sent over
+    /// the wire (the mount pose itself rides on [`Self::riding`], synced via
+    /// [`crate::protocol::ServerMessage::EntityRiding`]).
+    #[serde(skip)]
+    pub mount_health: i32,
 }
 
 impl Entity {
@@ -488,6 +539,7 @@ impl Entity {
             lunge_dir: 0.0,
             boating: false,
             riding: None,
+            mount_health: 0,
         }
     }
 

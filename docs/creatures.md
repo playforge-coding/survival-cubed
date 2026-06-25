@@ -13,6 +13,7 @@ are all simulated by the server (only your own player is driven by your client).
 | **Cat** | 8 | Forest | — | Wild until tamed |
 | **Puppy** | 14 | Forest | — | Wild until tamed; hunts skeletons and chickens |
 | **Horse** | 30 | Plains | — | Wild until tamed **with an apple**; can be ridden |
+| **Knight** | 40 | Plains (rare) | — | A wandering man-at-arms; recruit it **with a tungsten ingot** |
 
 Cook the raw meat from chickens and goats before eating it — raw meat makes you
 sick. See [Food](crafting.md#food).
@@ -49,6 +50,27 @@ two differences:
 A horse can't be ridden between dimensions: stepping through a fire key (or
 falling to the underworld) drops you back on foot and leaves the horse behind in
 the world you left.
+
+## The knight
+
+A lone **knight** wanders the **plains** — a rare sight, far scarcer than the
+horses that share the grass. You **can't attack it**. Instead, hold a
+[tungsten ingot](crafting.md#smelting) and left-click the knight to **recruit it**,
+spending the ingot. A recruited knight is yours — a true companion:
+
+- **It fights for you.** Strike any enemy and your knight charges that foe,
+  trading heavy blows until it falls. It only takes up the enemies *you* pick.
+- **It follows you everywhere** — even **across dimensions**. Step through a fire
+  key and your knight comes too. Stray too far and it teleports to your side, like
+  a pet.
+- **It rides into battle.** If a **wild** (untamed) horse is near, the knight
+  mounts up and gallops — and some knights are **already mounted** when you find
+  them. The horse shields it — soaking every blow on the knight's behalf — until
+  the horse is slain, after which the knight fights on foot. (It won't take a horse
+  you've tamed.)
+- **Death breaks the bond.** Unlike a pet, a slain knight respawns at **your**
+  respawn point as a *wild* knight — you must **recruit it again** with another
+  tungsten ingot.
 
 ## Hostile monsters
 

@@ -259,6 +259,35 @@ const ORC_SLAM_INTERVAL: f32 = 1.5;
 const ORC_CHUNK_CHANCE: u32 = 28;
 /// Most orcs a single fresh underworld chunk seeds at once.
 const ORC_CHUNK_MAX: u32 = 2;
+/// Marching speed of a knight on foot, in pixels/second — brisk enough to keep up
+/// with a walking owner and run down the foes it's sent against.
+const KNIGHT_SPEED: f32 = 40.0;
+/// Marching speed of a *mounted* knight, in pixels/second — a gallop, faster than
+/// it manages on foot, to match the horse it rides.
+const KNIGHT_MOUNTED_SPEED: f32 = 64.0;
+/// How far (px, between AABBs) a knight will range from its owner to engage the
+/// enemy its owner last struck. Beyond this it breaks off and returns to heel.
+const KNIGHT_AGGRO: f32 = 280.0;
+/// Maximum gap (px between AABBs) at which a knight lands a melee blow.
+const KNIGHT_ATTACK_RANGE: f32 = 6.0;
+/// Damage a knight deals per swing — a hard-hitting man-at-arms.
+const KNIGHT_DAMAGE: i32 = 12;
+/// Seconds a knight waits between swings.
+const KNIGHT_ATTACK_INTERVAL: f32 = 0.7;
+/// Gap (px between AABBs) past which a recruited knight that is just following (not
+/// fighting) walks toward its owner; inside it, it holds station.
+const KNIGHT_FOLLOW_GAP: f32 = 36.0;
+/// Center-distance (px) past which a recruited knight teleports to its owner, the
+/// way a pet does — generous, so it finishes a fight before snapping back.
+const KNIGHT_TELEPORT_DIST: f32 = 360.0;
+/// Maximum gap (px between AABBs) at which a knight mounts a nearby *wild* horse.
+const KNIGHT_MOUNT_RANGE: f32 = 40.0;
+/// Percent chance that a fresh plains chunk seeds a knight — rarer than the horses
+/// that share the plains (see [`HORSE_CHUNK_CHANCE`]).
+const KNIGHT_CHUNK_CHANCE: u32 = 3;
+/// Percent of freshly spawned knights that arrive already mounted (riding behind a
+/// horse's worth of [`crate::entity::HORSE_MAX_HEALTH`] shield from the off).
+const KNIGHT_SPAWN_MOUNTED_CHANCE: u32 = 30;
 /// Seconds a tongue of charred-skeleton trail fire burns before guttering out.
 /// Naturally generated fire (part of the terrain) is permanent and untracked.
 const TRAIL_FIRE_LIFETIME: f32 = 4.0;
@@ -633,6 +662,11 @@ struct Shared {
     /// Seconds until each player can next take fire damage, keyed by entity id, so
     /// standing in flame burns at a steady interval rather than every tick.
     fire_cd: Mutex<HashMap<EntityId, f32>>,
+    /// The enemy each player has most recently struck, keyed by player entity id, so
+    /// that player's recruited [`EntityKind::Knight`] knows whom to charge. Set when
+    /// a player lands a hit on a hostile creature; entity ids are never reused, so a
+    /// stale entry (its enemy already dead) simply matches nothing. Runtime-only.
+    knight_targets: Mutex<HashMap<EntityId, EntityId>>,
     /// Set when the owning [`RunningServer`] is dropped, to stop the autosave
     /// loop.
     shutdown: AtomicBool,
@@ -1515,6 +1549,73 @@ impl Shared {
         self.send_inventory(id);
     }
 
+    /// React to player `id` offering held item `held` to the wild knight `target`: if
+    /// it is a tungsten ingot and the player is in reach, spend one ingot and recruit
+    /// the knight, stamping the giver's name into its `owner`. Mirrors
+    /// [`Self::try_feed_horse`]. A no-op (no ingot spent) otherwise.
+    fn try_recruit_knight(&self, id: EntityId, target: EntityId, held: BlockId, dim: Dimension) {
+        if held != crate::block::TUNGSTEN_INGOT {
+            return;
+        }
+        let recruited = {
+            let mut invs = self.inventories.lock();
+            let mut entities = self.entities(dim).lock();
+            let owner_name = match (entities.get(id), entities.get(target)) {
+                (Some(a), Some(b))
+                    if matches!(b.kind, EntityKind::Knight { owner: None })
+                        && aabb_gap(
+                            a.x,
+                            a.y,
+                            a.size().0,
+                            a.size().1,
+                            b.x,
+                            b.y,
+                            b.size().0,
+                            b.size().1,
+                        ) <= PLAYER_ATTACK_REACH =>
+                {
+                    match &a.kind {
+                        EntityKind::Player { name } if !name.is_empty() => name.clone(),
+                        _ => return,
+                    }
+                }
+                _ => return,
+            };
+            // Spend one tungsten ingot; bail (without recruiting) if they hold none.
+            let Some(inv) = invs.get_mut(&id) else {
+                return;
+            };
+            if inv.count(crate::block::TUNGSTEN_INGOT) == 0 {
+                return;
+            }
+            inv.remove(crate::block::TUNGSTEN_INGOT, 1);
+            entities.get_mut(target).map(|e| {
+                if let EntityKind::Knight { owner } = &mut e.kind {
+                    *owner = Some(owner_name);
+                }
+                e.health = e.max_health;
+                e.clone()
+            })
+        };
+        if let Some(entity) = recruited {
+            // The serialized entity drops the runtime-only mount pose, so if this
+            // knight was found already on horseback, restore it with the dedicated
+            // riding message after the spawn resync.
+            let mount = entity.riding;
+            self.broadcast_dim(dim, ServerMessage::EntitySpawn { entity });
+            if let Some(horse) = mount {
+                self.broadcast_dim(
+                    dim,
+                    ServerMessage::EntityRiding {
+                        id: target,
+                        horse: Some(horse),
+                    },
+                );
+            }
+        }
+        self.send_inventory(id);
+    }
+
     /// React to player `id` clicking the *tamed* pet `target`: if `id` is the pet's
     /// owner and within reach, flip whether it's sitting (sit it down, or stand it
     /// back up). A sitting pet stays put — its tick stops wandering and stops
@@ -2034,6 +2135,11 @@ impl Shared {
             Some(e) => e,
             None => return, // not a live player
         };
+        // Their name (used below to bring along any knights they've recruited).
+        let player_name = match &player.kind {
+            EntityKind::Player { name } if !name.is_empty() => Some(name.clone()),
+            _ => None,
+        };
         player.x = x;
         player.y = y;
         player.vx = 0.0;
@@ -2087,6 +2193,58 @@ impl Shared {
         // the inventory, which travels with the player across dimensions.
         self.send_waypoints(id);
         self.send_inventory(id);
+        // A recruited knight follows its owner across the divide: move every knight
+        // this player owns from the old dimension into the new one, beside them.
+        self.transfer_knights(player_name.as_deref(), from, to, x, y);
+    }
+
+    /// Carry player `owner`'s recruited [knights](EntityKind::Knight) from dimension
+    /// `from` to `to`, landing them next to the player at `(x, y)` on foot (any mount
+    /// is left behind, like the player's own horse). Broadcasts the despawn/spawn so
+    /// both dimensions' onlookers see the knight leave and arrive. A no-op if `owner`
+    /// is `None` (an unnamed player owns nothing).
+    fn transfer_knights(
+        &self,
+        owner: Option<&str>,
+        from: Dimension,
+        to: Dimension,
+        x: f32,
+        y: f32,
+    ) {
+        let Some(owner) = owner else { return };
+        // Pull the owned knights out of the old dimension first.
+        let mut moving: Vec<Entity> = {
+            let mut src = self.entities(from).lock();
+            let ids: Vec<EntityId> = src
+                .values()
+                .filter(|e| matches!(&e.kind, EntityKind::Knight { owner: Some(o) } if o == owner))
+                .map(|e| e.id)
+                .collect();
+            ids.into_iter().filter_map(|kid| src.remove(kid)).collect()
+        };
+        if moving.is_empty() {
+            return;
+        }
+        for k in &moving {
+            self.broadcast_dim(from, ServerMessage::EntityDespawn { id: k.id });
+        }
+        // Re-home them beside the player in the new dimension, dismounted.
+        {
+            let mut dst = self.entities(to).lock();
+            for k in &mut moving {
+                k.x = x;
+                k.y = y;
+                k.vx = 0.0;
+                k.vy = 0.0;
+                k.home_x = Some(x);
+                k.riding = None;
+                k.mount_health = 0;
+                dst.insert(k.clone());
+            }
+        }
+        for k in moving {
+            self.broadcast_dim(to, ServerMessage::EntitySpawn { entity: k });
+        }
     }
 
     /// Use the fire key in hotbar `slot`: if it really holds a
@@ -2521,6 +2679,7 @@ fn build_endpoint(
         placed_logs: Mutex::new(placed_logs),
         trail_fires: Mutex::new(HashMap::new()),
         fire_cd: Mutex::new(HashMap::new()),
+        knight_targets: Mutex::new(HashMap::new()),
         shutdown: AtomicBool::new(false),
         banned_ips: Mutex::new(banned_ips),
         bans_path,
@@ -2834,6 +2993,70 @@ fn maybe_spawn_horses(shared: &Shared, cx: i32, cy: i32) {
         .lock()
         .insert(entity.clone());
     shared.broadcast_dim(Dimension::Overworld, ServerMessage::EntitySpawn { entity });
+}
+
+/// Possibly seed a wandering knight onto a freshly generated **plains** chunk, like
+/// the horses that share the plains but rarer (see [`KNIGHT_CHUNK_CHANCE`]). A fresh
+/// knight is wild (`owner: None`) until a player recruits it with a tungsten ingot.
+/// Deterministic per chunk via [`chunk_hash`] on its own salt range, so re-exploring
+/// the same terrain never double-spawns, and it runs independently of the other
+/// surface spawners.
+fn maybe_spawn_knights(shared: &Shared, cx: i32, cy: i32) {
+    let world = shared.world(Dimension::Overworld).lock();
+    let seed = world.generator.seed();
+    if chunk_hash(seed, cx, cy, 600) % 100 >= KNIGHT_CHUNK_CHANCE {
+        return;
+    }
+
+    let base_x = cx * CHUNK_SIZE;
+    let chunk_top = cy * CHUNK_SIZE;
+    let chunk_bottom = chunk_top + CHUNK_SIZE;
+    let (_, h) = EntityKind::Knight { owner: None }.size();
+
+    let lx = chunk_hash(seed, cx, cy, 601) % CHUNK_SIZE as u32;
+    let cell_x = base_x + lx as i32;
+    let surface = world.surface(cell_x);
+    if world.biome(cell_x) != Biome::Plains || surface < chunk_top || surface >= chunk_bottom {
+        return;
+    }
+    let id = shared.alloc_id();
+    let mut entity = Entity::new(
+        id,
+        EntityKind::Knight { owner: None },
+        cell_x as f32 * TILE_SIZE,
+        surface as f32 * TILE_SIZE - h,
+    );
+    // Some knights are already on horseback when found. A spawn-mounted knight just
+    // begins with a horse's worth of mount shield and the "is mounted" marker — it
+    // hasn't absorbed a real horse entity, so the marker is a throwaway id no live
+    // entity holds (so it harmlessly does nothing in the client's hide-ridden set).
+    let mounted = chunk_hash(seed, cx, cy, 602) % 100 < KNIGHT_SPAWN_MOUNTED_CHANCE;
+    let mount_marker = if mounted {
+        let marker = shared.alloc_id();
+        entity.mount_health = crate::entity::HORSE_MAX_HEALTH;
+        entity.riding = Some(marker);
+        Some(marker)
+    } else {
+        None
+    };
+    drop(world);
+
+    shared
+        .entities(Dimension::Overworld)
+        .lock()
+        .insert(entity.clone());
+    shared.broadcast_dim(Dimension::Overworld, ServerMessage::EntitySpawn { entity });
+    // The mount pose rides on the runtime-only `riding` field (not the serialized
+    // entity), so follow up with the dedicated message to draw it on horseback.
+    if let Some(marker) = mount_marker {
+        shared.broadcast_dim(
+            Dimension::Overworld,
+            ServerMessage::EntityRiding {
+                id,
+                horse: Some(marker),
+            },
+        );
+    }
 }
 
 /// Possibly seed snakes into a freshly generated chunk. Snakes are the desert's
@@ -3405,11 +3628,11 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     } else {
         entities
             .values()
-            // Players are authoritative on their clients; pets (cats and puppies)
-            // never despawn for distance (they teleport to their owner instead).
+            // Players are authoritative on their clients; pets and knights never
+            // despawn for distance (they teleport to their owner instead).
             // Everything else is culled once it drifts beyond DESPAWN_DIST of
             // every player.
-            .filter(|e| !e.kind.is_player() && !e.kind.is_pet())
+            .filter(|e| !e.kind.is_player() && !e.kind.is_pet() && !e.kind.is_knight())
             .filter(|e| {
                 let (w, h) = e.size();
                 nearest_player(&players, e.x + w * 0.5, e.y + h * 0.5, DESPAWN_DIST).is_none()
@@ -3486,6 +3709,11 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         .filter(|e| matches!(e.kind, EntityKind::Orc))
         .map(|e| e.id)
         .collect();
+    let knight_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Knight { .. }))
+        .map(|e| e.id)
+        .collect();
     let bone_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::Bone))
@@ -3519,6 +3747,10 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     let mut creature_hits: Vec<(EntityId, (f32, f32), i32)> = Vec::new();
     // Raw-meat drops a puppy ate this tick, removed from the world after the loop.
     let mut meat_eaten: Vec<EntityId> = Vec::new();
+    // Damage a knight soaked this tick (enemy reprisal in melee, or fire): the knight
+    // id and the raw damage. Applied after the loops; a mounted knight's horse absorbs
+    // it first (see [`Entity::mount_health`]), an unmounted one takes it on the chin.
+    let mut knight_hits: Vec<(EntityId, i32)> = Vec::new();
     // Cells where a chasing charred skeleton laid a tongue of fire this tick,
     // registered with the trail-fire tracker once the world lock is released.
     let mut new_trail_fires: Vec<(i32, i32)> = Vec::new();
@@ -4189,6 +4421,214 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     for mid in meat_eaten {
         if entities.remove(mid).is_some() {
             broadcasts.push(ServerMessage::EntityDespawn { id: mid });
+        }
+    }
+
+    // Knights: a wild one just roams its home patch; a recruited one keeps to its
+    // owner — teleporting over when they stray too far, like a pet — and charges the
+    // last enemy its owner struck. If a wild horse is at hand it mounts up (the horse
+    // soaks blows for it via `mount_health` until slain), and it trades blows with its
+    // quarry, dealing damage and taking the enemy's melee reprisal in return.
+    //
+    // Snapshots taken before the loop so a knight can pick a horse to mount and an
+    // enemy to chase without re-borrowing the entities map mid-loop.
+    let knight_target_marks = shared.knight_targets.lock().clone();
+    let hostiles: Vec<(EntityId, f32, f32, f32, f32, i32)> = entities
+        .values()
+        .filter(|e| is_hostile(&e.kind))
+        .map(|e| {
+            let (w, h) = e.size();
+            (e.id, e.x, e.y, w, h, melee_damage(&e.kind))
+        })
+        .collect();
+    let wild_horses: Vec<(EntityId, f32, f32, f32, f32)> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Horse { owner: None }))
+        .map(|e| {
+            let (w, h) = e.size();
+            (e.id, e.x, e.y, w, h)
+        })
+        .collect();
+    let mut claimed_horses: HashSet<EntityId> = HashSet::new();
+    let mut horse_absorptions: Vec<EntityId> = Vec::new();
+    for id in knight_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+
+        // Singed by fire, on the shared interval — the mount soaks it if mounted,
+        // else it bites into the knight's own health (applied after the loops).
+        {
+            let mut cds = shared.fire_cd.lock();
+            let cd = cds.entry(id).or_insert(0.0);
+            *cd = (*cd - TICK_DT).max(0.0);
+            if *cd <= 0.0 && body_in_fire(&mut world, e.x, e.y, w, h) {
+                *cd = FIRE_DAMAGE_INTERVAL;
+                knight_hits.push((id, FIRE_DAMAGE));
+            }
+        }
+
+        // A wild knight just ambles around its home patch until someone recruits it.
+        let owner_name = match e.kind.owner() {
+            Some(o) => o.to_owned(),
+            None => {
+                let home = *e.home_x.get_or_insert(e.x);
+                let dir = wander_dir(scx, e.vx, home);
+                let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, KNIGHT_SPEED, false);
+                e.x = m.x;
+                e.y = m.y;
+                e.vx = m.vx;
+                e.vy = m.vy;
+                broadcasts.push(ServerMessage::EntityMoved {
+                    id,
+                    x: m.x,
+                    y: m.y,
+                    vx: m.vx,
+                    vy: m.vy,
+                });
+                continue;
+            }
+        };
+
+        // Recruited: resolve the owner (by name) to a live player in this dimension.
+        // If they're elsewhere (other dimension or offline), hold the home patch —
+        // a dimension change brings the knight along via `transfer_knights`.
+        let Some(&(_, owner_id, ox, oy)) = named_players.iter().find(|(n, ..)| *n == owner_name)
+        else {
+            let home = *e.home_x.get_or_insert(e.x);
+            let dir = wander_dir(scx, e.vx, home);
+            let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, KNIGHT_SPEED, false);
+            e.x = m.x;
+            e.y = m.y;
+            e.vx = m.vx;
+            e.vy = m.vy;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: m.x,
+                y: m.y,
+                vx: m.vx,
+                vy: m.vy,
+            });
+            continue;
+        };
+
+        // Owner strayed too far: snap to them and re-anchor home there, like a pet.
+        let ocx = ox + PLAYER_SIZE.0 * 0.5;
+        let ocy = oy + PLAYER_SIZE.1 * 0.5;
+        if (ocx - scx).powi(2) + (ocy - scy).powi(2) > KNIGHT_TELEPORT_DIST * KNIGHT_TELEPORT_DIST {
+            e.x = ox;
+            e.y = oy;
+            e.vx = 0.0;
+            e.vy = 0.0;
+            e.home_x = Some(ox);
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: ox,
+                y: oy,
+                vx: 0.0,
+                vy: 0.0,
+            });
+            continue;
+        }
+
+        // On foot near a wild horse? Mount up: absorb the horse (it's removed from the
+        // world) and ride behind its health until it's spent. Tamed horses are spared.
+        let mut mounted = e.mount_health > 0;
+        if !mounted {
+            let mut best: Option<(EntityId, f32)> = None;
+            for &(hid, hx, hy, hw, hh) in &wild_horses {
+                if claimed_horses.contains(&hid) {
+                    continue;
+                }
+                let gap = aabb_gap(e.x, e.y, w, h, hx, hy, hw, hh);
+                if gap <= KNIGHT_MOUNT_RANGE && best.is_none_or(|(_, bg)| gap < bg) {
+                    best = Some((hid, gap));
+                }
+            }
+            if let Some((hid, _)) = best {
+                claimed_horses.insert(hid);
+                horse_absorptions.push(hid);
+                e.mount_health = crate::entity::HORSE_MAX_HEALTH;
+                e.riding = Some(hid);
+                mounted = true;
+                broadcasts.push(ServerMessage::EntityRiding {
+                    id,
+                    horse: Some(hid),
+                });
+            }
+        }
+        let speed = if mounted {
+            KNIGHT_MOUNTED_SPEED
+        } else {
+            KNIGHT_SPEED
+        };
+
+        // Charge the enemy the owner last struck, if it still lives in this dimension
+        // and is within reach of the knight (not chased clear across the map).
+        let target = knight_target_marks
+            .get(&owner_id)
+            .and_then(|teid| hostiles.iter().find(|(hid, ..)| hid == teid).copied());
+        if let Some((tid, tx, ty, tw, th, tdmg)) = target {
+            let gap = aabb_gap(e.x, e.y, w, h, tx, ty, tw, th);
+            if gap <= KNIGHT_AGGRO {
+                if e.attack_cd <= 0.0 && gap <= KNIGHT_ATTACK_RANGE {
+                    e.attack_cd = KNIGHT_ATTACK_INTERVAL;
+                    let kdir = if tx + tw * 0.5 >= scx { 1.0 } else { -1.0 };
+                    creature_hits.push((tid, (kdir * KNOCKBACK_X, -KNOCKBACK_Y), KNIGHT_DAMAGE));
+                    // The enemy hits back in the exchange (a ranged foe deals none).
+                    if tdmg > 0 {
+                        knight_hits.push((id, tdmg));
+                    }
+                    // Play the swing animation on every client.
+                    broadcasts.push(ServerMessage::EntityLunging { id });
+                }
+                let dir = if tx + tw * 0.5 < scx { -1.0 } else { 1.0 };
+                let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, speed, true);
+                e.x = m.x;
+                e.y = m.y;
+                e.vx = m.vx;
+                e.vy = m.vy;
+                broadcasts.push(ServerMessage::EntityMoved {
+                    id,
+                    x: m.x,
+                    y: m.y,
+                    vx: m.vx,
+                    vy: m.vy,
+                });
+                continue;
+            }
+        }
+
+        // Otherwise heel: close on the owner if they've pulled ahead, else hold.
+        let owner_gap = aabb_gap(e.x, e.y, w, h, ox, oy, PLAYER_SIZE.0, PLAYER_SIZE.1);
+        let dir = if owner_gap <= KNIGHT_FOLLOW_GAP {
+            0.0
+        } else if ocx < scx {
+            -1.0
+        } else {
+            1.0
+        };
+        let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, speed, true);
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: m.vx,
+            vy: m.vy,
+        });
+    }
+    // Remove the wild horses any knight mounted (absorbed) this tick.
+    for hid in horse_absorptions {
+        if entities.remove(hid).is_some() {
+            broadcasts.push(ServerMessage::EntityDespawn { id: hid });
         }
     }
 
@@ -4953,6 +5393,46 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             puppy_kills.push(v);
         }
     }
+    // Damage knights soaked this tick. A mounted knight's horse takes the blow first
+    // (its `mount_health` shield), and is thrown — the knight fighting on from foot —
+    // once that's spent. An unmounted knight takes it on its own health, and a slain
+    // one respawns wild at its owner's point (see `apply_damage`).
+    for (kid, dmg) in knight_hits {
+        let mounted = entities.get(kid).is_some_and(|e| e.mount_health > 0);
+        if mounted {
+            if let Some(e) = entities.get_mut(kid) {
+                e.mount_health -= dmg;
+                broadcasts.push(ServerMessage::EntityHit {
+                    id: kid,
+                    vx: 0.0,
+                    vy: 0.0,
+                });
+                if e.mount_health <= 0 {
+                    e.mount_health = 0;
+                    e.riding = None;
+                    broadcasts.push(ServerMessage::EntityRiding {
+                        id: kid,
+                        horse: None,
+                    });
+                }
+            }
+            continue;
+        }
+        // Unmounted: resolve the owner's respawn point (by name) for a fatal blow.
+        let owner = entities
+            .get(kid)
+            .and_then(|e| e.kind.owner().map(str::to_owned));
+        let target = match owner {
+            Some(name) => named_players
+                .iter()
+                .find(|(n, ..)| *n == name)
+                .map(|&(_, oid, _, _)| shared.respawn_target(oid))
+                .unwrap_or((Dimension::Overworld, shared.spawn.0, shared.spawn.1)),
+            None => shared.respawn_target(kid),
+        };
+        let (msgs, _) = apply_damage(&mut entities, kid, dmg, (0.0, 0.0), dim, target);
+        broadcasts.extend(msgs);
+    }
     for eid in fire_hits {
         // A cat returns to *its owner's* respawn point; a player to their own. The
         // owner is stored by name, so resolve it to a live player's id via the
@@ -5057,6 +5537,38 @@ fn nearest_of(
     best.map(|(id, ex, ey, ew, eh, _)| (id, ex, ey, ew, eh))
 }
 
+/// Whether `kind` is a hostile monster — the set a recruited knight will charge
+/// (and that a player can "mark" for it by striking one). Passive animals, pets,
+/// the knight itself, projectiles and items are not hostile.
+fn is_hostile(kind: &EntityKind) -> bool {
+    matches!(
+        kind,
+        EntityKind::Slime
+            | EntityKind::Zombie
+            | EntityKind::Spider
+            | EntityKind::Snake
+            | EntityKind::Skeleton
+            | EntityKind::CharredSkeleton
+            | EntityKind::Demon
+            | EntityKind::Orc
+    )
+}
+
+/// The melee damage a hostile `kind` deals back when a knight trades blows with it
+/// in close combat. Ranged attackers (skeleton, demon) deal none in melee, so a
+/// knight cuts them down without reprisal. `0` for anything non-hostile.
+fn melee_damage(kind: &EntityKind) -> i32 {
+    match kind {
+        EntityKind::Slime => SLIME_DAMAGE,
+        EntityKind::Zombie => ZOMBIE_DAMAGE,
+        EntityKind::Spider => SPIDER_DAMAGE,
+        EntityKind::Snake => SNAKE_DAMAGE,
+        EntityKind::CharredSkeleton => CHARRED_SKELETON_DAMAGE,
+        EntityKind::Orc => ORC_SLAM_DAMAGE,
+        _ => 0,
+    }
+}
+
 /// Smallest gap (px) between two AABBs; `0.0` when they overlap.
 fn aabb_gap(ax: f32, ay: f32, aw: f32, ah: f32, bx: f32, by: f32, bw: f32, bh: f32) -> f32 {
     let gx = (bx - (ax + aw)).max(ax - (bx + bw)).max(0.0);
@@ -5156,6 +5668,25 @@ fn apply_damage(
                 y: ry,
             }),
         )
+    } else if matches!(e.kind, EntityKind::Knight { owner: Some(_) }) {
+        // A slain knight reappears at its owner's respawn point — but, unlike a pet,
+        // the bond does not survive death: it comes back **wild** (owner cleared) and
+        // must be recruited afresh with another tungsten ingot.
+        let (_, rx, ry) = respawn;
+        e.health = e.max_health;
+        e.x = rx;
+        e.y = ry;
+        e.vx = 0.0;
+        e.vy = 0.0;
+        e.home_x = Some(rx);
+        e.riding = None;
+        e.mount_health = 0;
+        if let EntityKind::Knight { owner } = &mut e.kind {
+            *owner = None;
+        }
+        // Resync the whole entity (the cleared owner rides along in `kind`).
+        msgs.push(ServerMessage::EntitySpawn { entity: e.clone() });
+        (msgs, None)
     } else if e.kind.owner().is_some() {
         // A tamed pet doesn't die for good: it reappears at its owner's respawn
         // point, healed and re-anchoring its wander there, rather than being
@@ -5708,6 +6239,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                 maybe_spawn_cats(&shared, cx, cy);
                                 maybe_spawn_puppies(&shared, cx, cy);
                                 maybe_spawn_horses(&shared, cx, cy);
+                                maybe_spawn_knights(&shared, cx, cy);
                                 maybe_spawn_structure_entities(&shared, cx, cy);
                             }
                             Dimension::Underworld => {
@@ -6344,6 +6876,24 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         }
                         continue;
                     }
+                    // Knights are sacrosanct too: a swing never harms one. A wild
+                    // knight is recruited by offering it a tungsten ingot; a recruited
+                    // one just shrugs off the swing. Either way the damage path is
+                    // skipped.
+                    let knight_owner = shared
+                        .entities(dim)
+                        .lock()
+                        .get(target)
+                        .and_then(|e| match &e.kind {
+                            EntityKind::Knight { owner } => Some(owner.clone()),
+                            _ => None,
+                        });
+                    if let Some(owner) = knight_owner {
+                        if owner.is_none() {
+                            shared.try_recruit_knight(id, target, held, dim);
+                        }
+                        continue;
+                    }
                     // Validate reach and, if good, compute the knockback shoving
                     // the target away from the attacker.
                     let knockback = {
@@ -6375,6 +6925,11 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             let entities = shared.entities(dim).lock();
                             entities.get(target).map(|e| (e.kind.clone(), e.x, e.y))
                         };
+                        // Mark a struck enemy as this player's recruited knight's quarry,
+                        // so the knight charges whatever its owner attacks first.
+                        if victim.as_ref().is_some_and(|(k, _, _)| is_hostile(k)) {
+                            shared.knight_targets.lock().insert(id, target);
+                        }
                         let respawn_target = shared.respawn_target(target);
                         let (msgs, respawn) = {
                             let mut entities = shared.entities(dim).lock();
@@ -6548,6 +7103,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
     shared.clients.lock().remove(&id);
     shared.client_dim.lock().remove(&id);
     shared.fire_cd.lock().remove(&id);
+    shared.knight_targets.lock().remove(&id);
     shared.spectate_return.lock().remove(&id);
     shared.creators.lock().remove(&id);
     let removed = shared.entities(dim).lock().remove(id);

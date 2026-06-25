@@ -241,6 +241,46 @@ pub static ORC_SLAM_SPRITE: SpriteDef = SpriteDef {
     fps: 6.0,
 };
 
+/// Knight (on foot): a man-at-arms that strides along on its walk cycle.
+pub static KNIGHT_SPRITE: SpriteDef = SpriteDef {
+    name: "knight",
+    frame_w: 10,
+    frame_h: 13,
+    frames: 5,
+    fps: 8.0,
+};
+
+/// Knight attack (on foot): the one-shot swing played off the knight's attack
+/// (lunge) timer when it strikes a foe. Lives in the `knight/attack` subdirectory.
+pub static KNIGHT_ATTACK_SPRITE: SpriteDef = SpriteDef {
+    name: "knight/attack",
+    frame_w: 13,
+    frame_h: 13,
+    frames: 4,
+    fps: 8.0,
+};
+
+/// Knight (mounted): the knight riding a horse, drawn in place of the on-foot
+/// sprite while it is mounted. The art already includes the horse, like the
+/// `player/horse` pose. Lives in the `knight/horse` subdirectory.
+pub static KNIGHT_HORSE_SPRITE: SpriteDef = SpriteDef {
+    name: "knight/horse",
+    frame_w: 17,
+    frame_h: 24,
+    frames: 4,
+    fps: 8.0,
+};
+
+/// Knight attack (mounted): the one-shot mounted swing, played off the attack
+/// (lunge) timer. Lives in the `knight/horse/attack` subdirectory.
+pub static KNIGHT_HORSE_ATTACK_SPRITE: SpriteDef = SpriteDef {
+    name: "knight/horse/attack",
+    frame_w: 21,
+    frame_h: 21,
+    frames: 4,
+    fps: 8.0,
+};
+
 /// Bone: a small thrown projectile that tumbles end over end as it flies.
 pub static BONE_SPRITE: SpriteDef = SpriteDef {
     name: "bone",
@@ -261,7 +301,7 @@ pub static FIREBALL_SPRITE: SpriteDef = SpriteDef {
 };
 
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 24] {
+pub fn all() -> [&'static SpriteDef; 28] {
     [
         &PLAYER_SPRITE,
         &BOAT_SPRITE,
@@ -285,6 +325,10 @@ pub fn all() -> [&'static SpriteDef; 24] {
         &DEMON_SPRITE,
         &ORC_SPRITE,
         &ORC_SLAM_SPRITE,
+        &KNIGHT_SPRITE,
+        &KNIGHT_ATTACK_SPRITE,
+        &KNIGHT_HORSE_SPRITE,
+        &KNIGHT_HORSE_ATTACK_SPRITE,
         &BONE_SPRITE,
         &FIREBALL_SPRITE,
     ]
@@ -317,6 +361,9 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         // An orc's slam pose is handled by the scene builder off its lunge timer;
         // this walk sheet is its plodding stride.
         EntityKind::Orc => &ORC_SPRITE,
+        // A knight's mounted and attack poses are handled by the scene builder (off
+        // its `riding` and lunge state); this on-foot walk sheet is its base.
+        EntityKind::Knight { .. } => &KNIGHT_SPRITE,
         EntityKind::Bone => &BONE_SPRITE,
         EntityKind::Fireball => &FIREBALL_SPRITE,
         // Dropped items are drawn from their block texture, not an animation

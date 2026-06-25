@@ -934,6 +934,7 @@ impl App {
                         // snake springs; the orc slams — each runs for its own time.
                         e.lunge = match e.kind {
                             EntityKind::Orc => crate::entity::ORC_SLAM_TIME,
+                            EntityKind::Knight { .. } => crate::entity::KNIGHT_ATTACK_TIME,
                             _ => crate::entity::SNAKE_LUNGE_TIME,
                         };
                     }
@@ -2376,6 +2377,9 @@ impl App {
                     if ui.button("Orc").clicked() {
                         spawn = Some(EntityKind::Orc);
                     }
+                    if ui.button("Knight").clicked() {
+                        spawn = Some(EntityKind::Knight { owner: None });
+                    }
                 });
 
                 ui.separator();
@@ -2803,6 +2807,51 @@ impl App {
                     e.y + h - bh,
                     bw,
                     bh,
+                    facing,
+                    flash_tint(tint, e.hit_flash),
+                ));
+                if e.health < e.max_health && e.max_health > 0 {
+                    push_health_bar(
+                        &mut tiles,
+                        self.atlas.white(),
+                        e.x,
+                        e.y,
+                        w,
+                        e.health,
+                        e.max_health,
+                    );
+                }
+                continue;
+            }
+            // A knight has four poses across two axes: on foot vs mounted (it absorbs
+            // a wild horse, flagged by `riding`), and walking vs mid-swing (its attack
+            // animation rides on the `lunge` timer). The chosen sheet is drawn centred
+            // on the knight's box and resting on its feet, so the larger mounted/swing
+            // art blooms beyond the collision box like the player/horse pose.
+            if matches!(e.kind, EntityKind::Knight { .. }) {
+                let mounted = e.riding.is_some();
+                let attacking = e.lunge > 0.0;
+                let def = match (mounted, attacking) {
+                    (true, true) => &sprite::KNIGHT_HORSE_ATTACK_SPRITE,
+                    (true, false) => &sprite::KNIGHT_HORSE_SPRITE,
+                    (false, true) => &sprite::KNIGHT_ATTACK_SPRITE,
+                    (false, false) => &sprite::KNIGHT_SPRITE,
+                };
+                let frame = if attacking {
+                    let progress =
+                        1.0 - (e.lunge / crate::entity::KNIGHT_ATTACK_TIME).clamp(0.0, 1.0);
+                    ((progress * def.frames as f32) as u32).min(def.frames - 1)
+                } else {
+                    sprite::frame_index(e.vx.abs() > 1.0, self.anim_time, def)
+                };
+                let (sw, sh) = (def.frame_w as f32, def.frame_h as f32);
+                let facing = g.facing.get(&e.id).copied().unwrap_or(true);
+                tiles.push(entity_instance(
+                    self.atlas.sprite_frame(def.name, frame),
+                    e.x + (w - sw) * 0.5,
+                    e.y + h - sh,
+                    sw,
+                    sh,
                     facing,
                     flash_tint(tint, e.hit_flash),
                 ));

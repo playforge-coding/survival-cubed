@@ -267,8 +267,8 @@ mod tests {
         let reg = BlockRegistry::new();
         let atlas = Atlas::build(&reg);
 
-        // Texture is tall enough for the tallest sprite (the 21px mounted horse).
-        assert_eq!(atlas.height, sprite::PLAYER_HORSE_SPRITE.frame_h);
+        // Texture is tall enough for the tallest sprite (the 24px mounted knight).
+        assert_eq!(atlas.height, sprite::KNIGHT_HORSE_SPRITE.frame_h);
         assert!(atlas.width > 0);
 
         // Animation frames are distinct regions, so the sprite actually animates.
@@ -277,8 +277,8 @@ mod tests {
         assert_ne!(f0.min[0], f1.min[0]);
 
         // The tallest sprite spans the full height; a shorter one only part of it.
-        let horse = atlas.sprite_frame("player/horse", 0);
-        assert!((horse.max[1] - 1.0).abs() < 1e-6);
+        let knight_horse = atlas.sprite_frame("knight/horse", 0);
+        assert!((knight_horse.max[1] - 1.0).abs() < 1e-6);
         let slime = atlas.sprite_frame("slime", 0);
         assert!(slime.max[1] < 1.0);
 
