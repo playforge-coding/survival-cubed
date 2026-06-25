@@ -63,10 +63,14 @@ Most monsters only **hunt at night** (or in dark caves). Build shelter and keep 
 | **Snake** | 14 | Desert | Ambusher; coils for ~0.7 s, then lunges |
 | **Skeleton** | 24 | All biomes, night | Keeps its distance and throws **bone projectiles**; burns at daybreak |
 | **Charred Skeleton** | 36 | Underworld | Charges into melee and **leaves a trail of fire**; active at all hours |
+| **Demon** | 28 | Underworld (rare) | Keeps its distance and hurls **fireballs** that burst into flame; active at all hours |
 
-!!! danger "Skeletons shoot back"
-    Skeletons fire bones in a straight line. The projectile flies until it hits
-    you or a wall — strafe behind cover, or close the distance fast.
+!!! danger "Skeletons and demons shoot back"
+    Skeletons fire bones and demons hurl fireballs in a straight line. The
+    projectile flies until it hits you or a wall — strafe behind cover, or close
+    the distance fast. A demon's fireball leaves a lick of fire where it bursts,
+    so don't linger where it lands. Demons are rarer than charred skeletons, but
+    far deadlier at range.
 
 In **creator mode** you are invisible to monsters and take no damage from them.
 
@@ -84,6 +88,8 @@ In **creator mode** you are invisible to monsters and take no damage from them.
 
 - **Bone** — the projectile a skeleton throws; it disappears on impact or after a
   short flight.
+- **Fireball** — the projectile a demon hurls; it disappears on impact or after a
+  short flight, leaving a tongue of fire where it bursts.
 - **Dropped items** — block and tool stacks lying on the ground (from mining,
   drops, or the <kbd>Q</kbd> key). Walk into them to pick them up; dropped tools
   keep their durability.

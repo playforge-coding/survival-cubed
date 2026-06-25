@@ -23,7 +23,9 @@ use tokio::sync::mpsc;
 use crate::auth;
 use crate::block::BlockRegistry;
 use crate::daylight;
-use crate::entity::{BONE_SIZE, Entities, Entity, EntityId, EntityKind, ITEM_SIZE, PLAYER_SIZE};
+use crate::entity::{
+    BONE_SIZE, Entities, Entity, EntityId, EntityKind, FIREBALL_SIZE, ITEM_SIZE, PLAYER_SIZE,
+};
 use crate::inventory::Inventory;
 use crate::net::{VERSION_MISMATCH_CLOSE, fingerprint, read_msg, read_version, write_msg};
 use crate::protocol::{ALPN, BlockId, ClientMessage, PROTOCOL_VERSION, ServerMessage, Waypoint};
@@ -205,6 +207,34 @@ const CHARRED_SKELETON_FIRE_INTERVAL: f32 = 0.35;
 const CHARRED_SKELETON_CHUNK_CHANCE: u32 = 45;
 /// Most charred skeletons a single fresh underworld chunk seeds at once.
 const CHARRED_SKELETON_CHUNK_MAX: u32 = 2;
+/// Flitting speed of a demon, in pixels/second — a touch quicker than a charred
+/// skeleton, since it wants to reposition for a clean shot rather than brawl.
+const DEMON_SPEED: f32 = 28.0;
+/// How far (px) a demon notices a player and begins stalking/firing.
+const DEMON_AGGRO: f32 = 240.0;
+/// Maximum gap (px between AABBs) at which a demon will hurl a fireball — it stops
+/// advancing and fires once a player is this close.
+const DEMON_SHOOT_RANGE: f32 = 200.0;
+/// Standoff gap (px between AABBs) a demon tries to keep: it backs away from a
+/// player closer than this so it can keep peppering them from range.
+const DEMON_KEEP_DIST: f32 = 100.0;
+/// Seconds a demon waits between fireballs.
+const DEMON_SHOOT_INTERVAL: f32 = 2.0;
+/// Flight speed of a hurled fireball, in pixels/second.
+const FIREBALL_SPEED: f32 = 150.0;
+/// Damage a fireball deals on striking a player — heavier than a thrown bone.
+const FIREBALL_DAMAGE: i32 = 7;
+/// Seconds a fireball stays airborne before it gives out and despawns, in case it
+/// never hits anything.
+const FIREBALL_LIFETIME: f32 = 3.0;
+/// Maximum gap (px between AABBs) at which an in-flight fireball counts as striking
+/// a player.
+const FIREBALL_HIT_RANGE: f32 = 2.0;
+/// Percent chance that a fresh underworld chunk seeds a demon — lower than
+/// [`CHARRED_SKELETON_CHUNK_CHANCE`] so demons are the rarer underworld threat. A
+/// seeded chunk gets a single demon (where the charred skeleton can come in pairs),
+/// keeping these ranged casters thin on the ground.
+const DEMON_CHUNK_CHANCE: u32 = 18;
 /// Seconds a tongue of charred-skeleton trail fire burns before guttering out.
 /// Naturally generated fire (part of the terrain) is permanent and untracked.
 const TRAIL_FIRE_LIFETIME: f32 = 4.0;
@@ -2884,6 +2914,48 @@ fn maybe_spawn_charred_skeletons(shared: &Shared, cx: i32, cy: i32) {
     }
 }
 
+/// Possibly seed demons into a freshly generated underworld chunk. Like the
+/// charred skeleton they drop onto any charred-rock floor (open cell above, solid
+/// below) the chunk contains, but they appear more rarely (see
+/// [`DEMON_CHUNK_CHANCE`]). Deterministic per chunk via [`chunk_hash`] on its own
+/// salt range, so re-exploring the same terrain never double-spawns, and it runs
+/// independently of [`maybe_spawn_charred_skeletons`].
+fn maybe_spawn_demons(shared: &Shared, cx: i32, cy: i32) {
+    let mut world = shared.world(Dimension::Underworld).lock();
+    let seed = world.generator.seed();
+    if chunk_hash(seed, cx, cy, 210) % 100 >= DEMON_CHUNK_CHANCE {
+        return;
+    }
+
+    let base_x = cx * CHUNK_SIZE;
+    let chunk_top = cy * CHUNK_SIZE;
+    let chunk_bottom = chunk_top + CHUNK_SIZE;
+    let (_, h) = EntityKind::Demon.size();
+
+    let lx = chunk_hash(seed, cx, cy, 211) % CHUNK_SIZE as u32;
+    let cell_x = base_x + lx as i32;
+    // Find an open cell in this column with solid charred rock beneath — a floor to
+    // stand on — scanning from the chunk's bottom upward.
+    let mut placed = None;
+    for ty in (chunk_top..chunk_bottom).rev() {
+        if !world.solid(cell_x, ty) && world.solid(cell_x, ty + 1) {
+            placed = Some((ty + 1) as f32 * TILE_SIZE - h);
+            break;
+        }
+    }
+    let Some(y) = placed else { return };
+
+    let id = shared.alloc_id();
+    let entity = Entity::new(id, EntityKind::Demon, cell_x as f32 * TILE_SIZE, y);
+    shared
+        .entities(Dimension::Underworld)
+        .lock()
+        .insert(entity.clone());
+    drop(world);
+
+    shared.broadcast_dim(Dimension::Underworld, ServerMessage::EntitySpawn { entity });
+}
+
 /// Possibly seed spiders into a freshly generated chunk. Spiders keep to two
 /// haunts: the tree-shadowed **forest** surface and the **caverns** deep
 /// underground. A forest chunk that holds the grass line drops them onto the
@@ -3333,9 +3405,19 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         .filter(|e| matches!(e.kind, EntityKind::CharredSkeleton))
         .map(|e| e.id)
         .collect();
+    let demon_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Demon))
+        .map(|e| e.id)
+        .collect();
     let bone_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::Bone))
+        .map(|e| e.id)
+        .collect();
+    let fireball_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Fireball))
         .map(|e| e.id)
         .collect();
     let item_ids: Vec<EntityId> = entities
@@ -4333,6 +4415,118 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         }
     }
 
+    // Demons: underworld casters. Like the charred skeleton they hunt at all hours
+    // (the underworld is always dark), but instead of charging into melee they kite
+    // the player the way a skeleton does — closing when out of range, backing off
+    // when crowded — and hurl fireballs from a distance.
+    //
+    // Fireballs loosed this tick, spawned after the loop so we aren't holding a
+    // mutable borrow of the caster while inserting into the same map. Each entry is
+    // the fireball's spawn `(x, y)` and its flight `(vx, vy)`.
+    let mut fireball_throws: Vec<(f32, f32, f32, f32)> = Vec::new();
+    for id in demon_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let home = *e.home_x.get_or_insert(e.x);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+        let target = nearest_player(&hostile_players, scx, scy, DEMON_AGGRO);
+        let chasing = target.is_some();
+
+        // Kiting heading: close in when out of fireball range, back off when the
+        // player slips inside the standoff distance, otherwise hold and fire.
+        let (dir, gap, aim) = match target {
+            Some((_, px, py)) => {
+                let gap = aabb_gap(e.x, e.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1);
+                let toward = if px + PLAYER_SIZE.0 * 0.5 >= scx {
+                    1.0
+                } else {
+                    -1.0
+                };
+                let dir = if gap < DEMON_KEEP_DIST {
+                    -toward // too close: retreat
+                } else if gap > DEMON_SHOOT_RANGE {
+                    toward // too far: advance
+                } else {
+                    0.0 // in the sweet spot: stand and fire
+                };
+                (dir, gap, Some((px, py)))
+            }
+            None => (wander_dir(scx, e.vx, home), f32::INFINITY, None),
+        };
+
+        let m = step_ground(
+            &mut world,
+            (e.x, e.y, w, h),
+            e.vy,
+            dir,
+            DEMON_SPEED,
+            chasing,
+        );
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        // As with the skeleton, point the reported vx's sign at the target so the
+        // demon always faces the player it's fighting — even while backing away —
+        // while keeping its true magnitude so the walk cycle still plays.
+        let bcast_vx = match aim {
+            Some((px, _)) => {
+                let cx = m.x + w * 0.5;
+                let toward = if px + PLAYER_SIZE.0 * 0.5 >= cx {
+                    1.0
+                } else {
+                    -1.0
+                };
+                toward * m.vx.abs()
+            }
+            None => m.vx,
+        };
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: bcast_vx,
+            vy: m.vy,
+        });
+
+        // Hurl a fireball when a player is within range and we're off cooldown,
+        // aiming from the demon's upper body straight at the player's center.
+        if let Some((px, py)) = aim {
+            if e.attack_cd <= 0.0 && gap <= DEMON_SHOOT_RANGE {
+                e.attack_cd = DEMON_SHOOT_INTERVAL;
+                let (fw, fh) = FIREBALL_SIZE;
+                let sx = m.x + w * 0.5 - fw * 0.5;
+                let sy = m.y + h * 0.3 - fh * 0.5;
+                let tx = px + PLAYER_SIZE.0 * 0.5;
+                let ty = py + PLAYER_SIZE.1 * 0.5;
+                let dx = tx - (sx + fw * 0.5);
+                let dy = ty - (sy + fh * 0.5);
+                let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                fireball_throws.push((
+                    sx,
+                    sy,
+                    dx / len * FIREBALL_SPEED,
+                    dy / len * FIREBALL_SPEED,
+                ));
+            }
+        }
+    }
+    // Spawn the fireballs loosed this tick. They aren't in `fireball_ids`, so they
+    // begin flying next tick rather than being simulated again immediately.
+    for (x, y, vx, vy) in fireball_throws {
+        let fid = shared.alloc_id();
+        let mut fireball = Entity::new(fid, EntityKind::Fireball, x, y);
+        fireball.vx = vx;
+        fireball.vy = vy;
+        fireball.attack_cd = FIREBALL_LIFETIME; // reused as the airborne lifetime timer
+        entities.insert(fireball.clone());
+        broadcasts.push(ServerMessage::EntitySpawn { entity: fireball });
+    }
+
     // Bones in flight: travel in a straight line (no gravity), striking the first
     // player they overlap or winking out on a wall or when their short life ends.
     let mut bone_despawns: Vec<EntityId> = Vec::new();
@@ -4382,6 +4576,68 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         });
     }
     for id in bone_despawns {
+        entities.remove(id);
+        broadcasts.push(ServerMessage::EntityDespawn { id });
+    }
+
+    // Fireballs in flight: like bones they travel in a straight line (no gravity),
+    // striking the first player they overlap or winking out on a wall or when their
+    // short life ends — but where they burst they leave a lick of fire behind.
+    let mut fireball_despawns: Vec<EntityId> = Vec::new();
+    for id in fireball_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+
+        let (nx, hit_x) = move_x(&mut world, e.x, e.y, w, h, e.vx * TICK_DT);
+        let (ny, hit_y) = move_y(&mut world, nx, e.y, w, h, e.vy * TICK_DT);
+        e.x = nx;
+        e.y = ny;
+
+        // Did it strike a player this tick? Damage and knock them along its flight.
+        let mut struck_player = false;
+        for &(pid, px, py) in &players {
+            if aabb_gap(nx, ny, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1) <= FIREBALL_HIT_RANGE {
+                let kx = if e.vx >= 0.0 {
+                    KNOCKBACK_X
+                } else {
+                    -KNOCKBACK_X
+                };
+                bites.push((pid, (kx, -KNOCKBACK_Y), FIREBALL_DAMAGE));
+                struck_player = true;
+                break;
+            }
+        }
+
+        // Burst on a wall, on a player, or when its life runs out: leave a tongue
+        // of fire in the (empty) cell where it died, then despawn.
+        if hit_x || hit_y || struck_player || e.attack_cd <= 0.0 {
+            let fx = ((nx + w * 0.5) / TILE_SIZE).floor() as i32;
+            let fy = ((ny + h * 0.5) / TILE_SIZE).floor() as i32;
+            if world.get(fx, fy) == crate::block::AIR && world.set(fx, fy, crate::block::FIRE) {
+                new_trail_fires.push((fx, fy));
+                broadcasts.push(ServerMessage::BlockUpdate {
+                    dim,
+                    x: fx,
+                    y: fy,
+                    block: crate::block::FIRE,
+                });
+            }
+            fireball_despawns.push(id);
+            continue;
+        }
+
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: nx,
+            y: ny,
+            vx: e.vx,
+            vy: e.vy,
+        });
+    }
+    for id in fireball_despawns {
         entities.remove(id);
         broadcasts.push(ServerMessage::EntityDespawn { id });
     }
@@ -5273,6 +5529,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             }
                             Dimension::Underworld => {
                                 maybe_spawn_charred_skeletons(&shared, cx, cy);
+                                maybe_spawn_demons(&shared, cx, cy);
                             }
                         }
                     }

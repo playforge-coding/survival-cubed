@@ -210,6 +210,16 @@ pub static CHARRED_SKELETON_SPRITE: SpriteDef = SpriteDef {
     fps: 8.0,
 };
 
+/// Demon: a hunched underworld fiend that flits along as it stalks the player,
+/// hurling fireballs from range.
+pub static DEMON_SPRITE: SpriteDef = SpriteDef {
+    name: "demon",
+    frame_w: 10,
+    frame_h: 15,
+    frames: 4,
+    fps: 8.0,
+};
+
 /// Bone: a small thrown projectile that tumbles end over end as it flies.
 pub static BONE_SPRITE: SpriteDef = SpriteDef {
     name: "bone",
@@ -219,8 +229,18 @@ pub static BONE_SPRITE: SpriteDef = SpriteDef {
     fps: 12.0,
 };
 
+/// Fireball: a small bolt of flame a demon hurls, a single glowing frame that
+/// flies until it bursts.
+pub static FIREBALL_SPRITE: SpriteDef = SpriteDef {
+    name: "fireball",
+    frame_w: 10,
+    frame_h: 7,
+    frames: 1,
+    fps: 1.0,
+};
+
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 20] {
+pub fn all() -> [&'static SpriteDef; 22] {
     [
         &PLAYER_SPRITE,
         &BOAT_SPRITE,
@@ -241,7 +261,9 @@ pub fn all() -> [&'static SpriteDef; 20] {
         &SNAKE_DEATH_SPRITE,
         &SKELETON_SPRITE,
         &CHARRED_SKELETON_SPRITE,
+        &DEMON_SPRITE,
         &BONE_SPRITE,
+        &FIREBALL_SPRITE,
     ]
 }
 
@@ -268,7 +290,9 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         EntityKind::Snake => &SNAKE_SPRITE,
         EntityKind::Skeleton => &SKELETON_SPRITE,
         EntityKind::CharredSkeleton => &CHARRED_SKELETON_SPRITE,
+        EntityKind::Demon => &DEMON_SPRITE,
         EntityKind::Bone => &BONE_SPRITE,
+        EntityKind::Fireball => &FIREBALL_SPRITE,
         // Dropped items are drawn from their block texture, not an animation
         // sheet (see the client's scene builder), so this is never queried for
         // them; fall back to the slime sheet to keep the match total.

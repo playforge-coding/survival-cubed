@@ -52,9 +52,15 @@ pub const SKELETON_SIZE: (f32, f32) = (11.0, 16.0);
 /// Collision/draw size (width, height) in pixels of a charred skeleton — the
 /// same lanky build as the ordinary skeleton, scorched black.
 pub const CHARRED_SKELETON_SIZE: (f32, f32) = (11.0, 16.0);
+/// Collision/draw size (width, height) in pixels of a demon — a small, hunched
+/// underworld fiend, shorter than a skeleton, matching its art's proportions.
+pub const DEMON_SIZE: (f32, f32) = (10.0, 15.0);
 /// Collision/draw size (width, height) in pixels of a thrown bone — a small
 /// tumbling projectile.
 pub const BONE_SIZE: (f32, f32) = (12.0, 12.0);
+/// Collision/draw size (width, height) in pixels of a hurled fireball — a small,
+/// low bolt of flame.
+pub const FIREBALL_SIZE: (f32, f32) = (10.0, 7.0);
 /// Collision/draw size (width, height) in pixels of a dropped block item.
 pub const ITEM_SIZE: (f32, f32) = (8.0, 8.0);
 
@@ -109,6 +115,11 @@ pub const SNAKE_MAX_HEALTH: i32 = 14;
 /// skeleton — a relentless underworld brawler that closes for melee and soaks up
 /// blows on the way in.
 pub const CHARRED_SKELETON_MAX_HEALTH: i32 = 36;
+/// Maximum health of a demon, in hit points. Sturdier than the surface skeleton
+/// but frailer than the charred skeleton it shares the underworld with — it
+/// survives by keeping its distance and pelting the player with fireballs rather
+/// than wading into melee.
+pub const DEMON_MAX_HEALTH: i32 = 28;
 
 /// What an entity *is*. Adding a new creature/object means adding a variant
 /// here plus (for server-simulated kinds) a branch in the server tick loop.
@@ -208,6 +219,19 @@ pub enum EntityKind {
     /// to the plains. Server-simulated. Appended last so older saves and the wire
     /// format keep their variant indices.
     Horse { owner: Option<String> },
+    /// A demon: a winged underworld fiend that roams the charred depths like the
+    /// [`EntityKind::CharredSkeleton`] but, rather than charging into melee, keeps
+    /// its distance and hurls [`EntityKind::Fireball`] projectiles at players. It
+    /// spawns in the underworld at all hours — but more rarely than the charred
+    /// skeleton. Server-simulated. Appended last so older saves and the wire format
+    /// keep their variant indices.
+    Demon,
+    /// A bolt of flame hurled by a [`EntityKind::Demon`], flying in a straight line
+    /// until it strikes a player or a wall (or its short life runs out), leaving a
+    /// lick of [`crate::block::FIRE`] where it bursts. Its [`Entity::vx`]/
+    /// [`Entity::vy`] carry its flight velocity. Server-simulated. Appended last so
+    /// older saves and the wire format keep their variant indices.
+    Fireball,
 }
 
 impl EntityKind {
@@ -225,8 +249,10 @@ impl EntityKind {
             EntityKind::Snake => SNAKE_SIZE,
             EntityKind::Skeleton => SKELETON_SIZE,
             EntityKind::CharredSkeleton => CHARRED_SKELETON_SIZE,
+            EntityKind::Demon => DEMON_SIZE,
             EntityKind::Horse { .. } => HORSE_SIZE,
             EntityKind::Bone => BONE_SIZE,
+            EntityKind::Fireball => FIREBALL_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -310,10 +336,14 @@ impl EntityKind {
             EntityKind::Snake => SNAKE_MAX_HEALTH,
             EntityKind::Skeleton => SKELETON_MAX_HEALTH,
             EntityKind::CharredSkeleton => CHARRED_SKELETON_MAX_HEALTH,
+            EntityKind::Demon => DEMON_MAX_HEALTH,
             EntityKind::Horse { .. } => HORSE_MAX_HEALTH,
             // A bone is an inert projectile; 1 keeps health == max_health so no
             // health bar shows and a stray melee swing can't meaningfully "kill" it.
             EntityKind::Bone => 1,
+            // A fireball is an inert projectile; 1 keeps health == max_health so no
+            // health bar shows and a stray melee swing can't meaningfully "kill" it.
+            EntityKind::Fireball => 1,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }

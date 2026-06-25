@@ -2366,6 +2366,9 @@ impl App {
                     if ui.button("Charred Skeleton").clicked() {
                         spawn = Some(EntityKind::CharredSkeleton);
                     }
+                    if ui.button("Demon").clicked() {
+                        spawn = Some(EntityKind::Demon);
+                    }
                 });
 
                 ui.separator();

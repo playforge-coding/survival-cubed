@@ -144,7 +144,9 @@ sprites!(
     "snake/death" => [0, 1, 2, 3, 4],
     "skeleton" => [0, 1, 2, 3, 4, 5],
     "charred_skeleton" => [0, 1, 2, 3, 4, 5],
+    "demon" => [0, 1, 2, 3],
     "bone" => [0, 1, 2, 3],
+    "fireball" => [0],
 );
 
 music!(
