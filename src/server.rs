@@ -24,7 +24,8 @@ use crate::auth;
 use crate::block::BlockRegistry;
 use crate::daylight;
 use crate::entity::{
-    BONE_SIZE, Entities, Entity, EntityId, EntityKind, FIREBALL_SIZE, ITEM_SIZE, PLAYER_SIZE,
+    BONE_SIZE, Entities, Entity, EntityId, EntityKind, FIREBALL_SIZE, ITEM_SIZE,
+    MAGIC_FIREBALL_SIZE, PLAYER_SIZE,
 };
 use crate::inventory::{CHEST_SLOTS, Inventory, Slot, move_between, move_within};
 use crate::net::{VERSION_MISMATCH_CLOSE, fingerprint, read_msg, read_version, write_msg};
@@ -262,6 +263,54 @@ const ORC_SLAM_INTERVAL: f32 = 1.5;
 const ORC_CHUNK_CHANCE: u32 = 28;
 /// Most orcs a single fresh underworld chunk seeds at once.
 const ORC_CHUNK_MAX: u32 = 2;
+/// Flying speed of an enchanted demon, in pixels/second — quicker than the ordinary
+/// demon it was, since the mage's glamour lets it chase the player through the air.
+const ENCHANTED_DEMON_SPEED: f32 = 34.0;
+/// How far (px) an enchanted demon notices a player and begins stalking/firing —
+/// reaching farther than the ordinary demon.
+const ENCHANTED_DEMON_AGGRO: f32 = 280.0;
+/// Maximum gap (px between AABBs) at which an enchanted demon will hurl a magic
+/// fireball — it covers more range than the ordinary demon's fireball.
+const ENCHANTED_DEMON_SHOOT_RANGE: f32 = 260.0;
+/// Standoff gap (px between AABBs) an enchanted demon tries to keep, backing away
+/// from a player closer than this so it can keep peppering them from range.
+const ENCHANTED_DEMON_KEEP_DIST: f32 = 120.0;
+/// Seconds an enchanted demon waits between magic fireballs.
+const ENCHANTED_DEMON_SHOOT_INTERVAL: f32 = 2.0;
+/// Flight speed of a hurled magic fireball, in pixels/second — faster than an
+/// ordinary fireball.
+const MAGIC_FIREBALL_SPEED: f32 = 170.0;
+/// Damage a magic fireball deals on striking a player — heavier than an ordinary
+/// fireball's [`FIREBALL_DAMAGE`].
+const MAGIC_FIREBALL_DAMAGE: i32 = 12;
+/// Seconds a magic fireball stays airborne before it gives out and despawns. Longer
+/// than an ordinary fireball's life, so it covers more range before fizzling.
+const MAGIC_FIREBALL_LIFETIME: f32 = 4.0;
+/// Maximum gap (px between AABBs) at which an in-flight magic fireball counts as
+/// striking a player — a touch more forgiving than an ordinary fireball's.
+const MAGIC_FIREBALL_HIT_RANGE: f32 = 3.0;
+/// Lumbering speed of an orc mage, in pixels/second — quicker than the brute orc so
+/// it can reposition to shepherd its demons, but it never closes for a fight.
+const ORC_MAGE_SPEED: f32 = 16.0;
+/// How far (px) an orc mage notices a player and shies away from them — it is a
+/// support caster and keeps out of melee.
+const ORC_MAGE_AGGRO: f32 = 200.0;
+/// Gap (px between AABBs) inside which an orc mage backs away from a player.
+const ORC_MAGE_FLEE_DIST: f32 = 90.0;
+/// How far (px, center-to-center) an orc mage will seek out an ordinary demon to
+/// empower, drifting toward it when nothing nearer demands its attention.
+const ORC_MAGE_ASSIST_RANGE: f32 = 260.0;
+/// Gap (px between AABBs) inside which an orc mage can enchant an ordinary demon.
+const ORC_MAGE_ENCHANT_RANGE: f32 = 56.0;
+/// Seconds an orc mage waits between enchant casts.
+const ORC_MAGE_ENCHANT_INTERVAL: f32 = 6.0;
+/// Percent chance that a fresh underworld chunk seeds an orc mage — rarer than the
+/// demons it shepherds.
+const ORC_MAGE_CHUNK_CHANCE: u32 = 10;
+/// Percent chance that an orc mage seeded into a chunk arrives having already
+/// enchanted a demon — a partner [`EntityKind::EnchantedDemon`] spawns alongside it,
+/// since enchanted demons never spawn on their own.
+const ORC_MAGE_PREENCHANTED_CHANCE: u32 = 55;
 /// Drifting speed of an ash twister, in pixels/second — it whirls toward players
 /// at a steady, unhurried pace.
 const ASH_TWISTER_SPEED: f32 = 30.0;
@@ -3632,6 +3681,88 @@ fn maybe_spawn_orcs(shared: &Shared, cx: i32, cy: i32) {
     }
 }
 
+/// Possibly seed an orc mage into a freshly generated underworld chunk. Like the
+/// demons it shepherds it keeps to the main **charred** expanse (ceding the ash
+/// valleys to the twisters and charred skeletons), dropping onto a charred-rock floor
+/// (open cell above, solid below). Rarer than the demons themselves. A seeded mage
+/// often arrives having already empowered a demon offscreen, in which case a partner
+/// [`EntityKind::EnchantedDemon`] spawns alongside it on a nearby floor — such demons
+/// never spawn on their own. Deterministic per chunk via [`chunk_hash`] on its own
+/// salt range, so re-exploring the same terrain never double-spawns, and it runs
+/// independently of the other underworld spawners.
+fn maybe_spawn_orc_mages(shared: &Shared, cx: i32, cy: i32) {
+    let mut world = shared.world(Dimension::Underworld).lock();
+    let seed = world.generator.seed();
+    if chunk_hash(seed, cx, cy, 230) % 100 >= ORC_MAGE_CHUNK_CHANCE {
+        return;
+    }
+
+    let base_x = cx * CHUNK_SIZE;
+    let chunk_top = cy * CHUNK_SIZE;
+    let chunk_bottom = chunk_top + CHUNK_SIZE;
+
+    // Place the mage: pick a charred-rock floor in its column (open cell above, solid
+    // below), scanning from the chunk's bottom upward. Bail if its column is an ash
+    // valley or has no floor.
+    let lx = chunk_hash(seed, cx, cy, 231) % CHUNK_SIZE as u32;
+    let mage_x = base_x + lx as i32;
+    if world.generator.underworld_biome_at(mage_x) != crate::worldgen::UnderworldBiome::Charred {
+        return;
+    }
+    let (_, mage_h) = EntityKind::OrcMage.size();
+    let mut mage_y = None;
+    for ty in (chunk_top..chunk_bottom).rev() {
+        if !world.solid(mage_x, ty) && world.solid(mage_x, ty + 1) {
+            mage_y = Some((ty + 1) as f32 * TILE_SIZE - mage_h);
+            break;
+        }
+    }
+    let Some(mage_y) = mage_y else { return };
+
+    // The mage often arrives having already empowered a demon: try to place a partner
+    // enchanted demon on a charred floor a few columns over.
+    let mut partner = None;
+    if chunk_hash(seed, cx, cy, 232) % 100 < ORC_MAGE_PREENCHANTED_CHANCE {
+        let dlx = chunk_hash(seed, cx, cy, 233) % CHUNK_SIZE as u32;
+        let demon_x = base_x + dlx as i32;
+        if world.generator.underworld_biome_at(demon_x) == crate::worldgen::UnderworldBiome::Charred
+        {
+            let (_, dh) = EntityKind::EnchantedDemon.size();
+            for ty in (chunk_top..chunk_bottom).rev() {
+                if !world.solid(demon_x, ty) && world.solid(demon_x, ty + 1) {
+                    partner = Some((demon_x, (ty + 1) as f32 * TILE_SIZE - dh));
+                    break;
+                }
+            }
+        }
+    }
+
+    let mut spawned = Vec::new();
+    {
+        let mut entities = shared.entities(Dimension::Underworld).lock();
+        let id = shared.alloc_id();
+        let mage = Entity::new(id, EntityKind::OrcMage, mage_x as f32 * TILE_SIZE, mage_y);
+        entities.insert(mage.clone());
+        spawned.push(mage);
+        if let Some((demon_x, demon_y)) = partner {
+            let did = shared.alloc_id();
+            let demon = Entity::new(
+                did,
+                EntityKind::EnchantedDemon,
+                demon_x as f32 * TILE_SIZE,
+                demon_y,
+            );
+            entities.insert(demon.clone());
+            spawned.push(demon);
+        }
+    }
+    drop(world);
+
+    for entity in spawned {
+        shared.broadcast_dim(Dimension::Underworld, ServerMessage::EntitySpawn { entity });
+    }
+}
+
 /// Possibly seed ash twisters into a freshly generated underworld chunk. Unlike the
 /// other underworld monsters they are native to the **ash valleys** alone, so a
 /// candidate spawn column is skipped unless it belongs to one (see
@@ -4151,6 +4282,16 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         .filter(|e| matches!(e.kind, EntityKind::AshTwister))
         .map(|e| e.id)
         .collect();
+    let enchanted_demon_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::EnchantedDemon))
+        .map(|e| e.id)
+        .collect();
+    let orc_mage_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::OrcMage))
+        .map(|e| e.id)
+        .collect();
     let knight_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::Knight { .. }))
@@ -4161,9 +4302,12 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         .filter(|e| matches!(e.kind, EntityKind::Bone))
         .map(|e| e.id)
         .collect();
+    // Both ordinary and magic fireballs fly under one loop below; they differ only
+    // in damage, reach and life (the magic bolt's longer life is baked into its
+    // per-entity timer at launch).
     let fireball_ids: Vec<EntityId> = entities
         .values()
-        .filter(|e| matches!(e.kind, EntityKind::Fireball))
+        .filter(|e| matches!(e.kind, EntityKind::Fireball | EntityKind::MagicFireball))
         .map(|e| e.id)
         .collect();
     let item_ids: Vec<EntityId> = entities
@@ -5494,6 +5638,118 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         broadcasts.push(ServerMessage::EntitySpawn { entity: fireball });
     }
 
+    // Enchanted demons: demons an orc mage has empowered. They kite the player like
+    // an ordinary demon — closing when out of range, backing off when crowded — but
+    // they FLY, chasing through the air rather than scrambling over the ground, and
+    // hurl magic fireballs that reach farther and hit harder. Active at all hours.
+    //
+    // Magic fireballs loosed this tick, spawned after the loop (as for the demon) so
+    // we aren't holding a mutable borrow of the caster while inserting. Each entry is
+    // the bolt's spawn `(x, y)` and its flight `(vx, vy)`.
+    let mut magic_fireball_throws: Vec<(f32, f32, f32, f32)> = Vec::new();
+    for id in enchanted_demon_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let home = *e.home_x.get_or_insert(e.x);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+        let target = nearest_prey(
+            &hostile_players,
+            &knight_boxes,
+            scx,
+            scy,
+            ENCHANTED_DEMON_AGGRO,
+        );
+
+        // Flying kite: steer in both axes toward (or away from) the target. Close in
+        // when out of fireball range, back off when crowded, otherwise hold position
+        // horizontally while matching the target's altitude so its shots fly level.
+        let (vx, vy, aim) = match target {
+            Some(p) => {
+                let gap = aabb_gap(e.x, e.y, w, h, p.x, p.y, p.w, p.h);
+                let dx = (p.x + p.w * 0.5) - scx;
+                let dy = (p.y + p.h * 0.5) - scy;
+                let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                let (ux, uy) = (dx / len, dy / len);
+                let (vx, vy) = if gap < ENCHANTED_DEMON_KEEP_DIST {
+                    (-ux * ENCHANTED_DEMON_SPEED, -uy * ENCHANTED_DEMON_SPEED) // too close: retreat
+                } else if gap > ENCHANTED_DEMON_SHOOT_RANGE {
+                    (ux * ENCHANTED_DEMON_SPEED, uy * ENCHANTED_DEMON_SPEED) // too far: advance
+                } else {
+                    (0.0, uy * ENCHANTED_DEMON_SPEED) // in range: hold, just match altitude
+                };
+                (vx, vy, Some((p.x, p.y, p.w, p.h, gap)))
+            }
+            // No quarry: hover, drifting gently across its home patch at its level.
+            None => (
+                wander_dir(scx, e.vx, home) * ENCHANTED_DEMON_SPEED,
+                0.0,
+                None,
+            ),
+        };
+
+        // Fly freely (no gravity), each axis stopped independently by walls.
+        let (nx, _) = move_x(&mut world, e.x, e.y, w, h, vx * TICK_DT);
+        let (ny, _) = move_y(&mut world, nx, e.y, w, h, vy * TICK_DT);
+        e.x = nx;
+        e.y = ny;
+        e.vx = vx;
+        e.vy = vy;
+        // Point the reported vx's sign at the target so it always faces the player it
+        // is fighting (even while backing away), as the demon does.
+        let bcast_vx = match aim {
+            Some((px, _, pw, _, _)) => {
+                let cx = nx + w * 0.5;
+                let toward = if px + pw * 0.5 >= cx { 1.0 } else { -1.0 };
+                toward * vx.abs()
+            }
+            None => vx,
+        };
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: nx,
+            y: ny,
+            vx: bcast_vx,
+            vy,
+        });
+
+        // Hurl a magic fireball when a target is within range and we're off cooldown,
+        // aiming from the demon's upper body straight at the target's center.
+        if let Some((px, py, pw, ph, gap)) = aim {
+            if e.attack_cd <= 0.0 && gap <= ENCHANTED_DEMON_SHOOT_RANGE {
+                e.attack_cd = ENCHANTED_DEMON_SHOOT_INTERVAL;
+                let (fw, fh) = MAGIC_FIREBALL_SIZE;
+                let sx = nx + w * 0.5 - fw * 0.5;
+                let sy = ny + h * 0.3 - fh * 0.5;
+                let tx = px + pw * 0.5;
+                let ty = py + ph * 0.5;
+                let ddx = tx - (sx + fw * 0.5);
+                let ddy = ty - (sy + fh * 0.5);
+                let dlen = (ddx * ddx + ddy * ddy).sqrt().max(1.0);
+                magic_fireball_throws.push((
+                    sx,
+                    sy,
+                    ddx / dlen * MAGIC_FIREBALL_SPEED,
+                    ddy / dlen * MAGIC_FIREBALL_SPEED,
+                ));
+            }
+        }
+    }
+    // Spawn the magic fireballs loosed this tick (not in `fireball_ids`, so they begin
+    // flying next tick rather than being simulated again immediately).
+    for (x, y, vx, vy) in magic_fireball_throws {
+        let fid = shared.alloc_id();
+        let mut fireball = Entity::new(fid, EntityKind::MagicFireball, x, y);
+        fireball.vx = vx;
+        fireball.vy = vy;
+        fireball.attack_cd = MAGIC_FIREBALL_LIFETIME; // reused as the airborne lifetime timer
+        entities.insert(fireball.clone());
+        broadcasts.push(ServerMessage::EntitySpawn { entity: fireball });
+    }
+
     // Orcs: the underworld's hulking brutes. They lumber after players at all hours
     // (slower than anything else afoot), then plant their feet and commit to a
     // telegraphed slam — heaving their arms up and crashing them down for heavy
@@ -5603,6 +5859,194 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             vx: m.vx,
             vy: m.vy,
         });
+    }
+
+    // Orc mages: robed underworld support casters. They land no blows of their own —
+    // they shy away from players and instead seek out ordinary demons to empower,
+    // casting an enchant that turns a demon into a flying, harder-hitting enchanted
+    // demon. The cast plays out over ORC_MAGE_CAST_TIME (riding the `lunge` timer); the
+    // demon is empowered when the cast is kicked off.
+    //
+    // Snapshot of ordinary (un-enchanted) demons as `(id, x, y, w, h)`, so a mage can
+    // seek one out without re-borrowing the map mid-loop.
+    let plain_demons: Vec<(EntityId, f32, f32, f32, f32)> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Demon))
+        .map(|e| {
+            let (w, h) = e.size();
+            (e.id, e.x, e.y, w, h)
+        })
+        .collect();
+    // Demons a mage commits to enchanting this tick, converted after the loop so we
+    // aren't holding a mutable borrow of the mage while mutating its target.
+    let mut to_enchant: Vec<EntityId> = Vec::new();
+    for id in orc_mage_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let home = *e.home_x.get_or_insert(e.x);
+
+        // Mid-cast: the enchant gesture plays out in place (gravity still settles it
+        // onto the floor). The demon was empowered when the cast began, so here we
+        // only play out the animation.
+        if e.lunge > 0.0 {
+            e.lunge = (e.lunge - TICK_DT).max(0.0);
+            let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, 0.0, 0.0, true);
+            e.x = m.x;
+            e.y = m.y;
+            e.vx = 0.0;
+            e.vy = m.vy;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: m.x,
+                y: m.y,
+                vx: 0.0,
+                vy: m.vy,
+            });
+            continue;
+        }
+
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+
+        // A player too close: the mage can't fight, so fleeing takes priority over
+        // shepherding demons — it backs away along the ground.
+        let threat = nearest_prey(&hostile_players, &knight_boxes, scx, scy, ORC_MAGE_AGGRO);
+        if let Some(p) =
+            threat.filter(|p| aabb_gap(e.x, e.y, w, h, p.x, p.y, p.w, p.h) < ORC_MAGE_FLEE_DIST)
+        {
+            let dir = if p.x + p.w * 0.5 >= scx { -1.0 } else { 1.0 };
+            let m = step_ground(
+                &mut world,
+                (e.x, e.y, w, h),
+                e.vy,
+                dir,
+                ORC_MAGE_SPEED,
+                true,
+            );
+            e.x = m.x;
+            e.y = m.y;
+            e.vx = m.vx;
+            e.vy = m.vy;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: m.x,
+                y: m.y,
+                vx: m.vx,
+                vy: m.vy,
+            });
+            continue;
+        }
+
+        // Otherwise seek out the nearest ordinary demon (by center distance) to empower.
+        let mut best: Option<(usize, f32)> = None;
+        for (i, &(_, dx, dy, dw, dh)) in plain_demons.iter().enumerate() {
+            let ddx = (dx + dw * 0.5) - scx;
+            let ddy = (dy + dh * 0.5) - scy;
+            let d2 = ddx * ddx + ddy * ddy;
+            if d2 <= ORC_MAGE_ASSIST_RANGE * ORC_MAGE_ASSIST_RANGE
+                && best.is_none_or(|(_, bd)| d2 < bd)
+            {
+                best = Some((i, d2));
+            }
+        }
+
+        if let Some((i, _)) = best {
+            let (did, dx, dy, dw, dh) = plain_demons[i];
+            if aabb_gap(e.x, e.y, w, h, dx, dy, dw, dh) <= ORC_MAGE_ENCHANT_RANGE {
+                // In reach: cast if off cooldown, else just hold still beside its charge.
+                if e.attack_cd <= 0.0 {
+                    e.lunge = crate::entity::ORC_MAGE_CAST_TIME;
+                    e.attack_cd = ORC_MAGE_ENCHANT_INTERVAL;
+                    e.vx = 0.0;
+                    to_enchant.push(did);
+                    broadcasts.push(ServerMessage::EntityLunging { id });
+                    broadcasts.push(ServerMessage::EntityMoved {
+                        id,
+                        x: e.x,
+                        y: e.y,
+                        vx: 0.0,
+                        vy: e.vy,
+                    });
+                    continue;
+                }
+                let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, 0.0, 0.0, false);
+                e.x = m.x;
+                e.y = m.y;
+                e.vx = m.vx;
+                e.vy = m.vy;
+                broadcasts.push(ServerMessage::EntityMoved {
+                    id,
+                    x: m.x,
+                    y: m.y,
+                    vx: m.vx,
+                    vy: m.vy,
+                });
+                continue;
+            }
+            // Out of reach: lumber toward the demon to close the gap.
+            let dir = if dx + dw * 0.5 < scx { -1.0 } else { 1.0 };
+            let m = step_ground(
+                &mut world,
+                (e.x, e.y, w, h),
+                e.vy,
+                dir,
+                ORC_MAGE_SPEED,
+                true,
+            );
+            e.x = m.x;
+            e.y = m.y;
+            e.vx = m.vx;
+            e.vy = m.vy;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: m.x,
+                y: m.y,
+                vx: m.vx,
+                vy: m.vy,
+            });
+            continue;
+        }
+
+        // Nothing to flee and no demon to shepherd: wander its home patch.
+        let dir = wander_dir(scx, e.vx, home);
+        let m = step_ground(
+            &mut world,
+            (e.x, e.y, w, h),
+            e.vy,
+            dir,
+            ORC_MAGE_SPEED,
+            false,
+        );
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: m.vx,
+            vy: m.vy,
+        });
+    }
+    // Empower the demons the mages cast on this tick: an ordinary demon becomes an
+    // enchanted one, healed to its new (higher) full as the glamour takes hold.
+    // Re-broadcasting its full description (an EntitySpawn for an existing id updates
+    // it on every client) re-tags it as the enchanted kind.
+    for did in to_enchant {
+        if let Some(d) = entities.get_mut(did) {
+            if matches!(d.kind, EntityKind::Demon) {
+                d.kind = EntityKind::EnchantedDemon;
+                d.max_health = crate::entity::ENCHANTED_DEMON_MAX_HEALTH;
+                d.health = d.max_health;
+                d.attack_cd = 0.0;
+                let updated = d.clone();
+                broadcasts.push(ServerMessage::EntitySpawn { entity: updated });
+            }
+        }
     }
 
     // Ash twisters: whirling columns of ash that haunt the ash valleys. They drift
@@ -5748,6 +6192,12 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         };
         let (w, h) = e.size();
         e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        // The magic bolt hits harder and over a touch more reach than the ordinary one.
+        let (dmg, hit_range) = if matches!(e.kind, EntityKind::MagicFireball) {
+            (MAGIC_FIREBALL_DAMAGE, MAGIC_FIREBALL_HIT_RANGE)
+        } else {
+            (FIREBALL_DAMAGE, FIREBALL_HIT_RANGE)
+        };
 
         let (nx, hit_x) = move_x(&mut world, e.x, e.y, w, h, e.vx * TICK_DT);
         let (ny, hit_y) = move_y(&mut world, nx, e.y, w, h, e.vy * TICK_DT);
@@ -5763,16 +6213,16 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         };
         let mut struck = false;
         for &(pid, px, py) in &players {
-            if aabb_gap(nx, ny, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1) <= FIREBALL_HIT_RANGE {
-                bites.push((pid, (kx, -KNOCKBACK_Y), FIREBALL_DAMAGE));
+            if aabb_gap(nx, ny, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1) <= hit_range {
+                bites.push((pid, (kx, -KNOCKBACK_Y), dmg));
                 struck = true;
                 break;
             }
         }
         if !struck {
             for &(kid, kx2, ky, kw, kh) in &knight_boxes {
-                if aabb_gap(nx, ny, w, h, kx2, ky, kw, kh) <= FIREBALL_HIT_RANGE {
-                    knight_hits.push((kid, FIREBALL_DAMAGE));
+                if aabb_gap(nx, ny, w, h, kx2, ky, kw, kh) <= hit_range {
+                    knight_hits.push((kid, dmg));
                     struck = true;
                     break;
                 }
@@ -6179,6 +6629,8 @@ fn is_hostile(kind: &EntityKind) -> bool {
             | EntityKind::Demon
             | EntityKind::Orc
             | EntityKind::AshTwister
+            | EntityKind::OrcMage
+            | EntityKind::EnchantedDemon
     )
 }
 
@@ -6875,6 +7327,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                 maybe_spawn_charred_skeletons(&shared, cx, cy);
                                 maybe_spawn_demons(&shared, cx, cy);
                                 maybe_spawn_orcs(&shared, cx, cy);
+                                maybe_spawn_orc_mages(&shared, cx, cy);
                                 maybe_spawn_ash_twisters(&shared, cx, cy);
                             }
                         }

@@ -94,6 +94,8 @@ Most monsters only **hunt at night** (or in dark caves). Build shelter and keep 
 | **Charred Skeleton** | 36 | Underworld **ash valleys** | Charges into melee and **leaves a trail of fire**; active at all hours |
 | **Demon** | 28 | Underworld charred expanse (rare) | Keeps its distance and hurls **fireballs** that burst into flame; active at all hours |
 | **Orc** | 50 | Underworld charred expanse | Slow, hulking brute; plants its feet for a telegraphed **slam** that hits brutally hard; active at all hours |
+| **Orc Mage** | 30 | Underworld charred expanse (rare) | A robed support caster; lands **no blows of its own** — it shies from you and **enchants nearby demons** instead; active at all hours |
+| **Enchanted Demon** | 40 | Underworld charred expanse | A demon a mage has empowered: it **flies** and hurls **purple magic fireballs** that reach farther and hit harder; never spawns on its own |
 | **Ash Twister** | 18 | Underworld **ash valleys** | A whirling column of ash; on contact it **flings you high into the air** — the fall does the damage; active at all hours |
 
 !!! danger "Mind the drop after an ash twister hits you"
@@ -116,6 +118,16 @@ Most monsters only **hunt at night** (or in dark caves). Build shelter and keep 
     it is winding up a **slam** that can gut you in two blows. The hit only lands
     as its fists crash down, so step out of reach during the wind-up — then close
     in and strike while it recovers.
+
+!!! danger "Kill the orc mage first"
+    An **orc mage** never attacks you directly — it hangs back and **enchants the
+    demons around it**, turning each into a flying **enchanted demon** that chases
+    you through the air and pelts you with **purple fireballs** that reach farther
+    and hit harder than ordinary ones. A mage heals a demon to full as it empowers
+    it, so a worn-down demon suddenly comes back stronger. If you see a mage, run
+    it down before it builds an air force — but watch its enchanted demons, which can
+    dive on you from any angle. Their magic fireballs still leave only ordinary fire
+    where they burst.
 
 Monsters are hostile to **[knights](#the-knight)** as well as to you — they will
 chase down and attack a man-at-arms whether or not you have recruited it, and a
@@ -140,6 +152,9 @@ In **creator mode** you are invisible to monsters and take no damage from them.
   short flight.
 - **Fireball** — the projectile a demon hurls; it disappears on impact or after a
   short flight, leaving a tongue of fire where it bursts.
+- **Magic fireball** — the purple bolt an enchanted demon hurls; it flies farther
+  and hits harder than an ordinary fireball, but likewise bursts into a tongue of
+  fire where it lands.
 - **Dropped items** — block and tool stacks lying on the ground (from mining,
   drops, or the <kbd>Q</kbd> key). Walk into them to pick them up; dropped tools
   keep their durability.

@@ -55,6 +55,13 @@ pub const CHARRED_SKELETON_SIZE: (f32, f32) = (11.0, 16.0);
 /// Collision/draw size (width, height) in pixels of a demon — a small, hunched
 /// underworld fiend, shorter than a skeleton, matching its art's proportions.
 pub const DEMON_SIZE: (f32, f32) = (10.0, 15.0);
+/// Collision/draw size (width, height) in pixels of an enchanted demon — a demon
+/// an [`EntityKind::OrcMage`] has empowered. Drawn from the same proportions as the
+/// ordinary demon, lit with the mage's purple glamour.
+pub const ENCHANTED_DEMON_SIZE: (f32, f32) = (10.0, 15.0);
+/// Collision/draw size (width, height) in pixels of an orc mage — a robed
+/// underworld spellcaster, leaner than the hulking brute it shares the depths with.
+pub const ORC_MAGE_SIZE: (f32, f32) = (10.0, 13.0);
 /// Collision/draw size (width, height) in pixels of an orc — a stocky underworld
 /// brute, broader than the lanky skeletons it shares the depths with.
 pub const ORC_SIZE: (f32, f32) = (12.0, 15.0);
@@ -71,6 +78,10 @@ pub const BONE_SIZE: (f32, f32) = (12.0, 12.0);
 /// Collision/draw size (width, height) in pixels of a hurled fireball — a small,
 /// low bolt of flame.
 pub const FIREBALL_SIZE: (f32, f32) = (10.0, 7.0);
+/// Collision/draw size (width, height) in pixels of a hurled magic fireball — a
+/// bolt of purple flame an [`EntityKind::EnchantedDemon`] flings, the same low,
+/// small bolt as the ordinary [`FIREBALL_SIZE`].
+pub const MAGIC_FIREBALL_SIZE: (f32, f32) = (10.0, 7.0);
 /// Collision/draw size (width, height) in pixels of a dropped block item.
 pub const ITEM_SIZE: (f32, f32) = (8.0, 8.0);
 
@@ -91,6 +102,13 @@ pub const SNAKE_LUNGE_TIME: f32 = 0.7;
 /// frame where the fists hit the ground — so an alert player can back out of reach
 /// during the wind-up. Reuses the [`Entity::lunge`] timer the snake strike rides on.
 pub const ORC_SLAM_TIME: f32 = 1.1;
+
+/// Seconds an orc mage's enchant cast animation plays end to end: it raises its
+/// staff through the gesture that empowers a nearby demon. Shared by both sides so
+/// the server's cast timing and the client's cast-animation playback agree. Like
+/// the orc slam it rides on the [`Entity::lunge`] timer; it is purely cosmetic —
+/// the demon is enchanted server-side when the cast is kicked off.
+pub const ORC_MAGE_CAST_TIME: f32 = 0.8;
 
 /// Seconds a knight's attack swing animation plays. Like the snake lunge and orc
 /// slam it rides on the [`Entity::lunge`] timer: the server kicks it off (broadcasting
@@ -145,6 +163,13 @@ pub const CHARRED_SKELETON_MAX_HEALTH: i32 = 36;
 /// survives by keeping its distance and pelting the player with fireballs rather
 /// than wading into melee.
 pub const DEMON_MAX_HEALTH: i32 = 28;
+/// Maximum health of an enchanted demon, in hit points. An [`EntityKind::OrcMage`]'s
+/// glamour makes it sturdier than the ordinary demon it was — and the enchant heals
+/// it to this new full as it is empowered.
+pub const ENCHANTED_DEMON_MAX_HEALTH: i32 = 40;
+/// Maximum health of an orc mage, in hit points. A robed support caster — frailer
+/// than the brute orc, since it hangs back and empowers demons rather than wading in.
+pub const ORC_MAGE_MAX_HEALTH: i32 = 30;
 /// Maximum health of an orc, in hit points. The toughest thing in the underworld —
 /// a slow brute that soaks up punishment and answers with a devastating slam.
 pub const ORC_MAX_HEALTH: i32 = 50;
@@ -295,6 +320,31 @@ pub enum EntityKind {
     /// not the buffeting itself. Roams the ash valleys at all hours. Server-simulated.
     /// Appended last so older saves and the wire format keep their variant indices.
     AshTwister,
+    /// An orc mage: a robed underworld spellcaster. Unlike the brute
+    /// [`EntityKind::Orc`] it lands no blows of its own — it is a **support**
+    /// creature that hangs back, shying away from players, and instead empowers
+    /// nearby ordinary [`EntityKind::Demon`]s, turning them into
+    /// [`EntityKind::EnchantedDemon`]s. It spawns in the underworld's charred
+    /// expanse, more rarely than the demons it shepherds, at all hours.
+    /// Server-simulated. Appended last so older saves and the wire format keep their
+    /// variant indices.
+    OrcMage,
+    /// An enchanted demon: a [`EntityKind::Demon`] an [`EntityKind::OrcMage`] has
+    /// empowered. Where an ordinary demon kites along the ground, the enchanted one
+    /// **flies**, chasing the player through the air, and hurls
+    /// [`EntityKind::MagicFireball`]s that fly farther and hit harder than ordinary
+    /// fireballs. It never spawns on its own — only a mage's enchant (live, or one a
+    /// freshly spawned mage already worked offscreen) creates one. Server-simulated.
+    /// Appended last so older saves and the wire format keep their variant indices.
+    EnchantedDemon,
+    /// A bolt of purple (magic) flame hurled by an [`EntityKind::EnchantedDemon`],
+    /// flying in a straight line until it strikes a player or a wall (or its life
+    /// runs out). It flies farther and deals more damage than an ordinary
+    /// [`EntityKind::Fireball`], but — like the ordinary one — leaves only an
+    /// ordinary lick of [`crate::block::FIRE`] where it bursts. Its [`Entity::vx`]/
+    /// [`Entity::vy`] carry its flight velocity. Server-simulated. Appended last so
+    /// older saves and the wire format keep their variant indices.
+    MagicFireball,
 }
 
 impl EntityKind {
@@ -319,6 +369,9 @@ impl EntityKind {
             EntityKind::Orc => ORC_SIZE,
             EntityKind::Knight { .. } => KNIGHT_SIZE,
             EntityKind::AshTwister => ASH_TWISTER_SIZE,
+            EntityKind::OrcMage => ORC_MAGE_SIZE,
+            EntityKind::EnchantedDemon => ENCHANTED_DEMON_SIZE,
+            EntityKind::MagicFireball => MAGIC_FIREBALL_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -421,6 +474,11 @@ impl EntityKind {
             EntityKind::Orc => ORC_MAX_HEALTH,
             EntityKind::Knight { .. } => KNIGHT_MAX_HEALTH,
             EntityKind::AshTwister => ASH_TWISTER_MAX_HEALTH,
+            EntityKind::OrcMage => ORC_MAGE_MAX_HEALTH,
+            EntityKind::EnchantedDemon => ENCHANTED_DEMON_MAX_HEALTH,
+            // A magic fireball is an inert projectile; 1 keeps health == max_health so
+            // no health bar shows and a stray melee swing can't meaningfully "kill" it.
+            EntityKind::MagicFireball => 1,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }

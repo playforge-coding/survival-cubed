@@ -251,6 +251,36 @@ pub static ASH_TWISTER_SPRITE: SpriteDef = SpriteDef {
     fps: 1.0,
 };
 
+/// Orc mage: a robed underworld support caster. A single standing frame — it hangs
+/// back and shepherds demons rather than striding into a fight.
+pub static ORC_MAGE_SPRITE: SpriteDef = SpriteDef {
+    name: "orc_mage",
+    frame_w: 10,
+    frame_h: 13,
+    frames: 1,
+    fps: 1.0,
+};
+
+/// Orc mage cast: the one-shot enchant gesture, played off the mage's cast (lunge)
+/// timer when it empowers a demon. Lives in the `orc_mage/cast` subdirectory.
+pub static ORC_MAGE_CAST_SPRITE: SpriteDef = SpriteDef {
+    name: "orc_mage/cast",
+    frame_w: 12,
+    frame_h: 13,
+    frames: 1,
+    fps: 1.0,
+};
+
+/// Enchanted demon: a demon an orc mage has empowered, drawn from the same
+/// proportions as the ordinary demon and lit with the mage's purple glamour.
+pub static ENCHANTED_DEMON_SPRITE: SpriteDef = SpriteDef {
+    name: "enchanted_demon",
+    frame_w: 10,
+    frame_h: 15,
+    frames: 5,
+    fps: 8.0,
+};
+
 /// Knight (on foot): a man-at-arms that strides along on its walk cycle.
 pub static KNIGHT_SPRITE: SpriteDef = SpriteDef {
     name: "knight",
@@ -310,8 +340,18 @@ pub static FIREBALL_SPRITE: SpriteDef = SpriteDef {
     fps: 1.0,
 };
 
+/// Magic fireball: the purple bolt an enchanted demon hurls — like the ordinary
+/// fireball, a single glowing frame that flies until it bursts.
+pub static MAGIC_FIREBALL_SPRITE: SpriteDef = SpriteDef {
+    name: "magic_fireball",
+    frame_w: 10,
+    frame_h: 7,
+    frames: 1,
+    fps: 1.0,
+};
+
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 29] {
+pub fn all() -> [&'static SpriteDef; 33] {
     [
         &PLAYER_SPRITE,
         &BOAT_SPRITE,
@@ -336,12 +376,16 @@ pub fn all() -> [&'static SpriteDef; 29] {
         &ORC_SPRITE,
         &ORC_SLAM_SPRITE,
         &ASH_TWISTER_SPRITE,
+        &ORC_MAGE_SPRITE,
+        &ORC_MAGE_CAST_SPRITE,
+        &ENCHANTED_DEMON_SPRITE,
         &KNIGHT_SPRITE,
         &KNIGHT_ATTACK_SPRITE,
         &KNIGHT_HORSE_SPRITE,
         &KNIGHT_HORSE_ATTACK_SPRITE,
         &BONE_SPRITE,
         &FIREBALL_SPRITE,
+        &MAGIC_FIREBALL_SPRITE,
     ]
 }
 
@@ -373,6 +417,11 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         // this walk sheet is its plodding stride.
         EntityKind::Orc => &ORC_SPRITE,
         EntityKind::AshTwister => &ASH_TWISTER_SPRITE,
+        // An orc mage's cast pose is handled by the scene builder off its lunge
+        // timer; this standing frame is its idle/shepherding pose.
+        EntityKind::OrcMage => &ORC_MAGE_SPRITE,
+        EntityKind::EnchantedDemon => &ENCHANTED_DEMON_SPRITE,
+        EntityKind::MagicFireball => &MAGIC_FIREBALL_SPRITE,
         // A knight's mounted and attack poses are handled by the scene builder (off
         // its `riding` and lunge state); this on-foot walk sheet is its base.
         EntityKind::Knight { .. } => &KNIGHT_SPRITE,

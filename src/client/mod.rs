@@ -1044,6 +1044,7 @@ impl App {
                         // snake springs; the orc slams — each runs for its own time.
                         e.lunge = match e.kind {
                             EntityKind::Orc => crate::entity::ORC_SLAM_TIME,
+                            EntityKind::OrcMage => crate::entity::ORC_MAGE_CAST_TIME,
                             EntityKind::Knight { .. } => crate::entity::KNIGHT_ATTACK_TIME,
                             _ => crate::entity::SNAKE_LUNGE_TIME,
                         };
@@ -2971,6 +2972,12 @@ impl App {
                     if ui.button("Orc").clicked() {
                         spawn = Some(EntityKind::Orc);
                     }
+                    if ui.button("Orc Mage").clicked() {
+                        spawn = Some(EntityKind::OrcMage);
+                    }
+                    if ui.button("Enchanted Demon").clicked() {
+                        spawn = Some(EntityKind::EnchantedDemon);
+                    }
                     if ui.button("Knight").clicked() {
                         spawn = Some(EntityKind::Knight { owner: None });
                     }
@@ -3492,6 +3499,13 @@ impl App {
                 // up then crashes them down, the blow landing on frame 3.
                 let d = &sprite::ORC_SLAM_SPRITE;
                 let progress = 1.0 - (e.lunge / crate::entity::ORC_SLAM_TIME).clamp(0.0, 1.0);
+                let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
+                (d, frame)
+            } else if e.lunge > 0.0 && matches!(e.kind, EntityKind::OrcMage) {
+                // A casting orc mage plays its one-shot enchant gesture (frame stepped
+                // by the cast timer, which rides on the same `lunge` field).
+                let d = &sprite::ORC_MAGE_CAST_SPRITE;
+                let progress = 1.0 - (e.lunge / crate::entity::ORC_MAGE_CAST_TIME).clamp(0.0, 1.0);
                 let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
                 (d, frame)
             } else if matches!(e.kind, EntityKind::Puppy { sitting: true, .. }) {
