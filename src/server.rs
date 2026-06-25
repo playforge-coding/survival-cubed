@@ -3169,8 +3169,11 @@ fn maybe_spawn_snakes(shared: &Shared, cx: i32, cy: i32) {
 }
 
 /// Possibly seed charred skeletons into a freshly generated underworld chunk.
-/// They drop onto any charred-rock floor (open cell above, solid below) the chunk
-/// contains. Deterministic per chunk via [`chunk_hash`] on its own salt range, so
+/// Like the ash twister they are native to the **ash valleys** alone, so a
+/// candidate spawn column is skipped unless it belongs to one (see
+/// [`crate::worldgen::WorldGen::underworld_biome_at`]). They drop onto any
+/// charred-rock (or ash) floor (open cell above, solid below) the chunk contains.
+/// Deterministic per chunk via [`chunk_hash`] on its own salt range, so
 /// re-exploring the same terrain never double-spawns.
 fn maybe_spawn_charred_skeletons(shared: &Shared, cx: i32, cy: i32) {
     let mut world = shared.world(Dimension::Underworld).lock();
@@ -3191,6 +3194,13 @@ fn maybe_spawn_charred_skeletons(shared: &Shared, cx: i32, cy: i32) {
         for n in 0..count {
             let lx = chunk_hash(seed, cx, cy, 202 + n) % CHUNK_SIZE as u32;
             let cell_x = base_x + lx as i32;
+            // Charred skeletons only haunt the ash valleys — skip a column that
+            // isn't one.
+            if world.generator.underworld_biome_at(cell_x)
+                != crate::worldgen::UnderworldBiome::AshValley
+            {
+                continue;
+            }
             // Find an open cell in this column with solid charred rock beneath —
             // a floor to stand on — scanning from the chunk's bottom upward.
             let mut placed = None;

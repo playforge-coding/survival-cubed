@@ -238,7 +238,8 @@ pub enum EntityKind {
     /// A charred skeleton: the underworld's signature undead. Unlike the surface
     /// skeleton it doesn't throw bones — it charges into melee, hitting harder than
     /// a zombie, and lays down a trail of [`crate::block::FIRE`] behind it while it
-    /// is closing on a target. Roams the underworld at all hours. Server-simulated.
+    /// is closing on a target. Native to the underworld's **ash valleys**, which it
+    /// roams at all hours. Server-simulated.
     CharredSkeleton,
     /// A tall, peaceable grazer that wanders the plains and — unlike the other
     /// pets, which are tamed with cooked meat — is tamed by feeding it an

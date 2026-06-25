@@ -79,12 +79,13 @@ headroom to build and climb through. The floor's *ash valley* zones are blankete
 in loose **ash**, and scattered patches of natural **fire** burn on exposed
 floors — a real hazard, so watch your step. The ash valleys are also the only
 haunt of the **[ash twister](creatures.md#hostile-monsters)**, a whirling column
-of ash that flings you skywards for a punishing fall. Below the floor, charred
+of ash that flings you skywards for a punishing fall, and of the fire-trailing
+**charred skeleton**. Below the floor, charred
 rock falls away to bedrock, riddled with caves where the tungsten hides.
 
 The underworld is the only source of **tungsten ore**, the top tier of gear. It
-sits in permanent dim, warm light (no day/night), and its creatures — including
-the fire-trailing **charred skeleton** — are active around the clock.
+sits in permanent dim, warm light (no day/night), and its creatures are active
+around the clock.
 
 To get there, craft a **[fire key](crafting.md#tools-and-utility-items)** (it
 needs tungsten itself, so your first trip down is the hard one) and right-click
