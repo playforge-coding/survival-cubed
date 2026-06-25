@@ -3848,6 +3848,20 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         .map(|e| e.id)
         .collect();
 
+    // Knights (wild and recruited alike) as `(id, x, y, w, h)`, so hostile
+    // creatures can hunt a man-at-arms the same way they hunt a player. Snapped
+    // once up front: knights that move later this tick (in the knight loop) read a
+    // tick stale to the monster loops that run after it, which is close enough for
+    // a chase heading and a melee reach check.
+    let knight_boxes: Vec<(EntityId, f32, f32, f32, f32)> = entities
+        .values()
+        .filter(|e| e.kind.is_knight())
+        .map(|e| {
+            let (w, h) = e.size();
+            (e.id, e.x, e.y, w, h)
+        })
+        .collect();
+
     let mut broadcasts = Vec::new();
     // Tell every client to drop the entities culled for distance above.
     for id in despawns {
@@ -3885,7 +3899,7 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         let scx = e.x + w * 0.5;
         let scy = e.y + h * 0.5;
         let target = if night {
-            nearest_player(&hostile_players, scx, scy, SLIME_AGGRO)
+            nearest_prey(&hostile_players, &knight_boxes, scx, scy, SLIME_AGGRO)
         } else {
             None
         };
@@ -3894,7 +3908,7 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         // Heading: toward the target when chasing, else wander within its home
         // range (turning back once it strays too far).
         let dir = match target {
-            Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -1.0,
+            Some(p) if p.x + p.w * 0.5 < scx => -1.0,
             Some(_) => 1.0,
             None => wander_dir(scx, e.vx, home),
         };
@@ -3923,18 +3937,23 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         });
 
         // Bite the target if it is in reach and the slime is off cooldown.
-        if let Some((pid, px, py)) = target {
+        if let Some(p) = target {
             if e.attack_cd <= 0.0
-                && aabb_gap(m.x, m.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1)
-                    <= SLIME_ATTACK_RANGE
+                && aabb_gap(m.x, m.y, w, h, p.x, p.y, p.w, p.h) <= SLIME_ATTACK_RANGE
             {
                 e.attack_cd = SLIME_ATTACK_INTERVAL;
-                let dir = if px + PLAYER_SIZE.0 * 0.5 >= m.x + w * 0.5 {
+                let dir = if p.x + p.w * 0.5 >= m.x + w * 0.5 {
                     1.0
                 } else {
                     -1.0
                 };
-                bites.push((pid, (dir * KNOCKBACK_X, -KNOCKBACK_Y), SLIME_DAMAGE));
+                hit_prey(
+                    &mut bites,
+                    &mut knight_hits,
+                    &p,
+                    (dir * KNOCKBACK_X, -KNOCKBACK_Y),
+                    SLIME_DAMAGE,
+                );
             }
         }
     }
@@ -3953,10 +3972,10 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         let scx = e.x + w * 0.5;
         let scy = e.y + h * 0.5;
 
-        let target = nearest_player(&hostile_players, scx, scy, SPIDER_AGGRO);
+        let target = nearest_prey(&hostile_players, &knight_boxes, scx, scy, SPIDER_AGGRO);
         let chasing = target.is_some();
         let dir = match target {
-            Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -1.0,
+            Some(p) if p.x + p.w * 0.5 < scx => -1.0,
             Some(_) => 1.0,
             None => wander_dir(scx, e.vx, home),
         };
@@ -3983,18 +4002,23 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             vy: m.vy,
         });
 
-        if let Some((pid, px, py)) = target {
+        if let Some(p) = target {
             if e.attack_cd <= 0.0
-                && aabb_gap(m.x, m.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1)
-                    <= SPIDER_ATTACK_RANGE
+                && aabb_gap(m.x, m.y, w, h, p.x, p.y, p.w, p.h) <= SPIDER_ATTACK_RANGE
             {
                 e.attack_cd = SPIDER_ATTACK_INTERVAL;
-                let dir = if px + PLAYER_SIZE.0 * 0.5 >= m.x + w * 0.5 {
+                let dir = if p.x + p.w * 0.5 >= m.x + w * 0.5 {
                     1.0
                 } else {
                     -1.0
                 };
-                bites.push((pid, (dir * KNOCKBACK_X, -KNOCKBACK_Y), SPIDER_DAMAGE));
+                hit_prey(
+                    &mut bites,
+                    &mut knight_hits,
+                    &p,
+                    (dir * KNOCKBACK_X, -KNOCKBACK_Y),
+                    SPIDER_DAMAGE,
+                );
             }
         }
     }
@@ -4064,24 +4088,29 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
                 vy: m.vy,
             });
 
-            // The strike connects on the tick the wind-up ends, if a player is
-            // within the (generous) lunge reach.
+            // The strike connects on the tick the wind-up ends, if a player or
+            // knight is within the (generous) lunge reach.
             if was_winding && striking {
-                if let Some((pid, px, py)) = nearest_player(
+                if let Some(p) = nearest_prey(
                     &hostile_players,
+                    &knight_boxes,
                     m.x + w * 0.5,
                     m.y + h * 0.5,
                     f32::INFINITY,
                 ) {
-                    if aabb_gap(m.x, m.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1)
-                        <= SNAKE_LUNGE_REACH
-                    {
-                        let kdir = if px + PLAYER_SIZE.0 * 0.5 >= m.x + w * 0.5 {
+                    if aabb_gap(m.x, m.y, w, h, p.x, p.y, p.w, p.h) <= SNAKE_LUNGE_REACH {
+                        let kdir = if p.x + p.w * 0.5 >= m.x + w * 0.5 {
                             1.0
                         } else {
                             -1.0
                         };
-                        bites.push((pid, (kdir * KNOCKBACK_X, -KNOCKBACK_Y), SNAKE_DAMAGE));
+                        hit_prey(
+                            &mut bites,
+                            &mut knight_hits,
+                            &p,
+                            (kdir * KNOCKBACK_X, -KNOCKBACK_Y),
+                            SNAKE_DAMAGE,
+                        );
                     }
                 }
             }
@@ -4090,22 +4119,17 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
 
         let scx = e.x + w * 0.5;
         let scy = e.y + h * 0.5;
-        let target = nearest_player(&hostile_players, scx, scy, SNAKE_AGGRO);
+        let target = nearest_prey(&hostile_players, &knight_boxes, scx, scy, SNAKE_AGGRO);
 
         // In range and off cooldown: commit to a wind-up lunge. Lock the heading
-        // toward the player now and hold still — the strike springs this way even
-        // if the player sidesteps. Tell every client to play the strike animation.
-        if let Some((_, px, py)) = target {
+        // toward the quarry now and hold still — the strike springs this way even
+        // if it sidesteps. Tell every client to play the strike animation.
+        if let Some(p) = target {
             if e.attack_cd <= 0.0
-                && aabb_gap(e.x, e.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1)
-                    <= SNAKE_LUNGE_RANGE
+                && aabb_gap(e.x, e.y, w, h, p.x, p.y, p.w, p.h) <= SNAKE_LUNGE_RANGE
             {
                 e.lunge = crate::entity::SNAKE_LUNGE_TIME;
-                e.lunge_dir = if px + PLAYER_SIZE.0 * 0.5 >= scx {
-                    1.0
-                } else {
-                    -1.0
-                };
+                e.lunge_dir = if p.x + p.w * 0.5 >= scx { 1.0 } else { -1.0 };
                 e.attack_cd = SNAKE_ATTACK_INTERVAL;
                 e.vx = 0.0;
                 broadcasts.push(ServerMessage::EntityLunging { id });
@@ -4123,7 +4147,7 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         // Otherwise slither toward the target, or wander its home patch.
         let chasing = target.is_some();
         let dir = match target {
-            Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -1.0,
+            Some(p) if p.x + p.w * 0.5 < scx => -1.0,
             Some(_) => 1.0,
             None => wander_dir(scx, e.vx, home),
         };
@@ -4542,21 +4566,24 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         }
     }
 
-    // Knights: a wild one just roams its home patch; a recruited one keeps to its
-    // owner — teleporting over when they stray too far, like a pet — and charges the
-    // last enemy its owner struck. If a wild horse is at hand it mounts up (the horse
-    // soaks blows for it via `mount_health` until slain), and it trades blows with its
-    // quarry, dealing damage and taking the enemy's melee reprisal in return.
+    // Knights: a man-at-arms — wild or recruited alike — fights monsters on sight.
+    // A wild one roams its home patch but charges any hostile that strays within
+    // aggro; a recruited one keeps to its owner (teleporting over when they stray,
+    // like a pet) and charges the foe its owner last struck, or — failing that, like
+    // a wild knight — the nearest hostile in range. If a wild horse is at hand it
+    // mounts up (the horse soaks blows for it via `mount_health` until slain).
+    // Monsters strike back from their own loops (a knight draws them like a player
+    // does), so there is no reprisal to apply here.
     //
     // Snapshots taken before the loop so a knight can pick a horse to mount and an
     // enemy to chase without re-borrowing the entities map mid-loop.
     let knight_target_marks = shared.knight_targets.lock().clone();
-    let hostiles: Vec<(EntityId, f32, f32, f32, f32, i32)> = entities
+    let hostiles: Vec<(EntityId, f32, f32, f32, f32)> = entities
         .values()
         .filter(|e| is_hostile(&e.kind))
         .map(|e| {
             let (w, h) = e.size();
-            (e.id, e.x, e.y, w, h, melee_damage(&e.kind))
+            (e.id, e.x, e.y, w, h)
         })
         .collect();
     let wild_horses: Vec<(EntityId, f32, f32, f32, f32)> = entities
@@ -4590,73 +4617,49 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             }
         }
 
-        // A wild knight just ambles around its home patch until someone recruits it.
-        let owner_name = match e.kind.owner() {
-            Some(o) => o.to_owned(),
-            None => {
-                let home = *e.home_x.get_or_insert(e.x);
-                let dir = wander_dir(scx, e.vx, home);
-                let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, KNIGHT_SPEED, false);
-                e.x = m.x;
-                e.y = m.y;
-                e.vx = m.vx;
-                e.vy = m.vy;
+        // Resolve a recruited knight's owner (by name) to a live player in this
+        // dimension, as `(id, x, y)`. A wild knight has none; a recruited one whose
+        // owner is offline or in another dimension resolves to `None` and fights and
+        // roams on its own until they return (a dimension change brings the knight
+        // along via `transfer_knights`).
+        let owner: Option<(EntityId, f32, f32)> = e.kind.owner().and_then(|name| {
+            named_players
+                .iter()
+                .find(|(n, ..)| n == name)
+                .map(|&(_, oid, ox, oy)| (oid, ox, oy))
+        });
+
+        // Recruited & owner present and strayed too far: snap to them and re-anchor
+        // home there, like a pet.
+        if let Some((_, ox, oy)) = owner {
+            let ocx = ox + PLAYER_SIZE.0 * 0.5;
+            let ocy = oy + PLAYER_SIZE.1 * 0.5;
+            if (ocx - scx).powi(2) + (ocy - scy).powi(2)
+                > KNIGHT_TELEPORT_DIST * KNIGHT_TELEPORT_DIST
+            {
+                e.x = ox;
+                e.y = oy;
+                e.vx = 0.0;
+                e.vy = 0.0;
+                e.home_x = Some(ox);
                 broadcasts.push(ServerMessage::EntityMoved {
                     id,
-                    x: m.x,
-                    y: m.y,
-                    vx: m.vx,
-                    vy: m.vy,
+                    x: ox,
+                    y: oy,
+                    vx: 0.0,
+                    vy: 0.0,
                 });
                 continue;
             }
-        };
-
-        // Recruited: resolve the owner (by name) to a live player in this dimension.
-        // If they're elsewhere (other dimension or offline), hold the home patch —
-        // a dimension change brings the knight along via `transfer_knights`.
-        let Some(&(_, owner_id, ox, oy)) = named_players.iter().find(|(n, ..)| *n == owner_name)
-        else {
-            let home = *e.home_x.get_or_insert(e.x);
-            let dir = wander_dir(scx, e.vx, home);
-            let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, KNIGHT_SPEED, false);
-            e.x = m.x;
-            e.y = m.y;
-            e.vx = m.vx;
-            e.vy = m.vy;
-            broadcasts.push(ServerMessage::EntityMoved {
-                id,
-                x: m.x,
-                y: m.y,
-                vx: m.vx,
-                vy: m.vy,
-            });
-            continue;
-        };
-
-        // Owner strayed too far: snap to them and re-anchor home there, like a pet.
-        let ocx = ox + PLAYER_SIZE.0 * 0.5;
-        let ocy = oy + PLAYER_SIZE.1 * 0.5;
-        if (ocx - scx).powi(2) + (ocy - scy).powi(2) > KNIGHT_TELEPORT_DIST * KNIGHT_TELEPORT_DIST {
-            e.x = ox;
-            e.y = oy;
-            e.vx = 0.0;
-            e.vy = 0.0;
-            e.home_x = Some(ox);
-            broadcasts.push(ServerMessage::EntityMoved {
-                id,
-                x: ox,
-                y: oy,
-                vx: 0.0,
-                vy: 0.0,
-            });
-            continue;
         }
 
-        // On foot near a wild horse? Mount up: absorb the horse (it's removed from the
-        // world) and ride behind its health until it's spent. Tamed horses are spared.
+        // On foot near a wild horse? A recruited knight mounts up: absorb the horse
+        // (it's removed from the world) and ride behind its health until it's spent.
+        // Tamed horses are spared, and a wild knight stays afoot (it keeps the plains'
+        // horses intact until someone recruits it). A knight already mounted on spawn
+        // keeps its steed regardless.
         let mut mounted = e.mount_health > 0;
-        if !mounted {
+        if !mounted && owner.is_some() {
             let mut best: Option<(EntityId, f32)> = None;
             for &(hid, hx, hy, hw, hh) in &wild_horses {
                 if claimed_horses.contains(&hid) {
@@ -4685,50 +4688,60 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             KNIGHT_SPEED
         };
 
-        // Charge the enemy the owner last struck, if it still lives in this dimension
-        // and is within reach of the knight (not chased clear across the map).
-        let target = knight_target_marks
-            .get(&owner_id)
-            .and_then(|teid| hostiles.iter().find(|(hid, ..)| hid == teid).copied());
-        if let Some((tid, tx, ty, tw, th, tdmg)) = target {
-            let gap = aabb_gap(e.x, e.y, w, h, tx, ty, tw, th);
-            if gap <= KNIGHT_AGGRO {
-                if e.attack_cd <= 0.0 && gap <= KNIGHT_ATTACK_RANGE {
-                    e.attack_cd = KNIGHT_ATTACK_INTERVAL;
-                    let kdir = if tx + tw * 0.5 >= scx { 1.0 } else { -1.0 };
-                    creature_hits.push((tid, (kdir * KNOCKBACK_X, -KNOCKBACK_Y), KNIGHT_DAMAGE));
-                    // The enemy hits back in the exchange (a ranged foe deals none).
-                    if tdmg > 0 {
-                        knight_hits.push((id, tdmg));
-                    }
-                    // Play the swing animation on every client.
-                    broadcasts.push(ServerMessage::EntityLunging { id });
-                }
-                let dir = if tx + tw * 0.5 < scx { -1.0 } else { 1.0 };
-                let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, speed, true);
-                e.x = m.x;
-                e.y = m.y;
-                e.vx = m.vx;
-                e.vy = m.vy;
-                broadcasts.push(ServerMessage::EntityMoved {
-                    id,
-                    x: m.x,
-                    y: m.y,
-                    vx: m.vx,
-                    vy: m.vy,
-                });
-                continue;
+        // Pick a quarry: a recruited knight prefers the foe its owner last struck (if
+        // it still lives here and is within aggro — not chased clear across the map),
+        // then — like a wild knight — falls back to the nearest hostile in aggro.
+        let marked = owner
+            .and_then(|(oid, _, _)| knight_target_marks.get(&oid))
+            .and_then(|teid| hostiles.iter().find(|(hid, ..)| hid == teid).copied())
+            .filter(|&(_, tx, ty, tw, th)| {
+                aabb_gap(e.x, e.y, w, h, tx, ty, tw, th) <= KNIGHT_AGGRO
+            });
+        let target = marked.or_else(|| nearest_of(&hostiles, scx, scy, KNIGHT_AGGRO));
+        if let Some((tid, tx, ty, tw, th)) = target {
+            if e.attack_cd <= 0.0 && aabb_gap(e.x, e.y, w, h, tx, ty, tw, th) <= KNIGHT_ATTACK_RANGE
+            {
+                e.attack_cd = KNIGHT_ATTACK_INTERVAL;
+                let kdir = if tx + tw * 0.5 >= scx { 1.0 } else { -1.0 };
+                creature_hits.push((tid, (kdir * KNOCKBACK_X, -KNOCKBACK_Y), KNIGHT_DAMAGE));
+                // Play the swing animation on every client.
+                broadcasts.push(ServerMessage::EntityLunging { id });
             }
+            let dir = if tx + tw * 0.5 < scx { -1.0 } else { 1.0 };
+            let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, speed, true);
+            e.x = m.x;
+            e.y = m.y;
+            e.vx = m.vx;
+            e.vy = m.vy;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: m.x,
+                y: m.y,
+                vx: m.vx,
+                vy: m.vy,
+            });
+            continue;
         }
 
-        // Otherwise heel: close on the owner if they've pulled ahead, else hold.
-        let owner_gap = aabb_gap(e.x, e.y, w, h, ox, oy, PLAYER_SIZE.0, PLAYER_SIZE.1);
-        let dir = if owner_gap <= KNIGHT_FOLLOW_GAP {
-            0.0
-        } else if ocx < scx {
-            -1.0
-        } else {
-            1.0
+        // No quarry in reach: a recruited knight heels to its owner (closing on them
+        // if they've pulled ahead, else holding); a wild knight — or a recruited one
+        // whose owner is away — ambles around its home patch.
+        let dir = match owner {
+            Some((_, ox, oy)) => {
+                let ocx = ox + PLAYER_SIZE.0 * 0.5;
+                let owner_gap = aabb_gap(e.x, e.y, w, h, ox, oy, PLAYER_SIZE.0, PLAYER_SIZE.1);
+                if owner_gap <= KNIGHT_FOLLOW_GAP {
+                    0.0
+                } else if ocx < scx {
+                    -1.0
+                } else {
+                    1.0
+                }
+            }
+            None => {
+                let home = *e.home_x.get_or_insert(e.x);
+                wander_dir(scx, e.vx, home)
+            }
         };
         let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, speed, true);
         e.x = m.x;
@@ -4796,10 +4809,10 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         let home = *e.home_x.get_or_insert(e.x);
         let scx = e.x + w * 0.5;
         let scy = e.y + h * 0.5;
-        let target = nearest_player(&hostile_players, scx, scy, ZOMBIE_AGGRO);
+        let target = nearest_prey(&hostile_players, &knight_boxes, scx, scy, ZOMBIE_AGGRO);
         let chasing = target.is_some();
         let dir = match target {
-            Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -1.0,
+            Some(p) if p.x + p.w * 0.5 < scx => -1.0,
             Some(_) => 1.0,
             None => wander_dir(scx, e.vx, home),
         };
@@ -4824,18 +4837,23 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             vy: m.vy,
         });
 
-        if let Some((pid, px, py)) = target {
+        if let Some(p) = target {
             if e.attack_cd <= 0.0
-                && aabb_gap(m.x, m.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1)
-                    <= ZOMBIE_ATTACK_RANGE
+                && aabb_gap(m.x, m.y, w, h, p.x, p.y, p.w, p.h) <= ZOMBIE_ATTACK_RANGE
             {
                 e.attack_cd = ZOMBIE_ATTACK_INTERVAL;
-                let dir = if px + PLAYER_SIZE.0 * 0.5 >= m.x + w * 0.5 {
+                let dir = if p.x + p.w * 0.5 >= m.x + w * 0.5 {
                     1.0
                 } else {
                     -1.0
                 };
-                bites.push((pid, (dir * KNOCKBACK_X, -KNOCKBACK_Y), ZOMBIE_DAMAGE));
+                hit_prey(
+                    &mut bites,
+                    &mut knight_hits,
+                    &p,
+                    (dir * KNOCKBACK_X, -KNOCKBACK_Y),
+                    ZOMBIE_DAMAGE,
+                );
             }
         }
     }
@@ -4868,19 +4886,15 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         let home = *e.home_x.get_or_insert(e.x);
         let scx = e.x + w * 0.5;
         let scy = e.y + h * 0.5;
-        let target = nearest_player(&hostile_players, scx, scy, SKELETON_AGGRO);
+        let target = nearest_prey(&hostile_players, &knight_boxes, scx, scy, SKELETON_AGGRO);
         let chasing = target.is_some();
 
         // Kiting heading: close in when out of throwing range, back off when the
-        // player slips inside the standoff distance, otherwise hold and fire.
+        // target slips inside the standoff distance, otherwise hold and fire.
         let (dir, gap, aim) = match target {
-            Some((_, px, py)) => {
-                let gap = aabb_gap(e.x, e.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1);
-                let toward = if px + PLAYER_SIZE.0 * 0.5 >= scx {
-                    1.0
-                } else {
-                    -1.0
-                };
+            Some(p) => {
+                let gap = aabb_gap(e.x, e.y, w, h, p.x, p.y, p.w, p.h);
+                let toward = if p.x + p.w * 0.5 >= scx { 1.0 } else { -1.0 };
                 let dir = if gap < SKELETON_KEEP_DIST {
                     -toward // too close: retreat
                 } else if gap > SKELETON_THROW_RANGE {
@@ -4888,7 +4902,7 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
                 } else {
                     0.0 // in the sweet spot: stand and throw
                 };
-                (dir, gap, Some((px, py)))
+                (dir, gap, Some((p.x, p.y, p.w, p.h)))
             }
             None => (wander_dir(scx, e.vx, home), f32::INFINITY, None),
         };
@@ -4912,13 +4926,9 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         // Its real velocity stays in `e.vx` so wander heading survives losing the
         // target.
         let bcast_vx = match aim {
-            Some((px, _)) => {
+            Some((px, _, pw, _)) => {
                 let cx = m.x + w * 0.5;
-                let toward = if px + PLAYER_SIZE.0 * 0.5 >= cx {
-                    1.0
-                } else {
-                    -1.0
-                };
+                let toward = if px + pw * 0.5 >= cx { 1.0 } else { -1.0 };
                 toward * m.vx.abs()
             }
             None => m.vx,
@@ -4931,16 +4941,16 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             vy: m.vy,
         });
 
-        // Loose a bone when a player is within range and we're off cooldown,
-        // aiming from the skeleton's upper body straight at the player's center.
-        if let Some((px, py)) = aim {
+        // Loose a bone when a target is within range and we're off cooldown,
+        // aiming from the skeleton's upper body straight at the target's center.
+        if let Some((px, py, pw, ph)) = aim {
             if e.attack_cd <= 0.0 && gap <= SKELETON_THROW_RANGE {
                 e.attack_cd = SKELETON_THROW_INTERVAL;
                 let (bw, bh) = BONE_SIZE;
                 let sx = m.x + w * 0.5 - bw * 0.5;
                 let sy = m.y + h * 0.3 - bh * 0.5;
-                let tx = px + PLAYER_SIZE.0 * 0.5;
-                let ty = py + PLAYER_SIZE.1 * 0.5;
+                let tx = px + pw * 0.5;
+                let ty = py + ph * 0.5;
                 let dx = tx - (sx + bw * 0.5);
                 let dy = ty - (sy + bh * 0.5);
                 let len = (dx * dx + dy * dy).sqrt().max(1.0);
@@ -4979,10 +4989,16 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         let scx = e.x + w * 0.5;
         let scy = e.y + h * 0.5;
 
-        let target = nearest_player(&hostile_players, scx, scy, CHARRED_SKELETON_AGGRO);
+        let target = nearest_prey(
+            &hostile_players,
+            &knight_boxes,
+            scx,
+            scy,
+            CHARRED_SKELETON_AGGRO,
+        );
         let chasing = target.is_some();
         let dir = match target {
-            Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -1.0,
+            Some(p) if p.x + p.w * 0.5 < scx => -1.0,
             Some(_) => 1.0,
             None => wander_dir(scx, e.vx, home),
         };
@@ -5028,23 +5044,24 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             }
         }
 
-        // Land a heavy melee blow when a player is in reach and we're off cooldown.
-        if let Some((pid, px, py)) = target {
+        // Land a heavy melee blow when a target is in reach and we're off cooldown.
+        if let Some(p) = target {
             if e.attack_cd <= 0.0
-                && aabb_gap(m.x, m.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1)
-                    <= CHARRED_SKELETON_ATTACK_RANGE
+                && aabb_gap(m.x, m.y, w, h, p.x, p.y, p.w, p.h) <= CHARRED_SKELETON_ATTACK_RANGE
             {
                 e.attack_cd = CHARRED_SKELETON_ATTACK_INTERVAL;
-                let dir = if px + PLAYER_SIZE.0 * 0.5 >= m.x + w * 0.5 {
+                let dir = if p.x + p.w * 0.5 >= m.x + w * 0.5 {
                     1.0
                 } else {
                     -1.0
                 };
-                bites.push((
-                    pid,
+                hit_prey(
+                    &mut bites,
+                    &mut knight_hits,
+                    &p,
                     (dir * KNOCKBACK_X, -KNOCKBACK_Y),
                     CHARRED_SKELETON_DAMAGE,
-                ));
+                );
             }
         }
     }
@@ -5067,19 +5084,15 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         let home = *e.home_x.get_or_insert(e.x);
         let scx = e.x + w * 0.5;
         let scy = e.y + h * 0.5;
-        let target = nearest_player(&hostile_players, scx, scy, DEMON_AGGRO);
+        let target = nearest_prey(&hostile_players, &knight_boxes, scx, scy, DEMON_AGGRO);
         let chasing = target.is_some();
 
         // Kiting heading: close in when out of fireball range, back off when the
-        // player slips inside the standoff distance, otherwise hold and fire.
+        // target slips inside the standoff distance, otherwise hold and fire.
         let (dir, gap, aim) = match target {
-            Some((_, px, py)) => {
-                let gap = aabb_gap(e.x, e.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1);
-                let toward = if px + PLAYER_SIZE.0 * 0.5 >= scx {
-                    1.0
-                } else {
-                    -1.0
-                };
+            Some(p) => {
+                let gap = aabb_gap(e.x, e.y, w, h, p.x, p.y, p.w, p.h);
+                let toward = if p.x + p.w * 0.5 >= scx { 1.0 } else { -1.0 };
                 let dir = if gap < DEMON_KEEP_DIST {
                     -toward // too close: retreat
                 } else if gap > DEMON_SHOOT_RANGE {
@@ -5087,7 +5100,7 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
                 } else {
                     0.0 // in the sweet spot: stand and fire
                 };
-                (dir, gap, Some((px, py)))
+                (dir, gap, Some((p.x, p.y, p.w, p.h)))
             }
             None => (wander_dir(scx, e.vx, home), f32::INFINITY, None),
         };
@@ -5108,13 +5121,9 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         // demon always faces the player it's fighting — even while backing away —
         // while keeping its true magnitude so the walk cycle still plays.
         let bcast_vx = match aim {
-            Some((px, _)) => {
+            Some((px, _, pw, _)) => {
                 let cx = m.x + w * 0.5;
-                let toward = if px + PLAYER_SIZE.0 * 0.5 >= cx {
-                    1.0
-                } else {
-                    -1.0
-                };
+                let toward = if px + pw * 0.5 >= cx { 1.0 } else { -1.0 };
                 toward * m.vx.abs()
             }
             None => m.vx,
@@ -5127,16 +5136,16 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             vy: m.vy,
         });
 
-        // Hurl a fireball when a player is within range and we're off cooldown,
-        // aiming from the demon's upper body straight at the player's center.
-        if let Some((px, py)) = aim {
+        // Hurl a fireball when a target is within range and we're off cooldown,
+        // aiming from the demon's upper body straight at the target's center.
+        if let Some((px, py, pw, ph)) = aim {
             if e.attack_cd <= 0.0 && gap <= DEMON_SHOOT_RANGE {
                 e.attack_cd = DEMON_SHOOT_INTERVAL;
                 let (fw, fh) = FIREBALL_SIZE;
                 let sx = m.x + w * 0.5 - fw * 0.5;
                 let sy = m.y + h * 0.3 - fh * 0.5;
-                let tx = px + PLAYER_SIZE.0 * 0.5;
-                let ty = py + PLAYER_SIZE.1 * 0.5;
+                let tx = px + pw * 0.5;
+                let ty = py + ph * 0.5;
                 let dx = tx - (sx + fw * 0.5);
                 let dy = ty - (sy + fh * 0.5);
                 let len = (dx * dx + dy * dy).sqrt().max(1.0);
@@ -5197,24 +5206,29 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
                 vy: m.vy,
             });
 
-            // The slam connects on the tick the wind-up ends, if a player is still
-            // within the (generous) slam reach.
+            // The slam connects on the tick the wind-up ends, if a player or knight
+            // is still within the (generous) slam reach.
             if was_winding && striking {
-                if let Some((pid, px, py)) = nearest_player(
+                if let Some(p) = nearest_prey(
                     &hostile_players,
+                    &knight_boxes,
                     m.x + w * 0.5,
                     m.y + h * 0.5,
                     f32::INFINITY,
                 ) {
-                    if aabb_gap(m.x, m.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1)
-                        <= ORC_SLAM_REACH
-                    {
-                        let kdir = if px + PLAYER_SIZE.0 * 0.5 >= m.x + w * 0.5 {
+                    if aabb_gap(m.x, m.y, w, h, p.x, p.y, p.w, p.h) <= ORC_SLAM_REACH {
+                        let kdir = if p.x + p.w * 0.5 >= m.x + w * 0.5 {
                             1.0
                         } else {
                             -1.0
                         };
-                        bites.push((pid, (kdir * KNOCKBACK_X, -KNOCKBACK_Y), ORC_SLAM_DAMAGE));
+                        hit_prey(
+                            &mut bites,
+                            &mut knight_hits,
+                            &p,
+                            (kdir * KNOCKBACK_X, -KNOCKBACK_Y),
+                            ORC_SLAM_DAMAGE,
+                        );
                     }
                 }
             }
@@ -5223,14 +5237,13 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
 
         let scx = e.x + w * 0.5;
         let scy = e.y + h * 0.5;
-        let target = nearest_player(&hostile_players, scx, scy, ORC_AGGRO);
+        let target = nearest_prey(&hostile_players, &knight_boxes, scx, scy, ORC_AGGRO);
 
         // In range and off cooldown: commit to a wind-up slam. Hold still (facing is
-        // already pointed at the player from the lumber in) and tell every client to
+        // already pointed at the quarry from the lumber in) and tell every client to
         // play the slam animation.
-        if let Some((_, px, py)) = target {
-            if e.attack_cd <= 0.0
-                && aabb_gap(e.x, e.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1) <= ORC_SLAM_RANGE
+        if let Some(p) = target {
+            if e.attack_cd <= 0.0 && aabb_gap(e.x, e.y, w, h, p.x, p.y, p.w, p.h) <= ORC_SLAM_RANGE
             {
                 e.lunge = crate::entity::ORC_SLAM_TIME;
                 e.attack_cd = ORC_SLAM_INTERVAL;
@@ -5250,7 +5263,7 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         // Otherwise lumber toward the target, or wander its home patch.
         let chasing = target.is_some();
         let dir = match target {
-            Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -1.0,
+            Some(p) if p.x + p.w * 0.5 < scx => -1.0,
             Some(_) => 1.0,
             None => wander_dir(scx, e.vx, home),
         };
@@ -5282,10 +5295,10 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         let scx = e.x + w * 0.5;
         let scy = e.y + h * 0.5;
 
-        let target = nearest_player(&hostile_players, scx, scy, ASH_TWISTER_AGGRO);
+        let target = nearest_prey(&hostile_players, &knight_boxes, scx, scy, ASH_TWISTER_AGGRO);
         let chasing = target.is_some();
         let dir = match target {
-            Some((_, px, _)) if px + PLAYER_SIZE.0 * 0.5 < scx => -1.0,
+            Some(p) if p.x + p.w * 0.5 < scx => -1.0,
             Some(_) => 1.0,
             None => wander_dir(scx, e.vx, home),
         };
@@ -5314,22 +5327,26 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         // upward knockback (and a sideways toss) rides the EntityHit to the owning
         // client, which launches its avatar — the fall that follows deals the real
         // damage (see the client's fall-damage handling).
-        if let Some((pid, px, py)) = target {
+        if let Some(p) = target {
             if e.attack_cd <= 0.0
-                && aabb_gap(m.x, m.y, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1)
-                    <= ASH_TWISTER_ATTACK_RANGE
+                && aabb_gap(m.x, m.y, w, h, p.x, p.y, p.w, p.h) <= ASH_TWISTER_ATTACK_RANGE
             {
                 e.attack_cd = ASH_TWISTER_ATTACK_INTERVAL;
-                let kdir = if px + PLAYER_SIZE.0 * 0.5 >= m.x + w * 0.5 {
+                let kdir = if p.x + p.w * 0.5 >= m.x + w * 0.5 {
                     1.0
                 } else {
                     -1.0
                 };
-                bites.push((
-                    pid,
+                // A player is flung skyward (the fall does the real damage); a
+                // server-simulated knight can't be launched, so via `hit_prey` it
+                // just soaks the token buffeting.
+                hit_prey(
+                    &mut bites,
+                    &mut knight_hits,
+                    &p,
                     (kdir * ASH_TWISTER_TOSS, -ASH_TWISTER_LAUNCH),
                     ASH_TWISTER_DAMAGE,
-                ));
+                );
             }
         }
     }
@@ -5355,18 +5372,28 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             continue;
         }
 
-        // Struck a player: deal damage, knock them along the bone's flight, gone.
+        // Struck a player or knight: deal damage, knock them along the bone's
+        // flight (a knight soaks it via `knight_hits`), gone.
+        let kx = if e.vx >= 0.0 {
+            KNOCKBACK_X
+        } else {
+            -KNOCKBACK_X
+        };
         let mut struck = false;
         for &(pid, px, py) in &players {
             if aabb_gap(nx, ny, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1) <= BONE_HIT_RANGE {
-                let kx = if e.vx >= 0.0 {
-                    KNOCKBACK_X
-                } else {
-                    -KNOCKBACK_X
-                };
                 bites.push((pid, (kx, -KNOCKBACK_Y), BONE_DAMAGE));
                 struck = true;
                 break;
+            }
+        }
+        if !struck {
+            for &(kid, kx2, ky, kw, kh) in &knight_boxes {
+                if aabb_gap(nx, ny, w, h, kx2, ky, kw, kh) <= BONE_HIT_RANGE {
+                    knight_hits.push((kid, BONE_DAMAGE));
+                    struck = true;
+                    break;
+                }
             }
         }
         if struck {
@@ -5403,24 +5430,34 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         e.x = nx;
         e.y = ny;
 
-        // Did it strike a player this tick? Damage and knock them along its flight.
-        let mut struck_player = false;
+        // Did it strike a player or knight this tick? Damage and knock them along
+        // its flight (a knight soaks it via `knight_hits`).
+        let kx = if e.vx >= 0.0 {
+            KNOCKBACK_X
+        } else {
+            -KNOCKBACK_X
+        };
+        let mut struck = false;
         for &(pid, px, py) in &players {
             if aabb_gap(nx, ny, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1) <= FIREBALL_HIT_RANGE {
-                let kx = if e.vx >= 0.0 {
-                    KNOCKBACK_X
-                } else {
-                    -KNOCKBACK_X
-                };
                 bites.push((pid, (kx, -KNOCKBACK_Y), FIREBALL_DAMAGE));
-                struck_player = true;
+                struck = true;
                 break;
             }
         }
+        if !struck {
+            for &(kid, kx2, ky, kw, kh) in &knight_boxes {
+                if aabb_gap(nx, ny, w, h, kx2, ky, kw, kh) <= FIREBALL_HIT_RANGE {
+                    knight_hits.push((kid, FIREBALL_DAMAGE));
+                    struck = true;
+                    break;
+                }
+            }
+        }
 
-        // Burst on a wall, on a player, or when its life runs out: leave a tongue
-        // of fire in the (empty) cell where it died, then despawn.
-        if hit_x || hit_y || struck_player || e.attack_cd <= 0.0 {
+        // Burst on a wall, on a player or knight, or when its life runs out: leave a
+        // tongue of fire in the (empty) cell where it died, then despawn.
+        if hit_x || hit_y || struck || e.attack_cd <= 0.0 {
             let fx = ((nx + w * 0.5) / TILE_SIZE).floor() as i32;
             let fy = ((ny + h * 0.5) / TILE_SIZE).floor() as i32;
             if world.get(fx, fy) == crate::block::AIR && world.set(fx, fy, crate::block::FIRE) {
@@ -5721,9 +5758,91 @@ fn nearest_of(
     best.map(|(id, ex, ey, ew, eh, _)| (id, ex, ey, ew, eh))
 }
 
-/// Whether `kind` is a hostile monster — the set a recruited knight will charge
-/// (and that a player can "mark" for it by striking one). Passive animals, pets,
-/// the knight itself, projectiles and items are not hostile.
+/// A target a hostile creature hunts: a player, or a knight (wild or recruited —
+/// monsters are enemies of every man-at-arms, recruited or not). Carries the body
+/// box for reach checks and a `knight` flag so a blow is routed to the right bucket
+/// — `bites` for a player, `knight_hits` for a knight (where a mounted knight's
+/// horse soaks it and a slain one respawns at its owner's point).
+#[derive(Clone, Copy)]
+struct Prey {
+    id: EntityId,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    knight: bool,
+}
+
+/// Nearest prey — player or knight — whose center lies within `range` of `(x, y)`.
+/// Hostile creatures hunt both, so a wandering knight draws monsters the same way a
+/// player does. `knights` is each knight as `(id, x, y, w, h)`.
+fn nearest_prey(
+    players: &[(EntityId, f32, f32)],
+    knights: &[(EntityId, f32, f32, f32, f32)],
+    x: f32,
+    y: f32,
+    range: f32,
+) -> Option<Prey> {
+    let mut best: Option<(Prey, f32)> = None;
+    for &(id, px, py) in players {
+        let dx = (px + PLAYER_SIZE.0 * 0.5) - x;
+        let dy = (py + PLAYER_SIZE.1 * 0.5) - y;
+        let d2 = dx * dx + dy * dy;
+        if d2 <= range * range && best.is_none_or(|(_, bd)| d2 < bd) {
+            best = Some((
+                Prey {
+                    id,
+                    x: px,
+                    y: py,
+                    w: PLAYER_SIZE.0,
+                    h: PLAYER_SIZE.1,
+                    knight: false,
+                },
+                d2,
+            ));
+        }
+    }
+    for &(id, kx, ky, kw, kh) in knights {
+        let dx = (kx + kw * 0.5) - x;
+        let dy = (ky + kh * 0.5) - y;
+        let d2 = dx * dx + dy * dy;
+        if d2 <= range * range && best.is_none_or(|(_, bd)| d2 < bd) {
+            best = Some((
+                Prey {
+                    id,
+                    x: kx,
+                    y: ky,
+                    w: kw,
+                    h: kh,
+                    knight: true,
+                },
+                d2,
+            ));
+        }
+    }
+    best.map(|(p, _)| p)
+}
+
+/// Route a hostile creature's blow at `p` to the right bucket: a knight takes it on
+/// `knight_hits` (its mount shield / owner-respawn handling lives there, so it gets
+/// no knockback), a player on `bites` with the given knockback.
+fn hit_prey(
+    bites: &mut Vec<(EntityId, (f32, f32), i32)>,
+    knight_hits: &mut Vec<(EntityId, i32)>,
+    p: &Prey,
+    knockback: (f32, f32),
+    damage: i32,
+) {
+    if p.knight {
+        knight_hits.push((p.id, damage));
+    } else {
+        bites.push((p.id, knockback, damage));
+    }
+}
+
+/// Whether `kind` is a hostile monster — the set a knight will charge (and that a
+/// player can "mark" for its knight by striking one). Passive animals, pets, the
+/// knight itself, projectiles and items are not hostile.
 fn is_hostile(kind: &EntityKind) -> bool {
     matches!(
         kind,
@@ -5737,24 +5856,6 @@ fn is_hostile(kind: &EntityKind) -> bool {
             | EntityKind::Orc
             | EntityKind::AshTwister
     )
-}
-
-/// The melee damage a hostile `kind` deals back when a knight trades blows with it
-/// in close combat. Ranged attackers (skeleton, demon) deal none in melee, so a
-/// knight cuts them down without reprisal. `0` for anything non-hostile.
-fn melee_damage(kind: &EntityKind) -> i32 {
-    match kind {
-        EntityKind::Slime => SLIME_DAMAGE,
-        EntityKind::Zombie => ZOMBIE_DAMAGE,
-        EntityKind::Spider => SPIDER_DAMAGE,
-        EntityKind::Snake => SNAKE_DAMAGE,
-        EntityKind::CharredSkeleton => CHARRED_SKELETON_DAMAGE,
-        EntityKind::Orc => ORC_SLAM_DAMAGE,
-        // It can't fling a server-simulated knight skyward, so in melee it only
-        // deals its token buffeting.
-        EntityKind::AshTwister => ASH_TWISTER_DAMAGE,
-        _ => 0,
-    }
 }
 
 /// Smallest gap (px) between two AABBs; `0.0` when they overlap.

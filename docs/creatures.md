@@ -13,7 +13,7 @@ are all simulated by the server (only your own player is driven by your client).
 | **Cat** | 8 | Forest | — | Wild until tamed |
 | **Puppy** | 14 | Forest | — | Wild until tamed; hunts skeletons and chickens |
 | **Horse** | 30 | Plains | — | Wild until tamed **with an apple**; can be ridden |
-| **Knight** | 40 | Plains (rare) | — | A wandering man-at-arms; recruit it **with a tungsten ingot** |
+| **Knight** | 40 | Plains (rare) | — | A wandering man-at-arms who **battles monsters on sight**; recruit it **with a tungsten ingot** |
 
 Cook the raw meat from chickens and goats before eating it — raw meat makes you
 sick. See [Food](crafting.md#food).
@@ -54,12 +54,18 @@ the world you left.
 ## The knight
 
 A lone **knight** wanders the **plains** — a rare sight, far scarcer than the
-horses that share the grass. You **can't attack it**. Instead, hold a
-[tungsten ingot](crafting.md#smelting) and left-click the knight to **recruit it**,
-spending the ingot. A recruited knight is yours — a true companion:
+horses that share the grass. You **can't attack it**. Even before you recruit it,
+a wild knight is no bystander: it **charges any monster** that strays near and
+trades blows until one of them falls — and the monsters hunt it right back, the
+same way they hunt you. A wild knight caught alone against a night swarm can be
+**overwhelmed and slain**, so reach it with a tungsten ingot before the dark does.
 
-- **It fights for you.** Strike any enemy and your knight charges that foe,
-  trading heavy blows until it falls. It only takes up the enemies *you* pick.
+Hold a [tungsten ingot](crafting.md#smelting) and left-click the knight to
+**recruit it**, spending the ingot. A recruited knight is yours — a true companion:
+
+- **It fights for you.** It charges the nearest monster on its own, and if you
+  strike an enemy your knight makes that foe its priority — trading heavy blows
+  until it falls.
 - **It follows you everywhere** — even **across dimensions**. Step through a fire
   key and your knight comes too. Stray too far and it teleports to your side, like
   a pet.
@@ -68,9 +74,10 @@ spending the ingot. A recruited knight is yours — a true companion:
   them. The horse shields it — soaking every blow on the knight's behalf — until
   the horse is slain, after which the knight fights on foot. (It won't take a horse
   you've tamed.)
-- **Death breaks the bond.** Unlike a pet, a slain knight respawns at **your**
-  respawn point as a *wild* knight — you must **recruit it again** with another
-  tungsten ingot.
+- **Death breaks the bond.** Unlike a pet, a slain *recruited* knight respawns at
+  **your** respawn point as a *wild* knight — you must **recruit it again** with
+  another tungsten ingot. A *wild* knight killed in battle is gone for good, so
+  recruit a promising one before it picks a fight it can't win.
 
 ## Hostile monsters
 
@@ -109,6 +116,11 @@ Most monsters only **hunt at night** (or in dark caves). Build shelter and keep 
     it is winding up a **slam** that can gut you in two blows. The hit only lands
     as its fists crash down, so step out of reach during the wind-up — then close
     in and strike while it recovers.
+
+Monsters are hostile to **[knights](#the-knight)** as well as to you — they will
+chase down and attack a man-at-arms whether or not you have recruited it, and a
+knight gives as good as it gets. Let a knight soak the blows while you strike from
+behind it.
 
 In **creator mode** you are invisible to monsters and take no damage from them.
 
