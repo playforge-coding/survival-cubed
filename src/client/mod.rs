@@ -79,9 +79,12 @@ const WATER_SURFACE_CLING: f32 = 8.0;
 /// water here and can rise no further — they can't launch out of the surface and
 /// skim across open water; to leave the water they wade to a shallow shore.
 const SWIM_SURFACE_POKE: f32 = 4.0;
-/// Multiplier on walking speed while boating: a boat glides across the water
-/// noticeably faster than walking, and far faster than swimming.
+/// Multiplier on walking speed while boating *on water*: a boat glides across the
+/// surface noticeably faster than walking, and far faster than swimming.
 const BOAT_SPEED_MULT: f32 = 1.45;
+/// Multiplier on walking speed while boating *on land*: a beached boat is dead
+/// weight you shuffle along slowly until you reach water — never a fast land ride.
+const BOAT_LAND_DRAG: f32 = 0.45;
 /// How firmly a boat is pulled toward its floating waterline each second: the
 /// proportional gain easing the rider's vertical speed to settle on the surface.
 const BOAT_FLOAT_STIFFNESS: f32 = 9.0;
@@ -3296,24 +3299,28 @@ fn step_physics(game: &mut GameState, reg: &BlockRegistry, input: &Input, dt: f3
     }
 
     // Boating: while riding a boat over water the player sits on the surface and
-    // glides at full speed instead of swimming. Buoyancy eases them to a floating
-    // waterline (so a boat dropped into deep water bobs up to the top), the fall
-    // apex resets so landing afloat never hurts, and the surface counts as solid
-    // footing. Off the water — a boat carried onto dry land — this does nothing and
-    // the normal walk/jump/gravity arc below takes over. Overrides swimming.
-    if game.boating
-        && let Some(surface) = water_surface_y(game)
-    {
-        // Glide across the surface, faster than walking and far faster than a swim.
-        game.vel.x *= BOAT_SPEED_MULT;
-        let target = surface - PLAYER_H * 0.6;
-        game.vel.y = ((target - game.pos.y) * BOAT_FLOAT_STIFFNESS)
-            .clamp(-BOAT_FLOAT_MAX_SPEED, BOAT_FLOAT_MAX_SPEED);
-        move_x(game, reg, game.vel.x * dt);
-        move_y(game, reg, game.vel.y * dt);
-        game.on_ground = true;
-        game.air_min_y = game.pos.y;
-        return None;
+    // glides faster than walking instead of swimming. Buoyancy eases them to a
+    // floating waterline (so a boat dropped into deep water bobs up to the top), the
+    // fall apex resets so landing afloat never hurts, and the surface counts as
+    // solid footing. Overrides swimming.
+    if game.boating {
+        if let Some(surface) = water_surface_y(game) {
+            // Glide across the surface, faster than walking and far faster than a
+            // swim; the float spring keeps the hull riding on the waterline.
+            game.vel.x *= BOAT_SPEED_MULT;
+            let target = surface - PLAYER_H * 0.6;
+            game.vel.y = ((target - game.pos.y) * BOAT_FLOAT_STIFFNESS)
+                .clamp(-BOAT_FLOAT_MAX_SPEED, BOAT_FLOAT_MAX_SPEED);
+            move_x(game, reg, game.vel.x * dt);
+            move_y(game, reg, game.vel.y * dt);
+            game.on_ground = true;
+            game.air_min_y = game.pos.y;
+            return None;
+        }
+        // A boat carried onto dry land is dead weight: shuffle it along slowly and
+        // let the normal jump/gravity arc below carry the player (so they can still
+        // walk off a beach), but never at a fast land pace.
+        game.vel.x *= BOAT_LAND_DRAG;
     }
 
     // Ladder climbing: while overlapping a ladder the player clings to it,
@@ -3349,10 +3356,14 @@ fn step_physics(game: &mut GameState, reg: &BlockRegistry, input: &Input, dt: f3
         }
         move_x(game, reg, game.vel.x * dt);
         let landed = move_y(game, reg, game.vel.y * dt);
-        // Cap the rise at the waterline: a swimmer treads water at the surface and
-        // can't launch out of the top to skim across. (The boat, handled above,
-        // glides on the surface; swimmers must wade to a shallow shore to climb out.)
-        if let Some(surface) = water_surface_y(game) {
+        // Cap the rise at the waterline over *open* water: a swimmer treads water at
+        // the surface and can't launch out of the top to skim across. At a shore
+        // (solid ground alongside) the cap lifts so they can rise and climb out onto
+        // the bank — the only way out of the water on foot. (Boats glide on the
+        // surface, handled above.)
+        if !near_shore(game, reg)
+            && let Some(surface) = water_surface_y(game)
+        {
             let min_y = surface - SWIM_SURFACE_POKE;
             if game.pos.y < min_y {
                 game.pos.y = min_y;
@@ -3506,6 +3517,19 @@ fn player_in_water(game: &GameState) -> bool {
     let y0 = (game.pos.y / TILE_SIZE).floor() as i32;
     let y1 = ((game.pos.y + PLAYER_H - EPS + WATER_SURFACE_CLING) / TILE_SIZE).floor() as i32;
     (y0..=y1).any(|ty| (x0..=x1).any(|tx| crate::block::is_water(game.world.get_block(tx, ty))))
+}
+
+/// Whether the swimmer is up against a shore: a solid block in the column just to
+/// the player's left or right, around foot level. That's a bank to climb onto, so
+/// the surface rise-cap lifts here (letting them clamber out) while staying clamped
+/// over open water (so they can't skim across the top). See [`step_physics`].
+fn near_shore(game: &GameState, reg: &BlockRegistry) -> bool {
+    let left = ((game.pos.x - EPS) / TILE_SIZE).floor() as i32;
+    let right = ((game.pos.x + PLAYER_W) / TILE_SIZE).floor() as i32;
+    let feet = ((game.pos.y + PLAYER_H - EPS) / TILE_SIZE).floor() as i32;
+    [left, right]
+        .iter()
+        .any(|&tx| (feet - 1..=feet + 1).any(|ty| reg.is_solid(game.world.get_block(tx, ty))))
 }
 
 /// World-pixel y of the water surface a boating player rides on: the top edge of
