@@ -11,8 +11,8 @@
 use crate::block::{
     BARK, BUCKET, CAMPFIRE, CHARRED_ROCK, COOKED_MEAT, DOOR, FIRE_KEY, FORGE, IRON_AXE, IRON_INGOT,
     IRON_PICKAXE, IRON_SWORD, LADDER, LOG, PICKAXE, RAW_IRON, RAW_MEAT, RAW_TUNGSTEN, ROPE,
-    ROPE_LADDER, STICK, STONE, STONE_AXE, STONE_PICKAXE, STONE_SWORD, TUNGSTEN_AXE, TUNGSTEN_INGOT,
-    TUNGSTEN_PICKAXE, TUNGSTEN_SWORD, WOOD, WOOD_AXE, WOOD_SWORD,
+    ROPE_LADDER, STICK, STONE, STONE_AXE, STONE_BRICKS, STONE_PICKAXE, STONE_SWORD, TUNGSTEN_AXE,
+    TUNGSTEN_INGOT, TUNGSTEN_PICKAXE, TUNGSTEN_SWORD, WOOD, WOOD_AXE, WOOD_SWORD,
 };
 use crate::inventory::Inventory;
 use crate::protocol::BlockId;
@@ -82,6 +82,12 @@ pub const RECIPES: &[Recipe] = &[
         name: "Tungsten Sword",
         inputs: &[(TUNGSTEN_INGOT, 2), (STICK, 1)],
         outputs: &[(TUNGSTEN_SWORD, 1)],
+    },
+    // Dressed stone, cut into tidy bricks for building.
+    Recipe {
+        name: "Stone Bricks",
+        inputs: &[(STONE, 4)],
+        outputs: &[(STONE_BRICKS, 4)],
     },
     // Stacked stone builds a forge for smelting.
     Recipe {

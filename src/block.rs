@@ -160,6 +160,10 @@ pub const ASH: BlockId = 48;
 /// it to warp between the overworld and the underworld (see [`crate::server`]'s
 /// fire-key handling). Reusable — using it does not consume the key.
 pub const FIRE_KEY: BlockId = 49;
+/// Stone bricks: a decorative building block crafted from [`STONE`]. Mechanically
+/// identical to stone — a solid, placeable block mined with any pickaxe and as
+/// tough to break — it just wears a tidier, dressed-stone face.
+pub const STONE_BRICKS: BlockId = 50;
 
 /// Definition of a single block type.
 pub struct BlockDef {
@@ -273,6 +277,8 @@ impl BlockRegistry {
         // dropped sprite has an atlas tile). Right-clicking with it warps the
         // player between dimensions.
         r.register("fire_key", false, true, false, 0.0);
+        // Stone bricks: a crafted decorative block that behaves just like stone.
+        r.register("stone_bricks", true, true, true, 1.2);
         r
     }
 
@@ -361,6 +367,7 @@ pub fn pickaxe_tier(item: BlockId) -> u8 {
 pub fn required_tier(block: BlockId) -> u8 {
     match block {
         STONE => 1,        // any pickaxe
+        STONE_BRICKS => 1, // any pickaxe — crafted stone, mined like stone
         CHARRED_ROCK => 1, // any pickaxe — the underworld's stone
         COAL_ORE => 1,     // any pickaxe
         IRON_ORE => 2,     // stone or iron pickaxe only

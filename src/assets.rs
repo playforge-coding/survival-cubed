@@ -117,6 +117,7 @@ blocks!(
     "sand",
     "ash",
     "fire_key",
+    "stone_bricks",
 );
 
 sprites!(

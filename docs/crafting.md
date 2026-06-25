@@ -31,6 +31,7 @@ server-authoritative, so the result is always consistent in multiplayer.
 | Stone Axe | 3 Stone + 2 Stick | 1 Stone Axe |
 | Iron Axe | 3 Iron Ingot + 2 Stick | 1 Iron Axe |
 | Tungsten Axe | 3 Tungsten Ingot + 2 Stick | 1 Tungsten Axe |
+| Stone Bricks | 4 Stone | 4 Stone Bricks |
 | Forge | 8 Stone | 1 Forge |
 | Campfire | 1 Stone + 5 Bark | 1 Campfire |
 | Ladder | 1 Wood + 2 Stick | 3 Ladder |

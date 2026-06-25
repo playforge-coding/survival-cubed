@@ -34,6 +34,7 @@ Smelt raw iron and raw tungsten into ingots at a [forge](crafting.md#smelting).
 | Block | Solid | Hardness | Notes |
 |---|---|---|---|
 | Wood | ✅ | 0.8 | Plank block crafted from logs |
+| Stone Bricks | ✅ | 1.2 | Decorative build block crafted from stone; mines just like stone |
 | Forge | ✅ | 1.5 | Smelting station; right-click to open |
 | Campfire | ❌ | 0.6 | Cooking station and respawn point; right-click to fuel/cook |
 | Ladder | ❌ | 0.4 | Climbable; needs side or below support |
