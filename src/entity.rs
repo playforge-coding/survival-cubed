@@ -353,6 +353,15 @@ pub struct Entity {
     /// even if they sidestep it. Never sent over the wire.
     #[serde(skip)]
     pub lunge_dir: f32,
+    /// Whether a player is riding a boat. Live runtime state, never persisted (a
+    /// reloaded world shouldn't remember a mid-ride pose) and never piggybacked on
+    /// the serialized entity, so it stays out of the save format like the transient
+    /// fields above. It is instead synced to clients by a dedicated
+    /// [`crate::protocol::ServerMessage::EntityBoating`] message (sent on toggle and
+    /// alongside the entity snapshot a joining client receives). Only players set
+    /// it; it stays `false` for creatures and defaults `false` on the client.
+    #[serde(skip)]
+    pub boating: bool,
 }
 
 impl Entity {
@@ -375,6 +384,7 @@ impl Entity {
             dying: 0.0,
             lunge: 0.0,
             lunge_dir: 0.0,
+            boating: false,
         }
     }
 

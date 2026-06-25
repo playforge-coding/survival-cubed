@@ -1919,6 +1919,10 @@ impl Shared {
         player.y = y;
         player.vx = 0.0;
         player.vy = 0.0;
+        // Arriving by fire key or by falling between worlds always lands on foot,
+        // never in a boat — clear the rider state so the new dimension draws them
+        // out of the boat (the client clears its local riding state to match).
+        player.boating = false;
         // Record the new dimension before announcing, so dimension-scoped
         // broadcasts route correctly.
         self.client_dim.lock().insert(id, to);
@@ -1939,7 +1943,13 @@ impl Shared {
             .cloned()
             .collect();
         for entity in snapshot {
+            // The serialized entity doesn't carry the (runtime-only) boat pose, so
+            // follow up for anyone already afloat to draw their boat from the start.
+            let afloat = entity.boating.then_some(entity.id);
             self.send_to(id, ServerMessage::EntitySpawn { entity });
+            if let Some(eid) = afloat {
+                self.send_to(id, ServerMessage::EntityBoating { id: eid, on: true });
+            }
         }
         // Resync the home marker (its dimension may differ from the new one) and
         // the inventory, which travels with the player across dimensions.
@@ -4925,6 +4935,11 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
         let mut entities = shared.entities(Dimension::Overworld).lock();
         for e in entities.values() {
             let _ = tx.send(ServerMessage::EntitySpawn { entity: e.clone() });
+            // The serialized entity doesn't carry the (runtime-only) boat pose, so
+            // follow up for anyone already afloat to draw their boat from the start.
+            if e.boating {
+                let _ = tx.send(ServerMessage::EntityBoating { id: e.id, on: true });
+            }
         }
         entities.insert(player.clone());
     }
@@ -5559,6 +5574,30 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             vy: 0.0,
                         },
                     );
+                }
+                ClientMessage::SetBoating { on } => {
+                    let dim = shared.dim_of(id);
+                    // Record the rider state on the player entity, but only tell the
+                    // others when it actually flips (a boat toggle), not every frame.
+                    let changed = {
+                        let mut entities = shared.entities(dim).lock();
+                        match entities.get_mut(id) {
+                            Some(e) if e.boating != on => {
+                                e.boating = on;
+                                true
+                            }
+                            _ => false,
+                        }
+                    };
+                    // Share just the pose change so every other client draws or
+                    // stows this player's boat (the rider simulates it locally).
+                    if changed {
+                        shared.broadcast_dim_except(
+                            dim,
+                            id,
+                            ServerMessage::EntityBoating { id, on },
+                        );
+                    }
                 }
                 ClientMessage::Attack { target, held } => {
                     let dim = shared.dim_of(id);

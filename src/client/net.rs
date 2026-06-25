@@ -74,6 +74,10 @@ pub enum NetEvent {
     EntityDespawn {
         id: EntityId,
     },
+    EntityBoating {
+        id: EntityId,
+        on: bool,
+    },
     EntityDying {
         id: EntityId,
     },
@@ -230,6 +234,11 @@ pub enum NetCommand {
     },
     FallDamage {
         amount: i32,
+    },
+    /// Set whether this player is riding a boat, so the server can share the
+    /// riding pose with other clients.
+    SetBoating {
+        on: bool,
     },
     /// Creator mode: toggle this player's creator mode on or off.
     SetCreator {
@@ -462,6 +471,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::AddWaypoint { x, y, color } => ClientMessage::AddWaypoint { x, y, color },
         NetCommand::RemoveWaypoint { x, y } => ClientMessage::RemoveWaypoint { x, y },
         NetCommand::FallDamage { amount } => ClientMessage::FallDamage { amount },
+        NetCommand::SetBoating { on } => ClientMessage::SetBoating { on },
         NetCommand::SetCreator { on } => ClientMessage::SetCreator { on },
         NetCommand::SetTime { t } => ClientMessage::SetTime { t },
         NetCommand::SpawnEntity { kind, x, y } => ClientMessage::SpawnEntity { kind, x, y },
@@ -509,6 +519,7 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
             NetEvent::EntityMoved { id, x, y, vx, vy }
         }
         ServerMessage::EntityDespawn { id } => NetEvent::EntityDespawn { id },
+        ServerMessage::EntityBoating { id, on } => NetEvent::EntityBoating { id, on },
         ServerMessage::EntityDying { id } => NetEvent::EntityDying { id },
         ServerMessage::EntityLunging { id } => NetEvent::EntityLunging { id },
         ServerMessage::EntityHealth {

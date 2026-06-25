@@ -28,13 +28,28 @@ drop by landing in water or catching a ladder on the way down.
 
 When your body overlaps water you start swimming:
 
-- Gravity is greatly reduced and you sink gently if you do nothing (buoyancy).
+- Gravity is reduced, but you're denser than water and **sink steadily** unless you
+  paddle — you can't just hold a direction and skim across the surface.
 - <kbd>Space</kbd>/<kbd>W</kbd> paddles you upward; <kbd>S</kbd> dives.
-- Horizontal movement is dragged, so you swim slower than you walk.
+- Horizontal movement is dragged hard, so swimming is **much slower than walking**.
+  Crossing a wide lake on foot is a slow, sinking slog — build a [boat](#boats).
 - Water breaks falls — you take no fall damage when you splash down.
 
 Water is otherwise inert: it doesn't flow or spread. You can pick it up and place
 it with a [bucket](crafting.md#tools-and-utility-items).
+
+## Boats
+
+Craft a [boat](crafting.md) from wood and sticks to travel across water properly:
+
+- **Right-click** while holding the boat to climb aboard; right-click again to
+  step back out. The boat stays in your inventory — it's a vehicle, not used up.
+- While riding, you **sit on the water surface** and glide across at full walking
+  speed (instead of sinking and crawling along as a swimmer does). Drop into deep
+  water and the boat bobs back up to the top.
+- Steer with <kbd>A</kbd>/<kbd>D</kbd>. A boat floats only on water; carried onto
+  dry land it just walks like normal.
+- Lose the boat (drop or trade it away) and you automatically step out.
 
 ## Ladders
 

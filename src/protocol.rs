@@ -156,6 +156,11 @@ pub enum ClientMessage {
     RemoveWaypoint { x: f32, y: f32 },
     /// Report the owning player entity's position (pixels, world space).
     PlayerMove { x: f32, y: f32 },
+    /// Set whether this player is riding a boat. The server records it on the
+    /// player entity and resyncs that entity to everyone (via
+    /// [`ServerMessage::EntitySpawn`]) so remote clients draw the rider in their
+    /// boat. Riding itself is simulated client-side; this only shares the pose.
+    SetBoating { on: bool },
     /// Melee-attack another entity (e.g. a slime). The server validates range
     /// before applying damage. `held` is the item the player is wielding
     /// ([`crate::block::AIR`] for bare hands); the server uses it to scale the
@@ -243,6 +248,12 @@ pub enum ServerMessage {
     },
     /// An entity was removed from the world.
     EntityDespawn { id: EntityId },
+    /// A player climbed into a boat (`on = true`) or stepped back out (`on =
+    /// false`). Every other client draws (or stows) that player's boat. Riding is
+    /// simulated on the rider's own client; this only shares the pose, so it carries
+    /// no position. Sent on each toggle, and once per already-riding player when a
+    /// client first receives that player's [`ServerMessage::EntitySpawn`] snapshot.
+    EntityBoating { id: EntityId, on: bool },
     /// A zombie has been caught by daylight and begun its death animation. The
     /// client plays the crumble animation for [`crate::entity::ZOMBIE_DEATH_TIME`]
     /// seconds; an [`ServerMessage::EntityDespawn`] for the same id follows once

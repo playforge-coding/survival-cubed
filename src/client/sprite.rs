@@ -30,6 +30,17 @@ pub static PLAYER_SPRITE: SpriteDef = SpriteDef {
     fps: 8.0,
 };
 
+/// Boat (with rider): the player seated in a boat, drawn in place of the plain
+/// player sprite while boating. A single static frame; the art already includes
+/// the rider. Lives in the `player/boat` subdirectory (its `name` is that path).
+pub static BOAT_SPRITE: SpriteDef = SpriteDef {
+    name: "player/boat",
+    frame_w: 16,
+    frame_h: 20,
+    frames: 1,
+    fps: 1.0,
+};
+
 /// Slime: a small blob that squashes and stretches as it hops along.
 pub static SLIME_SPRITE: SpriteDef = SpriteDef {
     name: "slime",
@@ -186,9 +197,10 @@ pub static BONE_SPRITE: SpriteDef = SpriteDef {
 };
 
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 17] {
+pub fn all() -> [&'static SpriteDef; 18] {
     [
         &PLAYER_SPRITE,
+        &BOAT_SPRITE,
         &SLIME_SPRITE,
         &CHICKEN_SPRITE,
         &GOAT_SPRITE,

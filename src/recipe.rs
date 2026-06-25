@@ -9,10 +9,10 @@
 //! A recipe is identified on the wire by its index in [`RECIPES`].
 
 use crate::block::{
-    BARK, BUCKET, CAMPFIRE, CHARRED_ROCK, COOKED_MEAT, DOOR, FIRE_KEY, FORGE, IRON_AXE, IRON_INGOT,
-    IRON_PICKAXE, IRON_SWORD, LADDER, LOG, PICKAXE, RAW_IRON, RAW_MEAT, RAW_TUNGSTEN, ROPE,
-    ROPE_LADDER, STICK, STONE, STONE_AXE, STONE_BRICKS, STONE_PICKAXE, STONE_SWORD, TUNGSTEN_AXE,
-    TUNGSTEN_INGOT, TUNGSTEN_PICKAXE, TUNGSTEN_SWORD, WOOD, WOOD_AXE, WOOD_SWORD,
+    BARK, BOAT, BUCKET, CAMPFIRE, CHARRED_ROCK, COOKED_MEAT, DOOR, FIRE_KEY, FORGE, IRON_AXE,
+    IRON_INGOT, IRON_PICKAXE, IRON_SWORD, LADDER, LOG, PICKAXE, RAW_IRON, RAW_MEAT, RAW_TUNGSTEN,
+    ROPE, ROPE_LADDER, STICK, STONE, STONE_AXE, STONE_BRICKS, STONE_PICKAXE, STONE_SWORD,
+    TUNGSTEN_AXE, TUNGSTEN_INGOT, TUNGSTEN_PICKAXE, TUNGSTEN_SWORD, WOOD, WOOD_AXE, WOOD_SWORD,
 };
 use crate::inventory::Inventory;
 use crate::protocol::BlockId;
@@ -148,6 +148,12 @@ pub const RECIPES: &[Recipe] = &[
         name: "Bucket",
         inputs: &[(IRON_INGOT, 3)],
         outputs: &[(BUCKET, 1)],
+    },
+    // Planks lashed to sticks make a boat for gliding across open water.
+    Recipe {
+        name: "Boat",
+        inputs: &[(WOOD, 5), (STICK, 3)],
+        outputs: &[(BOAT, 1)],
     },
     // Planks hewn and hung into a two-tall door that swings open and shut.
     Recipe {

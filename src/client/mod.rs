@@ -58,14 +58,22 @@ const FLY_MULT_STEP: f32 = 0.5;
 const CLIMB_SPEED: f32 = 90.0;
 /// Vertical speed (px/s) of the player paddling up or diving down in water.
 const SWIM_SPEED: f32 = 80.0;
-/// Slow rate (px/s) at which an idle swimmer sinks: buoyancy nearly cancels
-/// gravity, so the player drifts gently down rather than plummeting.
-const WATER_SINK_SPEED: f32 = 36.0;
+/// Rate (px/s) at which an idle swimmer sinks: the player is denser than water and
+/// steadily goes under unless actively paddling up. Crossing open water on foot is
+/// a slow, sinking slog — that's what a boat is for.
+const WATER_SINK_SPEED: f32 = 110.0;
 /// Reduced gravity (px/s²) felt while submerged, easing the vertical speed toward
-/// a slow sink instead of a free fall.
+/// a steady sink instead of a free fall.
 const WATER_GRAVITY: f32 = 320.0;
-/// Fraction of horizontal speed kept while swimming — water drags movement.
-const WATER_DRAG: f32 = 0.65;
+/// Fraction of horizontal speed kept while swimming — water drags movement hard,
+/// so wading across a lake is sluggish compared to riding a boat over it.
+const WATER_DRAG: f32 = 0.35;
+/// How firmly a boat is pulled toward its floating waterline each second: the
+/// proportional gain easing the rider's vertical speed to settle on the surface.
+const BOAT_FLOAT_STIFFNESS: f32 = 9.0;
+/// Cap (px/s) on the vertical speed of that settling, so a boat dropped into deep
+/// water rises to the surface briskly without snapping.
+const BOAT_FLOAT_MAX_SPEED: f32 = 220.0;
 // The local player is just a (special) entity; reuse its shared size.
 const PLAYER_W: f32 = crate::entity::PLAYER_SIZE.0;
 const PLAYER_H: f32 = crate::entity::PLAYER_SIZE.1;
@@ -177,6 +185,10 @@ struct GameState {
     facing: HashMap<EntityId, bool>,
     /// Facing of this client's own player avatar.
     player_facing: bool,
+    /// Whether the player is currently riding a boat. A client-side movement mode
+    /// toggled by right-clicking a held boat: while on, the player glides across
+    /// water on the surface instead of swimming (see [`step_physics`]).
+    boating: bool,
     requested: HashSet<(i32, i32)>,
     /// Index of the selected hotbar slot (`0..HOTBAR_SLOTS`); its block is the
     /// one placed on right-click.
@@ -290,6 +302,7 @@ impl GameState {
             entities: Entities::new(),
             facing: HashMap::new(),
             player_facing: true,
+            boating: false,
             requested: HashSet::new(),
             selected_slot: 0,
             inventory: Inventory::new(),
@@ -792,6 +805,9 @@ impl App {
                     g.knockback_x = 0.0;
                     g.air_min_y = y;
                     g.last_sent = g.pos;
+                    // You always arrive in a new dimension on foot, never afloat;
+                    // the server clears the rider state to match (see enter_dimension).
+                    g.boating = false;
                 }
                 // Swap to the new dimension's (randomly chosen) music.
                 if let Some(m) = &mut self.music {
@@ -819,6 +835,17 @@ impl App {
                             g.facing.insert(id, vx > 0.0);
                         }
                     }
+                }
+            }
+            NetEvent::EntityBoating { id, on } => {
+                if let Some(g) = &mut self.game
+                    && id != g.entity_id
+                    && let Some(e) = g.entities.get_mut(id)
+                {
+                    // Mirror a remote player's boat pose; their rendering picks the
+                    // boat sprite from this flag (their own motion still arrives via
+                    // EntityMoved).
+                    e.boating = on;
                 }
             }
             NetEvent::EntityDespawn { id } => {
@@ -987,6 +1014,16 @@ impl App {
         if game.spectating.is_some() {
             request_chunks(game, self.gfx.as_ref(), self.net.as_ref());
             return;
+        }
+
+        // A boat that's been dropped, traded, or otherwise lost can no longer be
+        // ridden — step out of it so the player doesn't glide on without one, and
+        // tell the server so other clients stow our boat too.
+        if game.boating && game.inventory.count(crate::block::BOAT) == 0 {
+            game.boating = false;
+            if let Some(net) = &self.net {
+                let _ = net.commands.send(NetCommand::SetBoating { on: false });
+            }
         }
 
         let fall_damage = step_physics(game, reg, input, dt);
@@ -2645,6 +2682,35 @@ impl App {
                 });
                 continue;
             }
+            // A remote player riding a boat shows the boat sprite (the rider is part
+            // of the art), centred on their body and resting on their feet, exactly
+            // as the local avatar is drawn while boating.
+            if e.boating && matches!(e.kind, EntityKind::Player { .. }) {
+                let bdef = &sprite::BOAT_SPRITE;
+                let (bw, bh) = (bdef.frame_w as f32, bdef.frame_h as f32);
+                let facing = g.facing.get(&e.id).copied().unwrap_or(true);
+                tiles.push(entity_instance(
+                    self.atlas.sprite_frame(bdef.name, 0),
+                    e.x + (w - bw) * 0.5,
+                    e.y + h - bh,
+                    bw,
+                    bh,
+                    facing,
+                    flash_tint(tint, e.hit_flash),
+                ));
+                if e.health < e.max_health && e.max_health > 0 {
+                    push_health_bar(
+                        &mut tiles,
+                        self.atlas.white(),
+                        e.x,
+                        e.y,
+                        w,
+                        e.health,
+                        e.max_health,
+                    );
+                }
+                continue;
+            }
             // A dying zombie plays its one-shot crumble (frame stepped by the
             // death timer); everything else uses its walk sheet (frame stepped by
             // the shared animation clock when moving).
@@ -2706,18 +2772,35 @@ impl App {
                 );
             }
         }
-        // Self (the special, locally-simulated player entity).
-        let def = &sprite::PLAYER_SPRITE;
-        let frame = sprite::frame_index(g.vel.x.abs() > 1.0, self.anim_time, def);
-        tiles.push(entity_instance(
-            self.atlas.sprite_frame(def.name, frame),
-            g.pos.x,
-            g.pos.y,
-            PLAYER_W,
-            PLAYER_H,
-            g.player_facing,
-            flash_tint(tint, g.hit_flash),
-        ));
+        // Self (the special, locally-simulated player entity). While boating, the
+        // boat sprite (which already includes the seated rider) is drawn in place
+        // of the plain player, centred on the player box and resting its hull on
+        // the player's feet.
+        if g.boating {
+            let def = &sprite::BOAT_SPRITE;
+            let (bw, bh) = (def.frame_w as f32, def.frame_h as f32);
+            tiles.push(entity_instance(
+                self.atlas.sprite_frame(def.name, 0),
+                g.pos.x + (PLAYER_W - bw) * 0.5,
+                g.pos.y + PLAYER_H - bh,
+                bw,
+                bh,
+                g.player_facing,
+                flash_tint(tint, g.hit_flash),
+            ));
+        } else {
+            let def = &sprite::PLAYER_SPRITE;
+            let frame = sprite::frame_index(g.vel.x.abs() > 1.0, self.anim_time, def);
+            tiles.push(entity_instance(
+                self.atlas.sprite_frame(def.name, frame),
+                g.pos.x,
+                g.pos.y,
+                PLAYER_W,
+                PLAYER_H,
+                g.player_facing,
+                flash_tint(tint, g.hit_flash),
+            ));
+        }
 
         (
             tiles,
@@ -3198,6 +3281,25 @@ fn step_physics(game: &mut GameState, reg: &BlockRegistry, input: &Input, dt: f3
         return None;
     }
 
+    // Boating: while riding a boat over water the player sits on the surface and
+    // glides at full speed instead of swimming. Buoyancy eases them to a floating
+    // waterline (so a boat dropped into deep water bobs up to the top), the fall
+    // apex resets so landing afloat never hurts, and the surface counts as solid
+    // footing. Off the water — a boat carried onto dry land — this does nothing and
+    // the normal walk/jump/gravity arc below takes over. Overrides swimming.
+    if game.boating
+        && let Some(surface) = water_surface_y(game)
+    {
+        let target = surface - PLAYER_H * 0.6;
+        game.vel.y = ((target - game.pos.y) * BOAT_FLOAT_STIFFNESS)
+            .clamp(-BOAT_FLOAT_MAX_SPEED, BOAT_FLOAT_MAX_SPEED);
+        move_x(game, reg, game.vel.x * dt);
+        move_y(game, reg, game.vel.y * dt);
+        game.on_ground = true;
+        game.air_min_y = game.pos.y;
+        return None;
+    }
+
     // Ladder climbing: while overlapping a ladder the player clings to it,
     // ignoring gravity, and moves vertically with the jump (up) and down inputs.
     // This overrides the normal jump/gravity arc below.
@@ -3376,6 +3478,22 @@ fn player_in_water(game: &GameState) -> bool {
     let y0 = (game.pos.y / TILE_SIZE).floor() as i32;
     let y1 = ((game.pos.y + PLAYER_H - EPS) / TILE_SIZE).floor() as i32;
     (y0..=y1).any(|ty| (x0..=x1).any(|tx| crate::block::is_water(game.world.get_block(tx, ty))))
+}
+
+/// World-pixel y of the water surface beneath a boating player: the top edge of
+/// the highest contiguous water cell in the player's centre column, or `None` if
+/// that column isn't water at the player's midline (e.g. a boat carried onto land).
+/// Used to settle the boat onto the surface (see [`step_physics`]).
+fn water_surface_y(game: &GameState) -> Option<f32> {
+    let cx = ((game.pos.x + PLAYER_W * 0.5) / TILE_SIZE).floor() as i32;
+    let mut ty = ((game.pos.y + PLAYER_H * 0.5) / TILE_SIZE).floor() as i32;
+    if !crate::block::is_water(game.world.get_block(cx, ty)) {
+        return None;
+    }
+    while ty > 0 && crate::block::is_water(game.world.get_block(cx, ty - 1)) {
+        ty -= 1;
+    }
+    Some(ty as f32 * TILE_SIZE)
 }
 
 fn column_solid(game: &GameState, reg: &BlockRegistry, tx: i32, y0: i32, y1: i32) -> bool {
@@ -3612,6 +3730,27 @@ fn handle_block_actions(
             let _ = net
                 .commands
                 .send(NetCommand::UseFireKey { slot: slot as u8 });
+            game.action_timer = ACTION_COOLDOWN;
+            return;
+        }
+    }
+
+    // Right-clicking while holding a boat climbs aboard (or steps back out). It
+    // acts on the player, not a target cell, so it needs no reach check, and the
+    // boat is a vehicle — never consumed — so nothing is sent to the server; the
+    // riding state is purely a local movement mode (see [`step_physics`]).
+    if input.placing && game.action_timer <= 0.0 {
+        let slot = game.selected_slot;
+        if game
+            .inventory
+            .get(slot)
+            .is_some_and(|(b, _, _)| crate::block::is_boat(b))
+        {
+            game.boating = !game.boating;
+            // Share the rider pose so other clients draw us in (or out of) the boat.
+            let _ = net
+                .commands
+                .send(NetCommand::SetBoating { on: game.boating });
             game.action_timer = ACTION_COOLDOWN;
             return;
         }

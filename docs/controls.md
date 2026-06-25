@@ -17,7 +17,7 @@ and you climb at a steady pace; in water you paddle up and dive down.
 | Input | Action |
 |---|---|
 | **Left button** (hold) | Mine/break the targeted block, or melee-attack a creature |
-| **Right button** | Place the selected block, or interact (doors, forge, campfire, bucket, fire key) |
+| **Right button** | Place the selected block, or interact (doors, forge, campfire, bucket, fire key, boat) |
 | **Scroll wheel** | In creator flight: adjust fly-speed multiplier (1.0×–8.0×) |
 
 Your reach is about **80 pixels** (five blocks) from your body, and both mining

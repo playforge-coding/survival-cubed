@@ -118,10 +118,13 @@ blocks!(
     "ash",
     "fire_key",
     "stone_bricks",
+    "boat",
 );
 
 sprites!(
     "player" => [0, 1, 2, 3, 4, 5],
+    // The riding pose: the player seated in the boat, drawn while boating.
+    "player/boat" => [0],
     "slime" => [0, 1, 2, 3],
     "chicken" => [0, 1, 2, 3],
     "goat" => [0, 1, 2, 3],

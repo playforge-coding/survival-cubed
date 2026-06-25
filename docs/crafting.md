@@ -38,6 +38,7 @@ server-authoritative, so the result is always consistent in multiplayer.
 | Rope | 2 Bark | 1 Rope |
 | Rope Ladder | 3 Rope | 1 Rope Ladder |
 | Bucket | 3 Iron Ingot | 1 Bucket |
+| Boat | 5 Wood + 3 Stick | 1 Boat |
 | Door | 6 Wood | 1 Door |
 | Fire Key | 1 Charred Rock + 1 Tungsten Ingot | 1 Fire Key |
 
@@ -117,6 +118,9 @@ Eat the food in your selected hotbar slot with <kbd>F</kbd>.
 
 - **Bucket** — right-click water to fill it (becoming a **Water Bucket**), then
   right-click an empty cell to pour the water out. A full bucket carries one load.
+- **Boat** — right-click to climb aboard and glide across water at full speed,
+  right-click again to step out. It's a reusable vehicle (never consumed) and rides
+  on the water surface; see **[Boats](gameplay.md#boats)**.
 - **Fire Key** — a reusable artifact that warps you between the **overworld** and
   the **underworld**. Right-click to use it; the server picks a safe landing spot.
   Crafting one requires reaching the underworld for tungsten first — see

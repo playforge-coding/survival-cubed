@@ -164,6 +164,11 @@ pub const FIRE_KEY: BlockId = 49;
 /// identical to stone — a solid, placeable block mined with any pickaxe and as
 /// tough to break — it just wears a tidier, dressed-stone face.
 pub const STONE_BRICKS: BlockId = 50;
+/// A boat, crafted from wood and sticks. An item (not placeable, stacks to one):
+/// right-click while holding it to climb aboard and glide across [`WATER`], and
+/// right-click again to step back out. Riding is a client-side movement mode (see
+/// [`crate::client`]); the boat is a vehicle, never consumed by using it.
+pub const BOAT: BlockId = 51;
 
 /// Definition of a single block type.
 pub struct BlockDef {
@@ -279,6 +284,9 @@ impl BlockRegistry {
         r.register("fire_key", false, true, false, 0.0);
         // Stone bricks: a crafted decorative block that behaves just like stone.
         r.register("stone_bricks", true, true, true, 1.2);
+        // A boat: a non-placeable vehicle item (visible only so its inventory and
+        // dropped sprite have an atlas tile). Ridden by right-clicking, not placed.
+        r.register("boat", false, true, false, 0.0);
         r
     }
 
@@ -341,6 +349,8 @@ pub fn max_stack(id: BlockId) -> u32 {
         | IRON_SWORD | TUNGSTEN_SWORD | WOOD_AXE | STONE_AXE | IRON_AXE | TUNGSTEN_AXE => 1,
         // A water bucket carries a single load, so it never stacks.
         WATER_BUCKET => 1,
+        // A boat is a single bulky vehicle, so it never stacks.
+        BOAT => 1,
         _ => crate::inventory::STACK_MAX,
     }
 }
@@ -471,6 +481,11 @@ pub fn is_bucket(item: BlockId) -> bool {
 /// between dimensions.
 pub fn is_fire_key(item: BlockId) -> bool {
     item == FIRE_KEY
+}
+
+/// Whether `item` is a boat — the vehicle ridden to glide across water.
+pub fn is_boat(item: BlockId) -> bool {
+    item == BOAT
 }
 
 /// Whether `item` is a pickaxe (mining is its intended use).
