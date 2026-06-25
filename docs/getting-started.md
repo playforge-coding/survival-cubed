@@ -5,14 +5,13 @@
 The easiest way to play is to grab a prebuilt binary for your platform from the
 [Releases page](https://github.com/playforge-coding/survival-cubed/releases).
 Each release ships a single self-contained executable for Windows, macOS
-(Intel and Apple Silicon), and Linux — all game assets are embedded, so there
+(Apple Silicon), and Linux — all game assets are embedded, so there
 is nothing else to download.
 
 | Platform | Download |
 |---|---|
 | Windows | `survival-cubed-<version>-x86_64-pc-windows-msvc.zip` |
 | macOS (Apple Silicon) | `survival-cubed-<version>-aarch64-apple-darwin.tar.gz` |
-| macOS (Intel) | `survival-cubed-<version>-x86_64-apple-darwin.tar.gz` |
 | Linux | `survival-cubed-<version>-x86_64-unknown-linux-gnu.tar.gz` |
 
 Unpack the archive and run the `survival-cubed` executable.
