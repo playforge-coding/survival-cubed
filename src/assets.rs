@@ -140,6 +140,6 @@ sprites!(
 );
 
 music!(
-    "overworld" => [0],
-    "underworld" => [0],
+    "overworld" => [0, 1],
+    "underworld" => [0, 1],
 );

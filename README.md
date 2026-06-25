@@ -97,12 +97,11 @@ zensical serve
 ## Credits
 
 Survival Cubed bundles third-party assets. The background music is from
-OpenGameArt.org: the overworld track (`assets/music/overworld/0.ogg`) by
-[bart](https://opengameart.org/users/bart), used under the GPL-3.0 option (rather
-than CC BY-SA 3.0) so it can be embedded in the binary, and the underworld track
-(`assets/music/underworld/0.ogg`) by
-[remaxim](https://opengameart.org/users/remaxim). See
-[docs/credits.md](docs/credits.md) for the full list.
+OpenGameArt.org: the first overworld track (`assets/music/overworld/0.ogg`) by
+[bart](https://opengameart.org/users/bart), and the remaining tracks by
+[remaxim](https://opengameart.org/users/remaxim). The dual-licensed tracks are
+used under their GPL-3.0 option (rather than CC BY-SA 3.0) so they can be embedded
+in the binary. See [docs/credits.md](docs/credits.md) for the full list.
 
 ## License
 
