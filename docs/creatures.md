@@ -161,19 +161,19 @@ the screen. There is one (for now), and it lives in the [arena](world.md#the-are
 
 | Boss                                     | HP   | Where                         | Behaviour                                                                                                                                                                                                                                                                                                                   |
 | ---------------------------------------- | ---- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **[Demon King](entities/demon-king.md)** | 1000 | The **arena** (one per world) | A towering fiend; **invulnerable until its 8 orc-mage guardians are slain**; fights **on foot, then flies once past ⅔ health**; cycles through a fan of **five fireballs**, a spread of **three magic fireballs**, a single **summoner bolt**, and a melee **slam**; drops a **chest** of loot and never returns once slain |
+| **[Demon King](entities/demon-king.md)** | 1000 | The **arena** (one per world) | A towering fiend; **invulnerable until its 8 orc-mage guardians are slain**; fights **on foot, then soars into the sky past ⅔ health** — raining fire, **summoning 4 dark knights**, and **diving** to slam the ground; cycles through a fan of **five fireballs**, a **three magic fireball** spread, a **summoner bolt**, and the **slam**; drops a **chest** of loot and never returns once slain |
 
 !!! danger "Kill the guardians, then read the wind-up"
 The **Demon King** enters **invulnerable**, shielded by **eight orc mages**
 scattered across the arena — your hits flash it red but do nothing until the last
 mage is dead. The mages flee rather than fight, so run them down first (you are
-faster than they are). Once the shield drops, the king telegraphs every attack
-with the same wind-up before it releases — when it rears back, it is about to
-loose a volley or bring its fists down. It flies and hovers in your face, so the
-fight is up close: trade blows when it is between attacks, and sidestep the moment
-it winds up (its fireball fans are wide and hard to dodge from point-blank). It
-has a deep health pool — bring the best [weapon](crafting.md#weapons) and plenty
-of food.
+faster than they are). Once the shield drops, fight it **on foot** while you can —
+that is your best window for sword blows. Past two-thirds health it **soars into the
+sky**, rains fire, and **summons four dark knights** to swarm you: deal with the
+knights, then strike the king each time it **dives** to slam the ground. Read the
+wind-up and sidestep the moment it releases (its fireball fans are wide and hard to
+dodge from point-blank). It has a deep health pool — bring the best
+[weapon](crafting.md#weapons) and plenty of food.
 
 ## Combat tips
 

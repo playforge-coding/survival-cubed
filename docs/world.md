@@ -119,7 +119,9 @@ king still alive, it rises across the floor from you, flanked by **eight
 [orc-mage](entities/orcs.md#orc-mage) guardians** scattered across the field, and a
 **boss health bar** appears at the top of the screen. The king is **invulnerable
 until every guardian is slain** — hunt the mages down first, then bring the king
-itself to bay. Slay it and it leaves a **chest** of spoils where it falls (the full
+itself to bay. Wound it past two-thirds health and it **takes to the skies**, raining
+fire and **summoning a host of dark knights** to swarm you while it dives to slam the
+ground. Slay it and it leaves a **chest** of spoils where it falls (the full
 tungsten arsenal, a hoard of ingots and gold, and a meal) — and **no new king is
 ever raised** in that world. Win the arena once and it is won for good.
 
