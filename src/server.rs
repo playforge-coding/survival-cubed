@@ -357,6 +357,12 @@ const DEMON_KING_SLAM_DAMAGE: i32 = 22;
 const DEMON_KING_SPAWN_DIST: f32 = 170.0;
 /// How high above the arena floor (px) a freshly raised demon king hovers.
 const DEMON_KING_HOVER_HEIGHT: f32 = 56.0;
+/// How many orc-mage guardians stand watch over the demon king. The king is
+/// invulnerable until all of them are slain.
+const DEMON_KING_GUARD_COUNT: u32 = 8;
+/// Spacing (px) between successive orc-mage guardians as they fan out from the
+/// challenger across the arena floor.
+const DEMON_KING_GUARD_SPACING: f32 = 90.0;
 /// Seconds between arena boss-presence checks (raising the king when the arena
 /// holds a player and none yet reigns). Coarse — the boss is a once-per-world event.
 const BOSS_CHECK_INTERVAL: f32 = 2.0;
@@ -4315,9 +4321,11 @@ fn maybe_spawn_zombies(shared: &Shared, rng: &mut u32) {
 /// Raise the arena's lone [`EntityKind::DemonKing`] when the time is right: the
 /// boss hasn't already been slain in this world, none currently reigns, and a
 /// player is present in the arena to fight it. The king appears across the arena
-/// from a player, hovering above the stone-brick floor. A no-op otherwise, so the
-/// arena stays empty until a challenger arrives — and stays empty forever once the
-/// king has fallen (one boss per world).
+/// from a player, hovering above the stone-brick floor, flanked by
+/// [`DEMON_KING_GUARD_COUNT`] **orc-mage guardians** scattered across the floor —
+/// the king is invulnerable until every last one is cut down. A no-op otherwise, so
+/// the arena stays empty until a challenger arrives — and stays empty forever once
+/// the king has fallen (one boss per world).
 fn ensure_arena_boss(shared: &Shared) {
     if shared.demon_king_slain.load(Ordering::SeqCst)
         || shared.demon_king_alive.load(Ordering::SeqCst)
@@ -4326,7 +4334,7 @@ fn ensure_arena_boss(shared: &Shared) {
     }
     let dim = Dimension::Arena;
     // world then entities, matching the lock order step_entities uses.
-    let spawned = {
+    let spawned: Vec<Entity> = {
         let world = shared.world(dim).lock();
         let mut entities = shared.entities(dim).lock();
         // A king restored from a save (mid-fight) means none need be raised; just
@@ -4336,31 +4344,50 @@ fn ensure_arena_boss(shared: &Shared) {
             .any(|e| matches!(e.kind, EntityKind::DemonKing))
         {
             shared.demon_king_alive.store(true, Ordering::SeqCst);
-            None
+            Vec::new()
         } else {
             let player_pos = entities
                 .values()
                 .find(|e| e.kind.is_player())
                 .map(|e| (e.x, e.y));
             match player_pos {
-                None => None,
+                None => Vec::new(),
                 Some((px, _py)) => {
-                    let (_, h) = EntityKind::DemonKing.size();
+                    let mut spawned = Vec::new();
+                    // The king itself, hovering across the arena from the challenger.
+                    let (_, kh) = EntityKind::DemonKing.size();
                     let side = if (px as i32) & 1 == 0 { 1.0 } else { -1.0 };
                     let bx = px + side * DEMON_KING_SPAWN_DIST;
                     let cell_x = (bx / TILE_SIZE).floor() as i32;
                     let surface = world.surface(cell_x);
-                    let by = surface as f32 * TILE_SIZE - h - DEMON_KING_HOVER_HEIGHT;
-                    let bid = shared.alloc_id();
-                    let king = Entity::new(bid, EntityKind::DemonKing, bx, by);
+                    let by = surface as f32 * TILE_SIZE - kh - DEMON_KING_HOVER_HEIGHT;
+                    let king = Entity::new(shared.alloc_id(), EntityKind::DemonKing, bx, by);
                     entities.insert(king.clone());
+                    spawned.push(king);
+
+                    // The orc-mage guardians, scattered at intervals across the floor
+                    // on both sides of the challenger so they fan out across the arena.
+                    let (_, mh) = EntityKind::OrcMage.size();
+                    for i in 0..DEMON_KING_GUARD_COUNT {
+                        // Offsets stride out alternately left and right of the player,
+                        // each a little farther, so the mages spread across the field.
+                        let rank = (i / 2) as f32 + 1.0;
+                        let dir = if i % 2 == 0 { -1.0 } else { 1.0 };
+                        let gx = px + dir * rank * DEMON_KING_GUARD_SPACING;
+                        let gcx = (gx / TILE_SIZE).floor() as i32;
+                        let gsurface = world.surface(gcx);
+                        let gy = gsurface as f32 * TILE_SIZE - mh;
+                        let mage = Entity::new(shared.alloc_id(), EntityKind::OrcMage, gx, gy);
+                        entities.insert(mage.clone());
+                        spawned.push(mage);
+                    }
                     shared.demon_king_alive.store(true, Ordering::SeqCst);
-                    Some(king)
+                    spawned
                 }
             }
         }
     };
-    if let Some(entity) = spawned {
+    for entity in spawned {
         shared.broadcast_dim(dim, ServerMessage::EntitySpawn { entity });
     }
 }
@@ -4533,10 +4560,12 @@ struct Step {
 /// Locks `dim`'s `world` then its `entities` for the whole step, matching the
 /// order used elsewhere so the two can never deadlock.
 fn step_entities(shared: &Shared, dim: Dimension) -> Step {
-    // The underworld is sunless — it counts as night there around the clock, so
-    // creatures that hunt only after dark (slimes) stay aggressive and undead that
-    // burn at daybreak (zombies, skeletons, necromancers, skulls) never burn up below.
-    let night = dim == Dimension::Underworld || daylight::is_night(shared.time_of_day());
+    // The underworld and the arena are both sunless — they count as night around the
+    // clock, so creatures that hunt only after dark (slimes) stay aggressive and
+    // undead that burn at daybreak (zombies, skeletons, necromancers, and the skulls
+    // the demon king summons) never burn up there.
+    let night = matches!(dim, Dimension::Underworld | Dimension::Arena)
+        || daylight::is_night(shared.time_of_day());
     let mut world = shared.world(dim).lock();
     let mut entities = shared.entities(dim).lock();
 
@@ -4592,14 +4621,16 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             .values()
             // Players are authoritative on their clients; pets and knights never
             // despawn for distance (they teleport to their owner instead), and the
-            // arena boss is a fixture of its dimension — it stays put whether or not
-            // a player is nearby. Everything else is culled once it drifts beyond
-            // DESPAWN_DIST of every player.
+            // arena boss — and its orc-mage guardians — are fixtures of the arena: they
+            // stay put whether or not a player is nearby, so the guardians can't drift
+            // off and lift the king's shield without a fight. Everything else is culled
+            // once it drifts beyond DESPAWN_DIST of every player.
             .filter(|e| {
                 !e.kind.is_player()
                     && !e.kind.is_pet()
                     && !e.kind.is_knight()
                     && !matches!(e.kind, EntityKind::DemonKing)
+                    && !(dim == Dimension::Arena && matches!(e.kind, EntityKind::OrcMage))
             })
             .filter(|e| {
                 let (w, h) = e.size();
@@ -7771,6 +7802,26 @@ fn apply_damage(
     current_dim: Dimension,
     respawn: (Dimension, f32, f32),
 ) -> (Vec<ServerMessage>, Option<RespawnInfo>) {
+    // The arena boss is invulnerable while its orc-mage guardians still live: a blow
+    // lands and flashes it red so the strike reads, but it takes no damage until the
+    // last mage falls. Checked before the mutable borrow below so we can scan the map.
+    let shielded = entities
+        .get(id)
+        .is_some_and(|e| matches!(e.kind, EntityKind::DemonKing))
+        && entities
+            .values()
+            .any(|e| matches!(e.kind, EntityKind::OrcMage));
+    if shielded {
+        return (
+            vec![ServerMessage::EntityHit {
+                id,
+                vx: knockback.0,
+                vy: knockback.1,
+            }],
+            None,
+        );
+    }
+
     let Some(e) = entities.get_mut(id) else {
         return (Vec::new(), None);
     };

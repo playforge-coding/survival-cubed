@@ -4,8 +4,10 @@ The **boss** of the [arena](../world.md#the-arena), and the only one of its kind
 a world. A towering, winged fiend that **flies** — it chases you through the air,
 hovers in your face, and cycles through the whole demonic arsenal: a fan of
 fireballs, a spread of magic fireballs, a summoned bolt, or a crushing melee slam.
-Felling it is a campaign, not a scrap, and it leaves a **chest** of spoils where it
-falls. Once slain it **never rises again** in that world.
+It enters **invulnerable**, shielded by eight [orc-mage](orcs.md#orc-mage)
+guardians scattered across the arena — only once every last one is cut down can the
+king itself be harmed. Felling it is a campaign, not a scrap, and it leaves a
+**chest** of spoils where it falls. Once slain it **never rises again** in that world.
 
 | Stat | Value |
 |---|---|
@@ -16,6 +18,18 @@ falls. Once slain it **never rises again** in that world.
 | **Found in** | The **arena** — one per world |
 | **Activity** | Always active; never despawns |
 | **Drops** | A **chest** of loot where it dies (not loose items) |
+
+## The guardians
+
+The fight opens with the king **invulnerable**. Eight **[orc mages](orcs.md#orc-mage)**
+(30 HP each) are scattered across the arena floor, and the king cannot be harmed
+while a single one still lives — your blows land and flash it red, but deal no
+damage. The mages don't fight back: like their underworld kin they **shy away** from
+you, so the opening of the fight is a **hunt** — run each one down (you are faster
+than they are) and cut it out while dodging the king's volleys overhead. The
+king's health bar glows **cold blue** and reads *"Invulnerable"* with a live count
+of how many guardians remain; when the last falls, the bar turns **red** and the
+king is finally yours to kill.
 
 ## Behaviour
 

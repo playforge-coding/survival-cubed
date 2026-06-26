@@ -1737,6 +1737,13 @@ impl App {
             0.0
         };
         let (health, max_health) = (boss.health, boss.max_health);
+        // The king is invulnerable while its orc-mage guardians still stand; count
+        // those left in view so the bar can tell the player what to do.
+        let guardians = g
+            .entities
+            .values()
+            .filter(|e| matches!(e.kind, EntityKind::OrcMage))
+            .count();
         egui::Area::new(egui::Id::new("boss_bar"))
             .anchor(egui::Align2::CENTER_TOP, [0.0, 52.0])
             .interactable(false)
@@ -1755,7 +1762,13 @@ impl App {
                     painter.rect_filled(rect, radius, egui::Color32::from_rgb(28, 8, 8));
                     let mut fill = rect;
                     fill.set_width(rect.width() * frac);
-                    painter.rect_filled(fill, radius, egui::Color32::from_rgb(175, 30, 30));
+                    // A shielded king's bar glows a cold blue; a vulnerable one is red.
+                    let fill_color = if guardians > 0 {
+                        egui::Color32::from_rgb(70, 110, 190)
+                    } else {
+                        egui::Color32::from_rgb(175, 30, 30)
+                    };
+                    painter.rect_filled(fill, radius, fill_color);
                     painter.text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
@@ -1763,6 +1776,15 @@ impl App {
                         egui::FontId::proportional(12.0),
                         egui::Color32::WHITE,
                     );
+                    if guardians > 0 {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Invulnerable — defeat the orc mages ({guardians} left)"
+                            ))
+                            .size(13.0)
+                            .color(egui::Color32::from_rgb(150, 190, 240)),
+                        );
+                    }
                 });
             });
     }

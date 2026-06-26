@@ -161,15 +161,19 @@ the screen. There is one (for now), and it lives in the [arena](world.md#the-are
 
 | Boss | HP | Where | Behaviour |
 |---|---|---|---|
-| **[Demon King](entities/demon-king.md)** | 320 | The **arena** (one per world) | A towering, **flying** fiend; cycles through a fan of **five fireballs**, a spread of **three magic fireballs**, a single **summoner bolt**, and a melee **slam**; drops a **chest** of loot and never returns once slain |
+| **[Demon King](entities/demon-king.md)** | 320 | The **arena** (one per world) | A towering, **flying** fiend; **invulnerable until its 8 orc-mage guardians are slain**; then cycles through a fan of **five fireballs**, a spread of **three magic fireballs**, a single **summoner bolt**, and a melee **slam**; drops a **chest** of loot and never returns once slain |
 
-!!! danger "Read the Demon King's wind-up"
-    The **Demon King** telegraphs every attack with the same wind-up before it
-    releases — when it rears back, it is about to loose a volley or bring its fists
-    down. It flies and hovers in your face, so the fight is up close: trade blows
-    when it is between attacks, and sidestep the moment it winds up (its fireball
-    fans are wide and hard to dodge from point-blank). It has a deep health pool —
-    bring the best [weapon](crafting.md#weapons) and plenty of food.
+!!! danger "Kill the guardians, then read the wind-up"
+    The **Demon King** enters **invulnerable**, shielded by **eight orc mages**
+    scattered across the arena — your hits flash it red but do nothing until the last
+    mage is dead. The mages flee rather than fight, so run them down first (you are
+    faster than they are). Once the shield drops, the king telegraphs every attack
+    with the same wind-up before it releases — when it rears back, it is about to
+    loose a volley or bring its fists down. It flies and hovers in your face, so the
+    fight is up close: trade blows when it is between attacks, and sidestep the moment
+    it winds up (its fireball fans are wide and hard to dodge from point-blank). It
+    has a deep health pool — bring the best [weapon](crafting.md#weapons) and plenty
+    of food.
 
 ## Combat tips
 
