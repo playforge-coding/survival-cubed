@@ -213,6 +213,11 @@ pub const IRON_ARMOR: BlockId = 60;
 /// [`crate::entity::EntityKind::DemonKing`] (in its chest) and, rarely, a
 /// [`crate::entity::EntityKind::DarkKnight`].
 pub const TUNGSTEN_ARMOR: BlockId = 61;
+/// A dragon scale: a shimmering plate shed by a slain
+/// [`crate::entity::EntityKind::Dragon`], the underworld's rare flying miniboss.
+/// An item (not placeable); five of them, alongside a tungsten and a gold ingot,
+/// are crafted into an [`ARENA_KEY`].
+pub const DRAGON_SCALE: BlockId = 62;
 
 /// Gold ingots consumed to reinforce a plain [`CHEST`] into a [`LOCKED_CHEST`].
 /// Shared by the server (which charges it) and the client (which shows the cost).
@@ -359,6 +364,9 @@ impl BlockRegistry {
         // simply by carrying one, they blunt incoming attack damage.
         r.register("iron_armor", false, true, false, 0.0);
         r.register("tungsten_armor", false, true, false, 0.0);
+        // A dragon scale: a non-placeable item dropped by a slain dragon, crafted
+        // (in fives) into an arena key.
+        r.register("dragon_scale", false, true, false, 0.0);
         r
     }
 

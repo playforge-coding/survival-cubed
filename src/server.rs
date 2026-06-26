@@ -349,7 +349,7 @@ const DRAGON_SHOOT_INTERVAL: f32 = 1.4;
 /// Permille (out of 1000) chance that a fresh underworld charred chunk seeds a
 /// dragon — far rarer than any other underworld spawner, so a dragon is a genuine
 /// once-in-a-while event rather than ambient life.
-const DRAGON_CHUNK_PERMILLE: u32 = 6;
+const DRAGON_CHUNK_PERMILLE: u32 = 12;
 /// Open (non-solid) cells a dragon's spawn column must clear above its floor before
 /// it will seed one there. This keeps a dragon out of cramped tunnels, dropping it
 /// only into a tall cavern where it flies in plain sight (so its music never plays
@@ -3024,6 +3024,7 @@ fn creature_loot(kind: &EntityKind) -> &'static [(BlockId, u32)] {
     match kind {
         EntityKind::Chicken => &[(crate::block::RAW_MEAT, 1)],
         EntityKind::Goat => &[(crate::block::RAW_MEAT, 2)],
+        EntityKind::Dragon => &[(crate::block::DRAGON_SCALE, 1)],
         _ => &[],
     }
 }

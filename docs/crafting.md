@@ -41,7 +41,7 @@ server-authoritative, so the result is always consistent in multiplayer.
 | Boat | 5 Wood + 3 Stick | 1 Boat |
 | Door | 6 Wood | 1 Door |
 | Fire Key | 1 Charred Rock + 1 Tungsten Ingot | 1 Fire Key |
-| Arena Key | 2 Tungsten Ingot + 2 Gold Ingot | 1 Arena Key |
+| Arena Key | 2 Tungsten Ingot + 2 Gold Ingot + 5 Dragon Scale | 1 Arena Key |
 | Sign | 1 Wood + 1 Stick | 1 Sign |
 | Quest Board | 4 Wood + 2 Stick | 1 Quest Board |
 | Chest | 1 Iron Ingot + 8 Wood | 1 Chest |

@@ -129,6 +129,7 @@ blocks!(
     "arena_key",
     "iron_armor",
     "tungsten_armor",
+    "dragon_scale",
 );
 
 sprites!(

@@ -13,8 +13,9 @@ anything else in the depths — felling one is a real fight, announced by its ow
 | **Size** | 31 × 17 px |
 | **Speed** | 42 px/s — **flies** |
 | **Damage** | 7 HP per fireball (leaves fire where it bursts) |
-| **Found in** | Underworld **charred** expanse — **very rare** |
+| **Found in** | Underworld **charred** expanse — **rare** |
 | **Activity** | All hours |
+| **Drops** | 1 **Dragon Scale** |
 
 A dragon **flies**, kiting you through the air like an [enchanted
 demon](demons.md#enchanted-demon) but swifter and far hardier: it closes when
@@ -23,11 +24,15 @@ otherwise holds station and **breathes [fireballs](#fireball)** roughly every 1.
 seconds. The fireball flies straight until it hits you or a wall and **bursts into
 a lick of fire** where it lands.
 
-Dragons are the rarest spawn in the underworld — only a handful of charred-expanse
-chunks in a thousand seed one, and only where there's a **tall open cavern** for it
-to fly in, so a dragon always appears aloft and in plain sight rather than buried in
-rock. With 200 HP and relentless ranged fire, it's a genuine miniboss; pick your
-moment, use cover, and don't get cornered while it rains fire.
+Dragons are among the rarest spawns in the underworld — only about a dozen
+charred-expanse chunks in a thousand seed one, and only where there's a **tall open
+cavern** for it to fly in, so a dragon always appears aloft and in plain sight rather
+than buried in rock. With 200 HP and relentless ranged fire, it's a genuine miniboss;
+pick your moment, use cover, and don't get cornered while it rains fire.
+
+Felling a dragon spills a single **Dragon Scale** — a shimmering plate that is the
+only source of the scales needed to craft an [Arena Key](../crafting.md), so reaching
+the boss arena means hunting down dragons first.
 
 ### Fireball
 

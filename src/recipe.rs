@@ -9,11 +9,12 @@
 //! A recipe is identified on the wire by its index in [`RECIPES`].
 
 use crate::block::{
-    ARENA_KEY, BARK, BOAT, BUCKET, CAMPFIRE, CHARRED_ROCK, CHEST, COOKED_MEAT, DOOR, FIRE_KEY,
-    FORGE, GOLD_INGOT, IRON_ARMOR, IRON_AXE, IRON_INGOT, IRON_PICKAXE, IRON_SWORD, LADDER, LOG,
-    PICKAXE, QUEST_BOARD, RAW_GOLD, RAW_IRON, RAW_MEAT, RAW_TUNGSTEN, ROPE, ROPE_LADDER, SIGN,
-    STICK, STONE, STONE_AXE, STONE_BRICKS, STONE_PICKAXE, STONE_SWORD, TUNGSTEN_ARMOR,
-    TUNGSTEN_AXE, TUNGSTEN_INGOT, TUNGSTEN_PICKAXE, TUNGSTEN_SWORD, WOOD, WOOD_AXE, WOOD_SWORD,
+    ARENA_KEY, BARK, BOAT, BUCKET, CAMPFIRE, CHARRED_ROCK, CHEST, COOKED_MEAT, DOOR, DRAGON_SCALE,
+    FIRE_KEY, FORGE, GOLD_INGOT, IRON_ARMOR, IRON_AXE, IRON_INGOT, IRON_PICKAXE, IRON_SWORD,
+    LADDER, LOG, PICKAXE, QUEST_BOARD, RAW_GOLD, RAW_IRON, RAW_MEAT, RAW_TUNGSTEN, ROPE,
+    ROPE_LADDER, SIGN, STICK, STONE, STONE_AXE, STONE_BRICKS, STONE_PICKAXE, STONE_SWORD,
+    TUNGSTEN_ARMOR, TUNGSTEN_AXE, TUNGSTEN_INGOT, TUNGSTEN_PICKAXE, TUNGSTEN_SWORD, WOOD, WOOD_AXE,
+    WOOD_SWORD,
 };
 use crate::inventory::Inventory;
 use crate::protocol::BlockId;
@@ -169,11 +170,11 @@ pub const RECIPES: &[Recipe] = &[
         inputs: &[(CHARRED_ROCK, 1), (TUNGSTEN_INGOT, 1)],
         outputs: &[(FIRE_KEY, 1)],
     },
-    // Tungsten bound with gold forms the arena key, the artifact that opens the way
-    // into the stone-brick boss arena.
+    // Tungsten bound with gold and a clutch of dragon scales forms the arena key,
+    // the artifact that opens the way into the stone-brick boss arena.
     Recipe {
         name: "Arena Key",
-        inputs: &[(TUNGSTEN_INGOT, 2), (GOLD_INGOT, 2)],
+        inputs: &[(TUNGSTEN_INGOT, 2), (GOLD_INGOT, 2), (DRAGON_SCALE, 5)],
         outputs: &[(ARENA_KEY, 1)],
     },
     // A plank on a stick: a sign to write a short message on.
