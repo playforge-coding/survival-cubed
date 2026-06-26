@@ -5327,6 +5327,9 @@ impl App {
             // F2 captures a screenshot of the world (without the HUD) on the
             // next rendered frame.
             KeyCode::F2 if pressed => self.screenshot_requested = true,
+            // P mutes/unmutes the background music (it stays put across track and
+            // dimension changes until toggled back on).
+            KeyCode::KeyP if pressed => self.toggle_music_mute(),
             // Enter or T opens the chat box (typing is then captured by egui).
             KeyCode::Enter | KeyCode::KeyT if pressed => self.open_chat(),
             // Escape closes an open menu (inventory, forge, or campfire) if any,
@@ -5368,6 +5371,19 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Mute or unmute the background music, surfacing the new state in the status
+    /// line. A no-op (beyond the message) when no audio device was available.
+    fn toggle_music_mute(&mut self) {
+        if let Some(m) = &mut self.music {
+            let muted = m.toggle_mute();
+            self.status = if muted {
+                "Music muted".to_string()
+            } else {
+                "Music unmuted".to_string()
+            };
         }
     }
 

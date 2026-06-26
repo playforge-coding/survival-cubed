@@ -67,6 +67,7 @@ around the edges of the screen with a distance readout when they're off-screen.
 | <kbd>Enter</kbd> / <kbd>T</kbd> | Open the chat box (type, <kbd>Enter</kbd> to send, <kbd>Esc</kbd> to cancel) |
 | <kbd>Esc</kbd> | Close an open menu (inventory/forge/campfire/sign/quest board/chest); otherwise leave the world |
 | <kbd>F2</kbd> | Take a screenshot (world only — no HUD) |
+| <kbd>P</kbd> | Mute / unmute the background music |
 
 Chat messages are up to 256 characters. See **[Multiplayer](multiplayer.md)** for
 chat and admin commands.
@@ -77,6 +78,14 @@ Press <kbd>F2</kbd> to capture the current view **without** the HUD or any open
 menus. The image is encoded on a background thread (the game doesn't stutter) and
 saved to your data directory as both a lossless PNG and a compressed JPEG. A
 "Screenshot saved." status message confirms the capture.
+
+## Music
+
+Each dimension loops its own background music, played quietly under the game.
+Press <kbd>P</kbd> to mute or unmute it — a "Music muted" / "Music unmuted"
+status message confirms the change. The setting sticks across track and
+dimension changes (and across leaving and re-entering a world) until you toggle
+it back.
 
 ## The HUD
 

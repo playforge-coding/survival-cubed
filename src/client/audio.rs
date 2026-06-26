@@ -38,6 +38,10 @@ pub struct Music {
     /// dimension's own music), set while a dragon is near (see the client's
     /// proximity check) and cleared when it returns to dimension music.
     miniboss: bool,
+    /// Whether music is currently muted. Persists across track changes: a muted
+    /// player keeps every newly started sink silent (see [`Self::start`]) until
+    /// it is toggled back on.
+    muted: bool,
 }
 
 impl Music {
@@ -51,6 +55,7 @@ impl Music {
                 sink: None,
                 current: None,
                 miniboss: false,
+                muted: false,
             }),
             Err(e) => {
                 log::warn!("audio unavailable, music disabled: {e:#}");
@@ -117,11 +122,22 @@ impl Music {
                 return false;
             }
         };
-        sink.set_volume(MUSIC_VOLUME);
+        sink.set_volume(if self.muted { 0.0 } else { MUSIC_VOLUME });
         sink.append(decoder.repeat_infinite());
 
         self.sink = Some(sink);
         true
+    }
+
+    /// Flip music between muted and audible, applying the change to the current
+    /// sink immediately and remembering it for any tracks started later. Returns
+    /// the new muted state so the caller can surface it to the player.
+    pub fn toggle_mute(&mut self) -> bool {
+        self.muted = !self.muted;
+        if let Some(sink) = &self.sink {
+            sink.set_volume(if self.muted { 0.0 } else { MUSIC_VOLUME });
+        }
+        self.muted
     }
 
     /// Stop any playing music (e.g. on leaving a world).
