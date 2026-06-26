@@ -464,7 +464,7 @@ pub static SUMMONER_FIREBALL_SPRITE: SpriteDef = SpriteDef {
 };
 
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 42] {
+pub fn all() -> [&'static SpriteDef; 44] {
     [
         &PLAYER_SPRITE,
         &BOAT_SPRITE,
@@ -486,6 +486,8 @@ pub fn all() -> [&'static SpriteDef; 42] {
         &SKELETON_SPRITE,
         &CHARRED_SKELETON_SPRITE,
         &DEMON_SPRITE,
+        &DRAGON_SPRITE,
+        &DRAGON_ATTACK_SPRITE,
         &DEMON_KING_SPRITE,
         &DEMON_KING_ATTACK_SPRITE,
         &ORC_SPRITE,
