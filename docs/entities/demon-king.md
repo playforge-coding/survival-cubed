@@ -1,8 +1,9 @@
 # Demon King
 
 The **boss** of the [arena](../world.md#the-arena), and the only one of its kind in
-a world. A towering, winged fiend that **flies** — it chases you through the air,
-hovers in your face, and cycles through the whole demonic arsenal: a fan of
+a world. A towering, winged fiend that opens **on foot** and **takes wing once
+wounded past two-thirds health** — thereafter it chases you through the air, hovers
+in your face, and cycles through the whole demonic arsenal: a fan of
 fireballs, a spread of magic fireballs, a summoned bolt, or a crushing melee slam.
 It enters **invulnerable**, shielded by eight [orc-mage](orcs.md#orc-mage)
 guardians scattered across the arena — only once every last one is cut down can the
@@ -13,7 +14,7 @@ king itself be harmed. Felling it is a campaign, not a scrap, and it leaves a
 |---|---|
 | **Health** | 320 HP |
 | **Size** | 22 × 30 px |
-| **Speed** | 46 px/s (flying) |
+| **Speed** | 46 px/s (on foot, then flying past ⅔ health) |
 | **Damage** | 7 HP per fireball · 12 HP per magic fireball · 22 HP per slam |
 | **Found in** | The **arena** — one per world |
 | **Activity** | Always active; never despawns |
@@ -33,10 +34,12 @@ king is finally yours to kill.
 
 ## Behaviour
 
-The Demon King is an **airborne boss**. It flies straight at you, closing to melee
-range and hovering there, and every ~1.7 seconds it commits to one of **four
-attacks**, chosen at random and telegraphed by the same **wind-up animation** before
-it releases:
+The Demon King fights in **two phases**. Above **two-thirds health** it stays **on
+foot**, striding across the arena floor after you. Once you wound it past that mark
+it **takes wing** — from then on it flies, chasing you through the air and hovering
+in your face. On both footings it attacks the same way: every ~1.7 seconds it
+commits to one of **four attacks**, chosen at random and telegraphed by the same
+**wind-up animation** before it releases:
 
 - **Fireball fan** — looses **five** ordinary [fireballs](demons.md#demon) in a
   wide spread. Hard to sidestep at point-blank range.
@@ -47,10 +50,12 @@ it releases:
 - **Slam** — when you are close, it brings its fists down for heavy melee damage,
   landing only on the frame the blow connects (like an [orc](orcs.md#orc)).
 
-Because it flies and hovers right on top of you, the fight is **up close**: there is
-no ranged weapon to whittle it down with, so you trade sword blows between its
-volleys. Watch for the wind-up and step aside as it releases — its fireball fans are
-wide, and from point-blank they are punishing.
+Whether it is on foot or in the air, the fight is **up close**: there is no ranged
+weapon to whittle it down with, so you trade sword blows between its volleys. Watch
+for the wind-up and step aside as it releases — its fireball fans are wide, and from
+point-blank they are punishing. The phase change is your cue that you are past the
+hardest stretch, but a flying king is harder to corner, so press the advantage while
+it is still grounded.
 
 !!! danger "Bring everything"
     320 HP is a deep pool — far more than anything else in the game. Come with the

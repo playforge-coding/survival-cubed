@@ -161,7 +161,7 @@ the screen. There is one (for now), and it lives in the [arena](world.md#the-are
 
 | Boss | HP | Where | Behaviour |
 |---|---|---|---|
-| **[Demon King](entities/demon-king.md)** | 320 | The **arena** (one per world) | A towering, **flying** fiend; **invulnerable until its 8 orc-mage guardians are slain**; then cycles through a fan of **five fireballs**, a spread of **three magic fireballs**, a single **summoner bolt**, and a melee **slam**; drops a **chest** of loot and never returns once slain |
+| **[Demon King](entities/demon-king.md)** | 320 | The **arena** (one per world) | A towering fiend; **invulnerable until its 8 orc-mage guardians are slain**; fights **on foot, then flies once past ⅔ health**; cycles through a fan of **five fireballs**, a spread of **three magic fireballs**, a single **summoner bolt**, and a melee **slam**; drops a **chest** of loot and never returns once slain |
 
 !!! danger "Kill the guardians, then read the wind-up"
     The **Demon King** enters **invulnerable**, shielded by **eight orc mages**

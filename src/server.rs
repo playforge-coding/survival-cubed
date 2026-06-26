@@ -355,8 +355,6 @@ const DEMON_KING_SLAM_DAMAGE: i32 = 22;
 /// How far to the side of a player (px) a freshly raised demon king first appears,
 /// so it makes a dramatic entrance across the arena rather than on top of them.
 const DEMON_KING_SPAWN_DIST: f32 = 170.0;
-/// How high above the arena floor (px) a freshly raised demon king hovers.
-const DEMON_KING_HOVER_HEIGHT: f32 = 56.0;
 /// How many orc-mage guardians stand watch over the demon king. The king is
 /// invulnerable until all of them are slain.
 const DEMON_KING_GUARD_COUNT: u32 = 8;
@@ -4354,13 +4352,14 @@ fn ensure_arena_boss(shared: &Shared) {
                 None => Vec::new(),
                 Some((px, _py)) => {
                     let mut spawned = Vec::new();
-                    // The king itself, hovering across the arena from the challenger.
+                    // The king itself, standing on the floor across the arena from the
+                    // challenger (it begins the fight on foot, taking wing only later).
                     let (_, kh) = EntityKind::DemonKing.size();
                     let side = if (px as i32) & 1 == 0 { 1.0 } else { -1.0 };
                     let bx = px + side * DEMON_KING_SPAWN_DIST;
                     let cell_x = (bx / TILE_SIZE).floor() as i32;
                     let surface = world.surface(cell_x);
-                    let by = surface as f32 * TILE_SIZE - kh - DEMON_KING_HOVER_HEIGHT;
+                    let by = surface as f32 * TILE_SIZE - kh;
                     let king = Entity::new(shared.alloc_id(), EntityKind::DemonKing, bx, by);
                     entities.insert(king.clone());
                     spawned.push(king);
@@ -6636,14 +6635,16 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         });
     }
 
-    // Demon king: the arena boss. It FLIES after the player like an enchanted demon,
-    // closing to melee range and hovering in their face, and on a cooldown commits to
-    // one of four attacks — chosen at random and telegraphed by its wind-up animation
-    // (riding the `lunge` timer, the chosen attack id stashed in `lunge_dir`): a fan of
-    // five fireballs, a tighter spread of three magic fireballs, a single summoner
-    // bolt, or — when the player is close — a heavy melee slam. The bolts loose (and the
-    // slam lands) on the strike frame partway through the wind-up, so an alert fighter
-    // can read the tell.
+    // Demon king: the arena boss. It opens the fight **on foot**, striding after the
+    // player across the floor, and only once it is wounded past two-thirds health does
+    // it take to the air — thereafter it FLIES after the player like an enchanted demon,
+    // closing to melee range and hovering in their face. On either footing it commits,
+    // on a cooldown, to one of four attacks — chosen at random and telegraphed by its
+    // wind-up animation (riding the `lunge` timer, the chosen attack id stashed in
+    // `lunge_dir`): a fan of five fireballs, a tighter spread of three magic fireballs,
+    // a single summoner bolt, or — when the player is close — a heavy melee slam. The
+    // bolts loose (and the slam lands) on the strike frame partway through the wind-up,
+    // so an alert fighter can read the tell.
     //
     // Bolts loosed this tick, spawned after the loop so we aren't holding a mutable
     // borrow of the king while inserting. Each is `(projectile kind, x, y, vx, vy)`.
@@ -6655,6 +6656,9 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         };
         let (w, h) = e.size();
         e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let home = *e.home_x.get_or_insert(e.x);
+        // It fights on foot until wounded past two-thirds health, then takes wing.
+        let flying = e.health * 3 <= e.max_health * 2;
         let scx = e.x + w * 0.5;
         let scy = e.y + h * 0.5;
         // Re-acquire the nearest target each tick (for both movement and facing).
@@ -6677,14 +6681,23 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         };
 
         // Mid-attack: a committed wind-up that plays out over DEMON_KING_ATTACK_TIME.
-        // The king hovers in place (it flies, so no gravity settles it) and looses its
-        // attack once, as the wind-up gives way to the strike.
+        // The king holds position and looses its attack once, as the wind-up gives way
+        // to the strike — hovering in place while airborne, standing planted on the
+        // floor (gravity still settling it) while on foot.
         if e.lunge > 0.0 {
             let was_winding = e.lunge > DEMON_KING_STRIKE_TIME;
             e.lunge = (e.lunge - TICK_DT).max(0.0);
             let striking = e.lunge <= DEMON_KING_STRIKE_TIME;
-            e.vx = 0.0;
-            e.vy = 0.0;
+            if flying {
+                e.vx = 0.0;
+                e.vy = 0.0;
+            } else {
+                let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, 0.0, 0.0, true);
+                e.x = m.x;
+                e.y = m.y;
+                e.vx = 0.0;
+                e.vy = m.vy;
+            }
             // Broadcast a non-zero vx sign so clients keep facing the player through
             // the wind-up (facing only updates on a non-zero vx).
             broadcasts.push(ServerMessage::EntityMoved {
@@ -6692,7 +6705,7 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
                 x: e.x,
                 y: e.y,
                 vx: toward,
-                vy: 0.0,
+                vy: e.vy,
             });
 
             if was_winding && striking {
@@ -6775,30 +6788,12 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             continue;
         }
 
-        // Not attacking. Fly toward the target (matching its altitude), closing to
-        // melee range; in range and off cooldown, commit to a random attack.
-        let (vx, vy) = match target {
-            Some(ref p) => {
-                let gap = aabb_gap(e.x, e.y, w, h, p.x, p.y, p.w, p.h);
-                let dx = (p.x + p.w * 0.5) - scx;
-                let dy = (p.y + p.h * 0.5) - scy;
-                let len = (dx * dx + dy * dy).sqrt().max(1.0);
-                if gap > DEMON_KING_HOVER_GAP {
-                    (dx / len * DEMON_KING_SPEED, dy / len * DEMON_KING_SPEED)
-                } else {
-                    (0.0, 0.0)
-                }
-            }
-            // No quarry: drift gently in place at its current altitude.
-            None => (0.0, 0.0),
-        };
-
         // Begin an attack if a target is in range and the cooldown has elapsed.
         if target.is_some() && e.attack_cd <= 0.0 {
             // Pick one of the four attacks. Derived from the seed, the king's
             // position, and a rolling per-king counter (stashed in the otherwise
             // unused `flee` field) so the choice varies bout to bout even when the
-            // king hovers stock-still over a stationary target.
+            // king stands stock-still over a stationary target.
             let salt = id.wrapping_add((e.flee as u32).wrapping_mul(2_654_435_761));
             e.flee = (e.flee + 1.0) % 1_000_000.0;
             let attack = chunk_hash(arena_seed, e.x as i32, e.y as i32, salt) % 4;
@@ -6806,35 +6801,82 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             e.lunge_dir = attack as f32;
             e.attack_cd = DEMON_KING_ATTACK_INTERVAL;
             e.vx = 0.0;
-            e.vy = 0.0;
             broadcasts.push(ServerMessage::EntityLunging { id });
             broadcasts.push(ServerMessage::EntityMoved {
                 id,
                 x: e.x,
                 y: e.y,
                 vx: toward,
-                vy: 0.0,
+                vy: e.vy,
             });
             continue;
         }
 
-        // Fly freely (no gravity), each axis stopped independently by walls.
-        let (nx, _) = move_x(&mut world, e.x, e.y, w, h, vx * TICK_DT);
-        let (ny, _) = move_y(&mut world, nx, e.y, w, h, vy * TICK_DT);
-        e.x = nx;
-        e.y = ny;
-        e.vx = vx;
-        e.vy = vy;
-        // Always report a non-zero vx sign toward the target so the king faces the
-        // fighter even while hovering (facing only updates on a non-zero vx).
-        let bcast_vx = if vx.abs() > 0.01 { vx } else { toward };
-        broadcasts.push(ServerMessage::EntityMoved {
-            id,
-            x: nx,
-            y: ny,
-            vx: bcast_vx,
-            vy,
-        });
+        // Not attacking: advance on the king's current footing.
+        if flying {
+            // Airborne: fly toward the target in both axes (matching its altitude),
+            // closing to melee range, then hover. No gravity; walls stop each axis.
+            let (vx, vy) = match target {
+                Some(ref p) => {
+                    let gap = aabb_gap(e.x, e.y, w, h, p.x, p.y, p.w, p.h);
+                    let dx = (p.x + p.w * 0.5) - scx;
+                    let dy = (p.y + p.h * 0.5) - scy;
+                    let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                    if gap > DEMON_KING_HOVER_GAP {
+                        (dx / len * DEMON_KING_SPEED, dy / len * DEMON_KING_SPEED)
+                    } else {
+                        (0.0, 0.0)
+                    }
+                }
+                None => (0.0, 0.0),
+            };
+            let (nx, _) = move_x(&mut world, e.x, e.y, w, h, vx * TICK_DT);
+            let (ny, _) = move_y(&mut world, nx, e.y, w, h, vy * TICK_DT);
+            e.x = nx;
+            e.y = ny;
+            e.vx = vx;
+            e.vy = vy;
+            // Report a non-zero vx sign toward the target so the king faces the
+            // fighter even while hovering (facing only updates on a non-zero vx).
+            let bcast_vx = if vx.abs() > 0.01 { vx } else { toward };
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: nx,
+                y: ny,
+                vx: bcast_vx,
+                vy,
+            });
+        } else {
+            // On foot: stride toward the target across the floor (gravity-bound), or
+            // wander its home patch when it has no quarry.
+            let chasing = target.is_some();
+            let dir = match target {
+                Some(ref p) if p.x + p.w * 0.5 < scx => -1.0,
+                Some(_) => 1.0,
+                None => wander_dir(scx, e.vx, home),
+            };
+            let m = step_ground(
+                &mut world,
+                (e.x, e.y, w, h),
+                e.vy,
+                dir,
+                DEMON_KING_SPEED,
+                chasing,
+            );
+            e.x = m.x;
+            e.y = m.y;
+            e.vx = m.vx;
+            e.vy = m.vy;
+            // Face the target while keeping the true speed so the walk cycle plays.
+            let bcast_vx = toward * m.vx.abs();
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: m.x,
+                y: m.y,
+                vx: bcast_vx,
+                vy: m.vy,
+            });
+        }
     }
     // Spawn the bolts the king loosed this tick, each with its own lifetime (they are
     // not in `fireball_ids`/`summoner_fireball_ids`, so they begin flying next tick).

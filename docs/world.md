@@ -112,8 +112,9 @@ above it and solid brick below. There is no terrain, no day or night (it sits
 under a steady, even light), and no ambient life — it exists for one thing, the
 **boss fight**.
 
-A world has exactly one **[Demon King](entities/demon-king.md)** — a towering,
-flying boss that holds court in the arena. The first time you step in with the
+A world has exactly one **[Demon King](entities/demon-king.md)** — a towering boss
+that holds court in the arena, fighting on foot at first and taking wing once
+wounded. The first time you step in with the
 king still alive, it rises across the floor from you, flanked by **eight
 [orc-mage](entities/orcs.md#orc-mage) guardians** scattered across the field, and a
 **boss health bar** appears at the top of the screen. The king is **invulnerable
