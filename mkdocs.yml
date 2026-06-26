@@ -59,6 +59,22 @@ nav:
   - Crafting & Tools: crafting.md
   - The World: world.md
   - Creatures: creatures.md
+  - Bestiary:
+    - Overview: entities/index.md
+    - The Player: entities/player.md
+    - Chicken & Goat: entities/livestock.md
+    - Cat & Puppy: entities/pets.md
+    - Horse: entities/horse.md
+    - Knight: entities/knight.md
+    - Slime: entities/slime.md
+    - Zombie: entities/zombie.md
+    - Spider: entities/spider.md
+    - Snake: entities/snake.md
+    - Skeletons: entities/skeletons.md
+    - Demons: entities/demons.md
+    - Orcs: entities/orcs.md
+    - Necromancer & Skulls: entities/necromancer.md
+    - Ash Twister: entities/ash-twister.md
   - Multiplayer: multiplayer.md
   - Creator Mode: creator-mode.md
   - Saves & Files: saves.md

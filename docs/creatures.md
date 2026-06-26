@@ -4,16 +4,20 @@ The world is populated by animals you can farm or tame and monsters that hunt yo
 at night. Creatures spawn in a biome-appropriate mix, stay near a home area, and
 are all simulated by the server (only your own player is driven by your client).
 
+This page is the overview. Every entity also has its own page in the
+**[Bestiary](entities/index.md)** with a full stat block and tactics — the names
+in the tables below link to them.
+
 ## Passive animals
 
 | Animal | HP | Where | Drops | Notes |
 |---|---|---|---|---|
-| **Chicken** | 8 | Plains, forest, desert | 1 Raw Meat | Pecks the ground, bolts when struck |
-| **Goat** | 16 | Mountains | 2 Raw Meat | Calm grazer |
-| **Cat** | 8 | Forest | — | Wild until tamed |
-| **Puppy** | 14 | Forest | — | Wild until tamed; hunts skeletons and chickens |
-| **Horse** | 30 | Plains | — | Wild until tamed **with an apple**; can be ridden |
-| **Knight** | 40 | Plains (rare) | — | A wandering man-at-arms who **battles monsters on sight**; recruit it **with a tungsten ingot** |
+| **[Chicken](entities/livestock.md#chicken)** | 8 | Plains, forest, desert | 1 Raw Meat | Pecks the ground, bolts when struck |
+| **[Goat](entities/livestock.md#goat)** | 16 | Mountains | 2 Raw Meat | Calm grazer |
+| **[Cat](entities/pets.md#cat)** | 8 | Forest | — | Wild until tamed |
+| **[Puppy](entities/pets.md#puppy)** | 14 | Forest | — | Wild until tamed; hunts skeletons and chickens |
+| **[Horse](entities/horse.md)** | 30 | Plains | — | Wild until tamed **with an apple**; can be ridden |
+| **[Knight](entities/knight.md)** | 40 | Plains (rare) | — | A wandering man-at-arms who **battles monsters on sight**; recruit it **with a tungsten ingot** |
 
 Cook the raw meat from chickens and goats before eating it — raw meat makes you
 sick. See [Food](crafting.md#food).
@@ -86,19 +90,19 @@ Most monsters only **hunt at night** (or in dark caves). Build shelter and keep 
 
 | Monster | HP | Where | Behaviour |
 |---|---|---|---|
-| **Slime** | 10 | Common in mountains | Wanders by day, hunts at night |
-| **Zombie** | 40 | All biomes, night | Slow, tough, hard-hitting; **burns up at daybreak** |
-| **Spider** | 12 | Forests & caves | Fast and fragile; climbs walls |
-| **Snake** | 14 | Desert | Ambusher; coils for ~0.7 s, then lunges |
-| **Skeleton** | 24 | All biomes, night | Keeps its distance and throws **bone projectiles**; burns at daybreak |
-| **Charred Skeleton** | 36 | Underworld **ash valleys** | Charges into melee and **leaves a trail of fire**; active at all hours |
-| **Demon** | 28 | Underworld charred expanse (rare) | Keeps its distance and hurls **fireballs** that burst into flame; active at all hours |
-| **Orc** | 50 | Underworld charred expanse | Slow, hulking brute; plants its feet for a telegraphed **slam** that hits brutally hard; active at all hours |
-| **Orc Mage** | 30 | Underworld charred expanse (rare) | A robed support caster; lands **no blows of its own** — it shies from you and **enchants nearby demons** instead; active at all hours |
-| **Enchanted Demon** | 40 | Underworld charred expanse | A demon a mage has empowered: it **flies** and looses **three purple magic fireballs at once** (one straight, two fanned up and down) that reach farther and hit harder; never spawns on its own |
-| **Ash Twister** | 18 | Underworld **ash valleys** | A whirling column of ash; on contact it **flings you high into the air** — the fall does the damage; active at all hours |
-| **Necromancer** | 26 | Overworld **deserts** & underworld **ash valleys** | Hooded caster; keeps its distance and hurls **summoner fireballs** that burst into bouncing skulls; **burns up at daybreak** in the desert (roams the depths around the clock) |
-| **Skull** | 8 | Summoned by necromancers | A bouncing skeleton skull that hops toward you and gnashes on contact; frail and short-lived; **burns up at daybreak** in the overworld |
+| **[Slime](entities/slime.md)** | 10 | Common in mountains | Wanders by day, hunts at night |
+| **[Zombie](entities/zombie.md)** | 40 | All biomes, night | Slow, tough, hard-hitting; **burns up at daybreak** |
+| **[Spider](entities/spider.md)** | 12 | Forests & caves | Fast and fragile; climbs walls |
+| **[Snake](entities/snake.md)** | 14 | Desert | Ambusher; coils for ~0.7 s, then lunges |
+| **[Skeleton](entities/skeletons.md#skeleton)** | 24 | All biomes, night | Keeps its distance and throws **bone projectiles**; burns at daybreak |
+| **[Charred Skeleton](entities/skeletons.md#charred-skeleton)** | 36 | Underworld **ash valleys** | Charges into melee and **leaves a trail of fire**; active at all hours |
+| **[Demon](entities/demons.md#demon)** | 28 | Underworld charred expanse (rare) | Keeps its distance and hurls **fireballs** that burst into flame; active at all hours |
+| **[Orc](entities/orcs.md#orc)** | 50 | Underworld charred expanse | Slow, hulking brute; plants its feet for a telegraphed **slam** that hits brutally hard; active at all hours |
+| **[Orc Mage](entities/orcs.md#orc-mage)** | 30 | Underworld charred expanse (rare) | A robed support caster; lands **no blows of its own** — it shies from you and **enchants nearby demons** instead; active at all hours |
+| **[Enchanted Demon](entities/demons.md#enchanted-demon)** | 40 | Underworld charred expanse | A demon a mage has empowered: it **flies** and looses **three purple magic fireballs at once** (one straight, two fanned up and down) that reach farther and hit harder; never spawns on its own |
+| **[Ash Twister](entities/ash-twister.md)** | 18 | Underworld **ash valleys** | A whirling column of ash; on contact it **flings you high into the air** — the fall does the damage; active at all hours |
+| **[Necromancer](entities/necromancer.md#necromancer)** | 26 | Overworld **deserts** & underworld **ash valleys** | Hooded caster; keeps its distance and hurls **summoner fireballs** that burst into bouncing skulls; **burns up at daybreak** in the desert (roams the depths around the clock) |
+| **[Skull](entities/necromancer.md#skull)** | 8 | Summoned by necromancers | A bouncing skeleton skull that hops toward you and gnashes on contact; frail and short-lived; **burns up at daybreak** in the overworld |
 
 !!! danger "Mind the drop after an ash twister hits you"
     An **ash twister** barely scratches you on contact — but it hurls you skyward,
