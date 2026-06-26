@@ -15,6 +15,7 @@ sounds.
 | Overworld  | `1.ogg`   | [remaxim](https://opengameart.org/users/remaxim)        | OpenGameArt.org   | GPL-3.0       |
 | Underworld | `0.ogg`   | [remaxim](https://opengameart.org/users/remaxim)        | OpenGameArt.org   | CC BY 4.0     |
 | Underworld | `1.ogg`   | [remaxim](https://opengameart.org/users/remaxim)        | OpenGameArt.org   | GPL-3.0       |
+| Arena      | `0.ogg`   | [ATMANAN](https://opengameart.org/users/atmanan)        | OpenGameArt.org   | CC BY 4.0     |
 
 `overworld/0.ogg`, `overworld/1.ogg`, and `underworld/1.ogg` were released under
 multiple licenses, including CC&nbsp;BY-SA&nbsp;3.0 and GPL&nbsp;3.0; we use them under the
