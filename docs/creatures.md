@@ -104,6 +104,7 @@ Most monsters only **hunt at night** (or in dark caves). Build shelter and keep 
 | **[Ash Twister](entities/ash-twister.md)**                     | 18  | Underworld **ash valleys**                         | A whirling column of ash; on contact it **flings you high into the air** — the fall does the damage; active at all hours                                                                         |
 | **[Necromancer](entities/necromancer.md#necromancer)**         | 26  | Overworld **deserts** & underworld **ash valleys** | Hooded caster; keeps its distance and hurls **summoner fireballs** that burst into bouncing skulls; **burns up at daybreak** in the desert (roams the depths around the clock)                   |
 | **[Skull](entities/necromancer.md#skull)**                     | 8   | Summoned by necromancers                           | A bouncing skeleton skull that hops toward you and gnashes on contact; frail and short-lived; **burns up at daybreak** in the overworld                                                          |
+| **[Dragon](entities/dragon.md)**                               | 200 | Underworld charred expanse (**very rare**)         | A flying **miniboss**; wheels through the air and breathes **fireballs**; raises its own **music** and **health bar** when near; active at all hours                                             |
 
 !!! danger "Mind the drop after an ash twister hits you"
 An **ash twister** barely scratches you on contact — but it hurls you skyward,

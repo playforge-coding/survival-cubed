@@ -220,6 +220,27 @@ pub static DEMON_SPRITE: SpriteDef = SpriteDef {
     fps: 8.0,
 };
 
+/// Dragon: the underworld's rare flying miniboss — a long, winged serpent whose
+/// wings beat through its four-frame cycle as it wheels through the air.
+pub static DRAGON_SPRITE: SpriteDef = SpriteDef {
+    name: "dragon",
+    frame_w: 31,
+    frame_h: 17,
+    frames: 4,
+    fps: 8.0,
+};
+
+/// Dragon breathing fire: the one-shot pose the dragon plays each time it looses a
+/// fireball, stepped by its attack (lunge) timer rather than the walk clock. Lives
+/// in the `dragon/attack` subdirectory (its `name` doubles as that path).
+pub static DRAGON_ATTACK_SPRITE: SpriteDef = SpriteDef {
+    name: "dragon/attack",
+    frame_w: 31,
+    frame_h: 17,
+    frames: 2,
+    fps: 6.0,
+};
+
 /// Demon king: the towering arena boss, drawn on the demon's hunched build but far
 /// larger. Its walk cycle plays as it flies after the player.
 pub static DEMON_KING_SPRITE: SpriteDef = SpriteDef {
@@ -495,6 +516,9 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         // The demon king's attack pose is handled by the scene builder off its lunge
         // timer; this walk sheet is its plodding pursuit across the arena floor.
         EntityKind::DemonKing => &DEMON_KING_SPRITE,
+        // A dragon's fire-breathing pose is handled by the scene builder off its
+        // lunge timer; this walk sheet is its wing-beat flight cycle.
+        EntityKind::Dragon => &DRAGON_SPRITE,
         // An orc's slam pose is handled by the scene builder off its lunge timer;
         // this walk sheet is its plodding stride.
         EntityKind::Orc => &ORC_SPRITE,

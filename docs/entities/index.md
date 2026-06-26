@@ -38,6 +38,12 @@ Projectiles (bones, fireballs) are the exception, flying at 130–170 px/s.
 | [Necromancer & Skulls](necromancer.md) | 26 / 8  | Deserts & underworld ash valleys               |
 | [Ash Twister](ash-twister.md)          | 18      | Underworld ash valleys                         |
 
+## Minibosses
+
+| Entity                | HP  | Where                                            |
+| --------------------- | --- | ------------------------------------------------ |
+| [Dragon](dragon.md)   | 200 | Underworld charred expanse — very rare, **flies** |
+
 ## Bosses
 
 | Entity                      | HP   | Where                         |

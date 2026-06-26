@@ -331,6 +331,34 @@ const MAGIC_FIREBALL_LIFETIME: f32 = 4.0;
 /// striking a player — a touch more forgiving than an ordinary fireball's.
 const MAGIC_FIREBALL_HIT_RANGE: f32 = 3.0;
 
+// --- Dragon (underworld flying miniboss) ---------------------------------------
+/// Flying speed of a dragon, in pixels/second — swifter than the enchanted demon it
+/// shares the air with, befitting a miniboss that runs a fleeing player down.
+const DRAGON_SPEED: f32 = 42.0;
+/// How far (px) a dragon notices a player and begins wheeling in to attack.
+const DRAGON_AGGRO: f32 = 360.0;
+/// Maximum gap (px between AABBs) at which a dragon will breathe a fireball — it
+/// stops closing and looses once a player is this near.
+const DRAGON_SHOOT_RANGE: f32 = 280.0;
+/// Standoff gap (px between AABBs) a dragon tries to keep: it backs off from a
+/// player closer than this so it can keep raining fire from range.
+const DRAGON_KEEP_DIST: f32 = 150.0;
+/// Seconds a dragon waits between fireballs — a brisker cadence than the demons,
+/// since a lone miniboss must threaten on its own.
+const DRAGON_SHOOT_INTERVAL: f32 = 1.4;
+/// Permille (out of 1000) chance that a fresh underworld charred chunk seeds a
+/// dragon — far rarer than any other underworld spawner, so a dragon is a genuine
+/// once-in-a-while event rather than ambient life.
+const DRAGON_CHUNK_PERMILLE: u32 = 6;
+/// Open (non-solid) cells a dragon's spawn column must clear above its floor before
+/// it will seed one there. This keeps a dragon out of cramped tunnels, dropping it
+/// only into a tall cavern where it flies in plain sight (so its music never plays
+/// over an unseen foe).
+const DRAGON_SPAWN_CLEARANCE: i32 = 10;
+/// How high (px) above the cavern floor a freshly seeded dragon hovers, so it
+/// begins aloft in the open rather than perched on the rock.
+const DRAGON_SPAWN_HOVER: f32 = 6.0 * TILE_SIZE;
+
 // --- Demon king (arena boss) ---------------------------------------------------
 /// How far (px) the demon king notices a player and gives chase. Generous — it
 /// commands the whole arena, so a fighter is never out of its sight for long.
@@ -4074,6 +4102,65 @@ fn maybe_spawn_orc_mages(shared: &Shared, cx: i32, cy: i32) {
     }
 }
 
+/// Possibly seed a dragon — the underworld's rare flying miniboss — into a freshly
+/// generated underworld chunk. Dragons keep to the main **charred** expanse (never
+/// the ash valleys) and are *extremely* rare: only a few chunks in a thousand seed
+/// one. Crucially, a dragon is placed only where there's a tall open cavern above the
+/// floor (at least [`DRAGON_SPAWN_CLEARANCE`] open cells), and it spawns hovering
+/// [`DRAGON_SPAWN_HOVER`] above that floor — so it is always aloft and in plain sight,
+/// never walled into rock where the player would hear its music without seeing it.
+/// Deterministic per chunk via [`chunk_hash`] on its own salt range, so re-exploring
+/// the same terrain never double-spawns, and it runs independently of the other
+/// underworld spawners.
+fn maybe_spawn_dragon(shared: &Shared, cx: i32, cy: i32) {
+    let mut world = shared.world(Dimension::Underworld).lock();
+    let seed = world.generator.seed();
+    if chunk_hash(seed, cx, cy, 240) % 1000 >= DRAGON_CHUNK_PERMILLE {
+        return;
+    }
+
+    let base_x = cx * CHUNK_SIZE;
+    let chunk_top = cy * CHUNK_SIZE;
+    let chunk_bottom = chunk_top + CHUNK_SIZE;
+    let (_, h) = EntityKind::Dragon.size();
+
+    let lx = chunk_hash(seed, cx, cy, 241) % CHUNK_SIZE as u32;
+    let cell_x = base_x + lx as i32;
+    // Dragons keep to the main charred expanse — bail if this column is an ash valley.
+    if world.generator.underworld_biome_at(cell_x) != crate::worldgen::UnderworldBiome::Charred {
+        return;
+    }
+    // Find a floor (open cell above solid rock) that has a tall open cavern over it,
+    // scanning from the chunk's bottom upward. Only such an airy spot will do, so the
+    // dragon flies in the open rather than being buried in a cramped tunnel.
+    let mut floor_ty = None;
+    for ty in (chunk_top..chunk_bottom).rev() {
+        if !world.solid(cell_x, ty) && world.solid(cell_x, ty + 1) {
+            // Count the open cells stacked directly above this floor.
+            let clear = (1..=DRAGON_SPAWN_CLEARANCE)
+                .take_while(|&n| !world.solid(cell_x, ty - n + 1))
+                .count() as i32;
+            if clear >= DRAGON_SPAWN_CLEARANCE {
+                floor_ty = Some(ty);
+                break;
+            }
+        }
+    }
+    let Some(ty) = floor_ty else { return };
+    // Hover above the floor, in the open air of the cavern we just cleared.
+    let y = (ty + 1) as f32 * TILE_SIZE - h - DRAGON_SPAWN_HOVER;
+
+    let id = shared.alloc_id();
+    let entity = Entity::new(id, EntityKind::Dragon, cell_x as f32 * TILE_SIZE, y);
+    shared
+        .entities(Dimension::Underworld)
+        .lock()
+        .insert(entity.clone());
+    drop(world);
+
+    shared.broadcast_dim(Dimension::Underworld, ServerMessage::EntitySpawn { entity });
+}
+
 /// Possibly seed ash twisters into a freshly generated underworld chunk. Unlike the
 /// other underworld monsters they are native to the **ash valleys** alone, so a
 /// candidate spawn column is skipped unless it belongs to one (see
@@ -4762,6 +4849,11 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     let enchanted_demon_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::EnchantedDemon))
+        .map(|e| e.id)
+        .collect();
+    let dragon_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Dragon))
         .map(|e| e.id)
         .collect();
     let orc_mage_ids: Vec<EntityId> = entities
@@ -6566,6 +6658,112 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         broadcasts.push(ServerMessage::EntitySpawn { entity: fireball });
     }
 
+    // Dragons: the underworld's rare flying miniboss. Like the enchanted demon they
+    // FLY, kiting the player through the air — closing when out of range, backing off
+    // when crowded — but they are swifter, tougher, and breathe ordinary fireballs on
+    // a brisk cadence. Active at all hours (the underworld is always dark).
+    //
+    // Fireballs loosed this tick, spawned after the loop (as for the demons) so we
+    // aren't holding a mutable borrow of the dragon while inserting. Each entry is the
+    // fireball's spawn `(x, y)` and its flight `(vx, vy)`.
+    let mut dragon_fireball_throws: Vec<(f32, f32, f32, f32)> = Vec::new();
+    for id in dragon_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        e.lunge = (e.lunge - TICK_DT).max(0.0);
+        let home = *e.home_x.get_or_insert(e.x);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+        let target = nearest_prey(&hostile_players, &knight_boxes, scx, scy, DRAGON_AGGRO);
+
+        // Flying kite, steering in both axes: close in when out of fireball range,
+        // back off when crowded, otherwise hold horizontally and match the target's
+        // altitude so its breath flies level.
+        let (vx, vy, aim) = match target {
+            Some(p) => {
+                let gap = aabb_gap(e.x, e.y, w, h, p.x, p.y, p.w, p.h);
+                let dx = (p.x + p.w * 0.5) - scx;
+                let dy = (p.y + p.h * 0.5) - scy;
+                let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                let (ux, uy) = (dx / len, dy / len);
+                let (vx, vy) = if gap < DRAGON_KEEP_DIST {
+                    (-ux * DRAGON_SPEED, -uy * DRAGON_SPEED) // too close: retreat
+                } else if gap > DRAGON_SHOOT_RANGE {
+                    (ux * DRAGON_SPEED, uy * DRAGON_SPEED) // too far: advance
+                } else {
+                    (0.0, uy * DRAGON_SPEED) // in range: hold, just match altitude
+                };
+                (vx, vy, Some((p.x, p.y, p.w, p.h, gap)))
+            }
+            // No quarry: soar gently across its home patch at its current level.
+            None => (wander_dir(scx, e.vx, home) * DRAGON_SPEED, 0.0, None),
+        };
+
+        // Fly freely (no gravity), each axis stopped independently by walls.
+        let (nx, _) = move_x(&mut world, e.x, e.y, w, h, vx * TICK_DT);
+        let (ny, _) = move_y(&mut world, nx, e.y, w, h, vy * TICK_DT);
+        e.x = nx;
+        e.y = ny;
+        e.vx = vx;
+        e.vy = vy;
+        // Point the reported vx's sign at the target so it always faces the player it
+        // is fighting, even while backing away.
+        let bcast_vx = match aim {
+            Some((px, _, pw, _, _)) => {
+                let cx = nx + w * 0.5;
+                let toward = if px + pw * 0.5 >= cx { 1.0 } else { -1.0 };
+                toward * vx.abs()
+            }
+            None => vx,
+        };
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: nx,
+            y: ny,
+            vx: bcast_vx,
+            vy,
+        });
+
+        // Breathe a fireball when a target is within range and we're off cooldown,
+        // aiming from the dragon's maw (front-upper body) at the target's center, and
+        // kick off the fire-breathing animation.
+        if let Some((px, py, pw, ph, gap)) = aim {
+            if e.attack_cd <= 0.0 && gap <= DRAGON_SHOOT_RANGE {
+                e.attack_cd = DRAGON_SHOOT_INTERVAL;
+                e.lunge = crate::entity::DRAGON_ATTACK_TIME;
+                broadcasts.push(ServerMessage::EntityLunging { id });
+                let (fw, fh) = FIREBALL_SIZE;
+                let sx = nx + w * 0.5 - fw * 0.5;
+                let sy = ny + h * 0.3 - fh * 0.5;
+                let tx = px + pw * 0.5;
+                let ty = py + ph * 0.5;
+                let dx = tx - (sx + fw * 0.5);
+                let dy = ty - (sy + fh * 0.5);
+                let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                dragon_fireball_throws.push((
+                    sx,
+                    sy,
+                    dx / len * FIREBALL_SPEED,
+                    dy / len * FIREBALL_SPEED,
+                ));
+            }
+        }
+    }
+    // Spawn the dragon fireballs loosed this tick (not in `fireball_ids`, so they begin
+    // flying next tick rather than being simulated again immediately).
+    for (x, y, vx, vy) in dragon_fireball_throws {
+        let fid = shared.alloc_id();
+        let mut fireball = Entity::new(fid, EntityKind::Fireball, x, y);
+        fireball.vx = vx;
+        fireball.vy = vy;
+        fireball.attack_cd = FIREBALL_LIFETIME; // reused as the airborne lifetime timer
+        entities.insert(fireball.clone());
+        broadcasts.push(ServerMessage::EntitySpawn { entity: fireball });
+    }
+
     // Orcs: the underworld's hulking brutes. They lumber after players at all hours
     // (slower than anything else afoot), then plant their feet and commit to a
     // telegraphed slam — heaving their arms up and crashing them down for heavy
@@ -7872,6 +8070,7 @@ fn is_hostile(kind: &EntityKind) -> bool {
             | EntityKind::Necromancer
             | EntityKind::Skull
             | EntityKind::DarkKnight
+            | EntityKind::Dragon
     )
 }
 
@@ -8589,6 +8788,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                 maybe_spawn_demons(&shared, cx, cy);
                                 maybe_spawn_orcs(&shared, cx, cy);
                                 maybe_spawn_orc_mages(&shared, cx, cy);
+                                maybe_spawn_dragon(&shared, cx, cy);
                                 maybe_spawn_ash_twisters(&shared, cx, cy);
                                 maybe_spawn_necromancers_ash(&shared, cx, cy);
                             }

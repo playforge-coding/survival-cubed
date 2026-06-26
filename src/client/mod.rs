@@ -126,6 +126,13 @@ const HIT_FLASH_TIME: f32 = 0.25;
 const KNOCKBACK_DAMP: f32 = 9.0;
 /// How close (world px) the player must get to the death marker before it clears.
 const WAYPOINT_REACHED_DIST: f32 = 24.0;
+/// How near (world px) a dragon miniboss must be for its music and health bar to
+/// kick in. Kept tight enough that a dragon raising its theme is on or near the
+/// screen — combined with the server spawning dragons aloft in open caverns, you
+/// never hear the miniboss music over an unseen foe. Music and the bar fall away
+/// once the dragon (or the player) strays past this, when it dies, or on changing
+/// dimension.
+const MINIBOSS_MUSIC_RANGE: f32 = 340.0;
 
 /// Validate a user-entered world name, returning the trimmed name if it is safe
 /// to use as a directory. Restricting to letters, numbers, spaces, '-' and '_'
@@ -1059,6 +1066,7 @@ impl App {
                             EntityKind::Orc => crate::entity::ORC_SLAM_TIME,
                             EntityKind::OrcMage => crate::entity::ORC_MAGE_CAST_TIME,
                             EntityKind::Knight { .. } => crate::entity::KNIGHT_ATTACK_TIME,
+                            EntityKind::Dragon => crate::entity::DRAGON_ATTACK_TIME,
                             _ => crate::entity::SNAKE_LUNGE_TIME,
                         };
                     }
@@ -1184,6 +1192,23 @@ impl App {
             // Advance any in-progress snake strike animation.
             if e.lunge > 0.0 {
                 e.lunge = (e.lunge - dt).max(0.0);
+            }
+        }
+
+        // Miniboss music: while a dragon is near in this dimension, swap to the
+        // miniboss theme; otherwise (it has been slain, has strayed far, or we've
+        // changed dimension — leaving no nearby dragon) fall back to the dimension's
+        // own music. `play_for`/`play_miniboss` are cheap no-ops when nothing changes.
+        let near_dragon = game.entities.values().any(|e| {
+            matches!(e.kind, EntityKind::Dragon)
+                && Vec2::new(e.x, e.y).distance(game.pos) <= MINIBOSS_MUSIC_RANGE
+        });
+        let dim = game.dim;
+        if let Some(m) = &mut self.music {
+            if near_dragon {
+                m.play_miniboss();
+            } else {
+                m.play_for(dim);
             }
         }
 
@@ -1718,18 +1743,38 @@ impl App {
         }
     }
 
-    /// Draw the boss health bar across the top of the screen while a boss (the
-    /// [`EntityKind::DemonKing`]) is present in the current dimension. Driven purely
-    /// by the boss entity's replicated `health`/`max_health`, so it tracks the fight
-    /// without any dedicated message. A no-op when no boss is in view.
+    /// Draw the boss health bar across the top of the screen while a boss is in view:
+    /// the arena's [`EntityKind::DemonKing`], or — when no king is present — a nearby
+    /// [`EntityKind::Dragon`] miniboss. Driven purely by the boss entity's replicated
+    /// `health`/`max_health`, so it tracks the fight without any dedicated message. The
+    /// dragon's bar (like its music) only shows while it is within
+    /// [`MINIBOSS_MUSIC_RANGE`], so it falls away when the dragon strays far, is slain,
+    /// or the player changes dimension. A no-op when no boss is in view.
     fn boss_bar_overlay(&self, ui: &mut egui::Ui) {
         let Some(g) = &self.game else { return };
-        let Some(boss) = g
+        // The arena king takes precedence; otherwise the nearest in-range dragon.
+        let king = g
             .entities
             .values()
-            .find(|e| matches!(e.kind, EntityKind::DemonKing))
-        else {
+            .find(|e| matches!(e.kind, EntityKind::DemonKing));
+        let boss = king.or_else(|| {
+            g.entities
+                .values()
+                .filter(|e| matches!(e.kind, EntityKind::Dragon))
+                .filter(|e| Vec2::new(e.x, e.y).distance(g.pos) <= MINIBOSS_MUSIC_RANGE)
+                .min_by(|a, b| {
+                    let da = Vec2::new(a.x, a.y).distance(g.pos);
+                    let db = Vec2::new(b.x, b.y).distance(g.pos);
+                    da.total_cmp(&db)
+                })
+        });
+        let Some(boss) = boss else {
             return;
+        };
+        let title = if matches!(boss.kind, EntityKind::DemonKing) {
+            "The Demon King"
+        } else {
+            "Dragon"
         };
         let frac = if boss.max_health > 0 {
             (boss.health as f32 / boss.max_health as f32).clamp(0.0, 1.0)
@@ -1738,19 +1783,23 @@ impl App {
         };
         let (health, max_health) = (boss.health, boss.max_health);
         // The king is invulnerable while its orc-mage guardians still stand; count
-        // those left in view so the bar can tell the player what to do.
-        let guardians = g
-            .entities
-            .values()
-            .filter(|e| matches!(e.kind, EntityKind::OrcMage))
-            .count();
+        // those left in view so the bar can tell the player what to do. (A dragon has
+        // no guardians, so its bar is always the plain vulnerable red.)
+        let guardians = if matches!(boss.kind, EntityKind::DemonKing) {
+            g.entities
+                .values()
+                .filter(|e| matches!(e.kind, EntityKind::OrcMage))
+                .count()
+        } else {
+            0
+        };
         egui::Area::new(egui::Id::new("boss_bar"))
             .anchor(egui::Align2::CENTER_TOP, [0.0, 52.0])
             .interactable(false)
             .show(ui.ctx(), |ui| {
                 ui.vertical_centered(|ui| {
                     ui.label(
-                        egui::RichText::new("The Demon King")
+                        egui::RichText::new(title)
                             .strong()
                             .size(16.0)
                             .color(egui::Color32::from_rgb(230, 170, 60)),
@@ -3607,6 +3656,13 @@ impl App {
                 // by the cast timer, which rides on the same `lunge` field).
                 let d = &sprite::ORC_MAGE_CAST_SPRITE;
                 let progress = 1.0 - (e.lunge / crate::entity::ORC_MAGE_CAST_TIME).clamp(0.0, 1.0);
+                let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
+                (d, frame)
+            } else if e.lunge > 0.0 && matches!(e.kind, EntityKind::Dragon) {
+                // A breathing dragon plays its one-shot fire-breath (frame stepped by
+                // the attack timer, which rides on the same `lunge` field).
+                let d = &sprite::DRAGON_ATTACK_SPRITE;
+                let progress = 1.0 - (e.lunge / crate::entity::DRAGON_ATTACK_TIME).clamp(0.0, 1.0);
                 let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
                 (d, frame)
             } else if e.lunge > 0.0 && matches!(e.kind, EntityKind::DemonKing) {

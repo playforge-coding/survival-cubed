@@ -30,8 +30,14 @@ pub struct Music {
     /// The sink driving the current loop, if any. Dropping it stops the music.
     sink: Option<Sink>,
     /// Which dimension's music is playing, so a redundant dimension update
-    /// doesn't restart (and re-randomise) the track.
+    /// doesn't restart (and re-randomise) the track. While the miniboss track is
+    /// overriding it, this still records the dimension to fall back to once the
+    /// encounter ends.
     current: Option<Dimension>,
+    /// Whether the miniboss override track is currently playing (over the
+    /// dimension's own music), set while a dragon is near (see the client's
+    /// proximity check) and cleared when it returns to dimension music.
+    miniboss: bool,
 }
 
 impl Music {
@@ -44,6 +50,7 @@ impl Music {
                 handle,
                 sink: None,
                 current: None,
+                miniboss: false,
             }),
             Err(e) => {
                 log::warn!("audio unavailable, music disabled: {e:#}");
@@ -53,48 +60,75 @@ impl Music {
     }
 
     /// Start (or switch to) the music for `dim`, looping a randomly chosen track
-    /// for that dimension. A no-op if that dimension's music is already playing.
+    /// for that dimension. A no-op if that dimension's music is already playing —
+    /// but it *will* take over from the miniboss track, so it doubles as the way
+    /// back to dimension music once a dragon encounter ends.
     pub fn play_for(&mut self, dim: Dimension) {
-        if self.current == Some(dim) && self.sink.as_ref().is_some_and(|s| !s.empty()) {
+        if self.current == Some(dim)
+            && !self.miniboss
+            && self.sink.as_ref().is_some_and(|s| !s.empty())
+        {
             return;
         }
+        if self.start(music_dir(dim)) {
+            self.current = Some(dim);
+            self.miniboss = false;
+        } else {
+            self.stop();
+        }
+    }
 
-        let name = music_dir(dim);
+    /// Start (or stay on) the miniboss track, looping it *over* the dimension's own
+    /// music while a dragon is near. A no-op if it is already playing; `current` is
+    /// left recording the dimension to return to (via [`Self::play_for`]).
+    pub fn play_miniboss(&mut self) {
+        if self.miniboss && self.sink.as_ref().is_some_and(|s| !s.empty()) {
+            return;
+        }
+        if self.start("miniboss") {
+            self.miniboss = true;
+        }
+    }
+
+    /// Decode and loop a randomly chosen track from music subdir `name`, swapping it
+    /// in as the current sink. Returns whether a track actually started (false if the
+    /// directory has no tracks or playback could not be set up).
+    fn start(&mut self, name: &str) -> bool {
         let count = crate::assets::music_track_count(name);
         if count == 0 {
-            self.stop();
-            return;
+            return false;
         }
         let track = random_below(count);
 
         let Some(bytes) = crate::assets::music_ogg(name, track) else {
-            return;
+            return false;
         };
         let decoder = match Decoder::new(Cursor::new(bytes)) {
             Ok(d) => d,
             Err(e) => {
                 log::warn!("could not decode music {name}/{track}: {e:#}");
-                return;
+                return false;
             }
         };
         let sink = match Sink::try_new(&self.handle) {
             Ok(s) => s,
             Err(e) => {
                 log::warn!("could not start music: {e:#}");
-                return;
+                return false;
             }
         };
         sink.set_volume(MUSIC_VOLUME);
         sink.append(decoder.repeat_infinite());
 
         self.sink = Some(sink);
-        self.current = Some(dim);
+        true
     }
 
     /// Stop any playing music (e.g. on leaving a world).
     pub fn stop(&mut self) {
         self.sink = None;
         self.current = None;
+        self.miniboss = false;
     }
 }
 

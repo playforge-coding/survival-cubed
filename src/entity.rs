@@ -63,6 +63,10 @@ pub const ENCHANTED_DEMON_SIZE: (f32, f32) = (10.0, 15.0);
 /// boss. A towering fiend, drawn far larger than the rank-and-file demon so it
 /// reads as the monarch of the depths.
 pub const DEMON_KING_SIZE: (f32, f32) = (22.0, 30.0);
+/// Collision/draw size (width, height) in pixels of a dragon — the underworld's
+/// rare flying miniboss. A long, winged serpent drawn far wider than any other
+/// creature, matching its art's low, broad proportions.
+pub const DRAGON_SIZE: (f32, f32) = (31.0, 17.0);
 /// Collision/draw size (width, height) in pixels of an orc mage — a robed
 /// underworld spellcaster, leaner than the hulking brute it shares the depths with.
 pub const ORC_MAGE_SIZE: (f32, f32) = (10.0, 13.0);
@@ -146,6 +150,13 @@ pub const DEMON_KING_ATTACK_TIME: f32 = 1.0;
 /// damage is dealt server-side on the [`Entity::attack_cd`] cadence.
 pub const KNIGHT_ATTACK_TIME: f32 = 0.45;
 
+/// Seconds a dragon's fireball-breathing animation plays end to end. Like the
+/// other attack poses it rides on the [`Entity::lunge`] timer: the server kicks
+/// it off (broadcasting [`crate::protocol::ServerMessage::EntityLunging`]) each
+/// time the dragon looses a fireball, and the client plays the attack sheet for
+/// this long. Purely cosmetic — the fireball is spawned server-side.
+pub const DRAGON_ATTACK_TIME: f32 = 0.5;
+
 /// Seconds a snake spends writhing through its death animation when killed,
 /// before it despawns. Shared by both sides so the server's despawn timing and
 /// the client's animation playback agree.
@@ -220,6 +231,10 @@ pub const KNIGHT_MAX_HEALTH: i32 = 40;
 /// the overworld night — a shade harder to fell than even the [`KNIGHT_MAX_HEALTH`]
 /// man-at-arms it hunts, fitting a rare foe that drops tungsten when it falls.
 pub const DARK_KNIGHT_MAX_HEALTH: i32 = 44;
+/// Maximum health of a dragon, in hit points. A miniboss: far tougher than the
+/// rank-and-file underworld monsters, so felling one is a genuine fight — its
+/// health drives the miniboss bar the client shows while a dragon is near.
+pub const DRAGON_MAX_HEALTH: i32 = 200;
 /// Maximum health of the demon king, in hit points. A boss: vastly tougher than
 /// anything else in the world, so felling it is a real campaign rather than a
 /// brief scrap. Its health drives the boss bar the client shows during the fight.
@@ -439,6 +454,14 @@ pub enum EntityKind {
     /// that world (see [`crate::server`]). Server-simulated. Appended last so older
     /// saves and the wire format keep their variant indices.
     DemonKing,
+    /// A dragon: the underworld's rare flying miniboss. It spawns extremely rarely
+    /// in the charred expanse, high in an open cavern where it is plainly visible,
+    /// and — like the [`EntityKind::EnchantedDemon`] — it **flies**, chasing the
+    /// player through the air and hurling [`EntityKind::Fireball`]s from range. It
+    /// is far tougher than anything else in the depths, and a nearby dragon raises
+    /// its own miniboss music and health bar on the client. Server-simulated.
+    /// Appended last so older saves and the wire format keep their variant indices.
+    Dragon,
 }
 
 impl EntityKind {
@@ -472,6 +495,7 @@ impl EntityKind {
             EntityKind::DarkKnight => DARK_KNIGHT_SIZE,
             EntityKind::Axe => AXE_SIZE,
             EntityKind::DemonKing => DEMON_KING_SIZE,
+            EntityKind::Dragon => DRAGON_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -589,6 +613,7 @@ impl EntityKind {
             // bar shows and a stray melee swing can't meaningfully "kill" it.
             EntityKind::Axe => 1,
             EntityKind::DemonKing => DEMON_KING_MAX_HEALTH,
+            EntityKind::Dragon => DRAGON_MAX_HEALTH,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }

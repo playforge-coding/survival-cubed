@@ -155,6 +155,8 @@ sprites!(
     "skeleton" => [0, 1, 2, 3, 4, 5],
     "charred_skeleton" => [0, 1, 2, 3, 4, 5],
     "demon" => [0, 1, 2, 3],
+    "dragon" => [0, 1, 2, 3],
+    "dragon/attack" => [0, 1],
     "demon_king" => [0, 1, 2, 3, 4],
     "demon_king/attack" => [0, 1, 2, 3, 4, 5],
     "orc" => [0, 1, 2, 3, 4],
@@ -181,4 +183,7 @@ music!(
     "overworld" => [0, 1],
     "underworld" => [0, 1],
     "arena" => [0],
+    // Played near the underworld's rare dragon miniboss (see the client's
+    // proximity check), in place of the dimension's own music.
+    "miniboss" => [0],
 );
