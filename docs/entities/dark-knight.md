@@ -14,7 +14,7 @@ way to win the metal without braving the underworld.
 | **Damage** | 8 HP per axe |
 | **Found in** | All biomes, at night (overworld) — rare |
 | **Activity** | Night only — burns up at dawn |
-| **Drops** | Tungsten ingots, often a tungsten tool or weapon |
+| **Drops** | Tungsten ingots, often a tungsten tool or weapon, rarely a suit of tungsten armor |
 
 ## Behaviour
 
@@ -46,8 +46,10 @@ leaves nothing behind where it lands.
 Killing a dark knight is the **only way to get tungsten without going to the
 underworld**. Every kill spills **1–3 tungsten ingots**, and more often than not a
 finished **tungsten tool or weapon** as well — a tungsten pickaxe, sword, or axe at
-full durability. Hunt them at night for top-tier gear (and the tungsten ingots a
-[fire key](../crafting.md#smelting) needs) without ever mining charred rock.
+full durability. Rarely, a kill also yields a whole suit of **[tungsten
+armor](../crafting.md#armor)**. Hunt them at night for top-tier gear (and the
+tungsten ingots a [fire key](../crafting.md#smelting) needs) without ever mining
+charred rock.
 
 !!! tip "Worth the risk"
     A dark knight is a hard, rare fight — but the payoff is the best gear in the

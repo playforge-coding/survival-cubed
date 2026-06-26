@@ -202,6 +202,17 @@ pub const LOCKED_CHEST: BlockId = 58;
 /// and right-click again to return to where you left from (see [`crate::server`]'s
 /// arena-key handling). Reusable — using it does not consume the key.
 pub const ARENA_KEY: BlockId = 59;
+/// A full suit of iron armor, forged from a hoard of [`IRON_INGOT`]s. An item (not
+/// placeable, stacks to one): a single piece worn as a whole suit — there are no
+/// individual greaves or helms. Carrying one shields you, blunting incoming attack
+/// damage (see [`armor_defense`]); it raises your defense, never your health.
+pub const IRON_ARMOR: BlockId = 60;
+/// A full suit of tungsten armor, forged from a hoard of [`TUNGSTEN_INGOT`]s — the
+/// sturdiest armor in the world, turning aside more of a blow than iron. An item
+/// (not placeable, stacks to one) worn as a whole suit. Also spilled by a slain
+/// [`crate::entity::EntityKind::DemonKing`] (in its chest) and, rarely, a
+/// [`crate::entity::EntityKind::DarkKnight`].
+pub const TUNGSTEN_ARMOR: BlockId = 61;
 
 /// Gold ingots consumed to reinforce a plain [`CHEST`] into a [`LOCKED_CHEST`].
 /// Shared by the server (which charges it) and the client (which shows the cost).
@@ -343,6 +354,11 @@ impl BlockRegistry {
         // inventory and dropped sprite have an atlas tile). Right-clicking with it
         // warps the player into and out of the stone-brick boss arena.
         r.register("arena_key", false, true, false, 0.0);
+        // Armor suits: whole-body iron and tungsten armor, worn as a single piece
+        // (no separate helm/greaves). Non-placeable items that stack to one; worn
+        // simply by carrying one, they blunt incoming attack damage.
+        r.register("iron_armor", false, true, false, 0.0);
+        r.register("tungsten_armor", false, true, false, 0.0);
         r
     }
 
@@ -407,7 +423,23 @@ pub fn max_stack(id: BlockId) -> u32 {
         WATER_BUCKET => 1,
         // A boat is a single bulky vehicle, so it never stacks.
         BOAT => 1,
+        // A suit of armor is a single bulky piece, so it never stacks.
+        IRON_ARMOR | TUNGSTEN_ARMOR => 1,
         _ => crate::inventory::STACK_MAX,
+    }
+}
+
+/// The percentage of incoming attack damage a suit of armor turns aside while
+/// worn — its *defense*. `0` for anything that isn't armor. Armor is worn simply
+/// by carrying it (see [`crate::server`]); the sturdier the metal, the more of a
+/// blow it blunts. Iron stops better than a third of a hit; tungsten, more than
+/// half. Defense never touches your maximum health — it only softens the blows
+/// you take. A blow always lands for at least 1 (armor cannot make you invincible).
+pub fn armor_defense(item: BlockId) -> i32 {
+    match item {
+        IRON_ARMOR => 35,
+        TUNGSTEN_ARMOR => 55,
+        _ => 0,
     }
 }
 
@@ -487,6 +519,11 @@ pub fn max_durability(item: BlockId) -> u16 {
         STONE_PICKAXE | STONE_SWORD | STONE_AXE => 132,
         IRON_PICKAXE | IRON_SWORD | IRON_AXE => 251,
         TUNGSTEN_PICKAXE | TUNGSTEN_SWORD | TUNGSTEN_AXE => 480,
+        // Armor is sturdier than a tool — it soaks many blows before it gives out
+        // (one point per blow absorbed; see [`crate::server`]). Worn down, it can be
+        // mended at a forge with its own metal, just like a tool.
+        IRON_ARMOR => 300,
+        TUNGSTEN_ARMOR => 600,
         _ => 0,
     }
 }
@@ -601,8 +638,8 @@ pub fn repair_material(item: BlockId) -> Option<BlockId> {
     match item {
         PICKAXE | WOOD_SWORD | WOOD_AXE => Some(WOOD),
         STONE_PICKAXE | STONE_SWORD | STONE_AXE => Some(STONE),
-        IRON_PICKAXE | IRON_SWORD | IRON_AXE => Some(IRON_INGOT),
-        TUNGSTEN_PICKAXE | TUNGSTEN_SWORD | TUNGSTEN_AXE => Some(TUNGSTEN_INGOT),
+        IRON_PICKAXE | IRON_SWORD | IRON_AXE | IRON_ARMOR => Some(IRON_INGOT),
+        TUNGSTEN_PICKAXE | TUNGSTEN_SWORD | TUNGSTEN_AXE | TUNGSTEN_ARMOR => Some(TUNGSTEN_INGOT),
         _ => None,
     }
 }

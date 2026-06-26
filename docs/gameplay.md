@@ -6,6 +6,11 @@ You have **20 HP**, shown as the health bar in the top of the screen. Damage
 comes from falling and from hostile creatures. Restore health by eating cooked
 food (see [Crafting & Tools](crafting.md#food)).
 
+Wearing a suit of **[armor](crafting.md#armor)** raises your **defense**: it
+blunts a percentage of every enemy attack before it reaches your health. It does
+not raise your maximum HP — it just makes each blow hurt less. A hit always lands
+for at least 1, so armor softens fights without making you invincible.
+
 When you die, a death marker 💀 is dropped where you fell and you respawn at your
 **home point**. Walk back to the marker to clear it.
 
@@ -95,6 +100,9 @@ deals damage based on your equipped weapon, and knocks the target back; struck
 creatures flash red briefly. Your weapon choice matters — see the
 [weapon tiers](crafting.md#weapons). Without a weapon you can still punch, but
 tools and swords hit much harder.
+
+On defense, a worn suit of **[armor](crafting.md#armor)** turns aside a share of
+the damage hostile creatures deal you — iron blunts 35%, tungsten 55%.
 
 ## Game modes
 

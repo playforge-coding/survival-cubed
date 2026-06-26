@@ -127,6 +127,8 @@ blocks!(
     "chest",
     "locked_chest",
     "arena_key",
+    "iron_armor",
+    "tungsten_armor",
 );
 
 sprites!(

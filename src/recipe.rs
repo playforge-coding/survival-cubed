@@ -10,10 +10,10 @@
 
 use crate::block::{
     ARENA_KEY, BARK, BOAT, BUCKET, CAMPFIRE, CHARRED_ROCK, CHEST, COOKED_MEAT, DOOR, FIRE_KEY,
-    FORGE, GOLD_INGOT, IRON_AXE, IRON_INGOT, IRON_PICKAXE, IRON_SWORD, LADDER, LOG, PICKAXE,
-    QUEST_BOARD, RAW_GOLD, RAW_IRON, RAW_MEAT, RAW_TUNGSTEN, ROPE, ROPE_LADDER, SIGN, STICK, STONE,
-    STONE_AXE, STONE_BRICKS, STONE_PICKAXE, STONE_SWORD, TUNGSTEN_AXE, TUNGSTEN_INGOT,
-    TUNGSTEN_PICKAXE, TUNGSTEN_SWORD, WOOD, WOOD_AXE, WOOD_SWORD,
+    FORGE, GOLD_INGOT, IRON_ARMOR, IRON_AXE, IRON_INGOT, IRON_PICKAXE, IRON_SWORD, LADDER, LOG,
+    PICKAXE, QUEST_BOARD, RAW_GOLD, RAW_IRON, RAW_MEAT, RAW_TUNGSTEN, ROPE, ROPE_LADDER, SIGN,
+    STICK, STONE, STONE_AXE, STONE_BRICKS, STONE_PICKAXE, STONE_SWORD, TUNGSTEN_ARMOR,
+    TUNGSTEN_AXE, TUNGSTEN_INGOT, TUNGSTEN_PICKAXE, TUNGSTEN_SWORD, WOOD, WOOD_AXE, WOOD_SWORD,
 };
 use crate::inventory::Inventory;
 use crate::protocol::BlockId;
@@ -193,6 +193,20 @@ pub const RECIPES: &[Recipe] = &[
         name: "Chest",
         inputs: &[(IRON_INGOT, 1), (WOOD, 8)],
         outputs: &[(CHEST, 1)],
+    },
+    // A hoard of iron beaten into a full suit of armor — no wood or stone, all metal.
+    // Worn whole, it raises your defense (see [`crate::block::armor_defense`]).
+    Recipe {
+        name: "Iron Armor",
+        inputs: &[(IRON_INGOT, 24)],
+        outputs: &[(IRON_ARMOR, 1)],
+    },
+    // The same, in tungsten: the sturdiest suit in the world, turning aside more of
+    // every blow than iron.
+    Recipe {
+        name: "Tungsten Armor",
+        inputs: &[(TUNGSTEN_INGOT, 24)],
+        outputs: &[(TUNGSTEN_ARMOR, 1)],
     },
 ];
 

@@ -45,6 +45,8 @@ server-authoritative, so the result is always consistent in multiplayer.
 | Sign | 1 Wood + 1 Stick | 1 Sign |
 | Quest Board | 4 Wood + 2 Stick | 1 Quest Board |
 | Chest | 1 Iron Ingot + 8 Wood | 1 Chest |
+| Iron Armor | 24 Iron Ingot | 1 Iron Armor |
+| Tungsten Armor | 24 Tungsten Ingot | 1 Tungsten Armor |
 
 !!! tip "Where to start"
     Punch a tree for logs, split them into **wood + bark**, harvest **sticks**
@@ -85,6 +87,33 @@ twice as quickly.
 
 Open a **forge** and spend a tool's crafting material (an ingot, for example) to
 restore its durability rather than crafting a brand-new one.
+
+### Armor
+
+A **suit of armor** is forged whole — there are no separate helmets, greaves, or
+boots, just the one piece — from a hoard of **24 ingots** (all metal: no wood or
+stone). It costs nothing to wear: simply **carrying a suit** protects you, and if
+you carry more than one the sturdiest applies.
+
+Armor raises your **defense**, never your health. Your maximum health stays at
+20 — instead, each blow an enemy lands is **blunted** by a percentage before it
+touches you. A hit always lands for at least 1, so armor softens fights without
+making you invincible. (Defense reduces enemy *attacks*; environmental burns like
+standing in fire still bite through.)
+
+Like a tool, a suit **wears down** — it loses a point of durability for every blow
+it soaks, and a suit worn to nothing **shatters**. Mend it at a **forge** with its
+own metal (an ingot per repair) before it breaks, exactly as you repair a tool. Its
+remaining durability shows as a bar under its inventory icon.
+
+| Armor | Ingredients | Damage blunted | Durability (hits) |
+|---|---|---|---|
+| Iron Armor | 24 Iron Ingot | 35% | 300 |
+| Tungsten Armor | 24 Tungsten Ingot | 55% | 600 |
+
+Tungsten armor can also be **looted** rather than crafted: the
+**[Demon King](entities/demon-king.md)** always leaves a suit in his chest, and a
+**[Dark Knight](entities/dark-knight.md)** rarely spills one.
 
 ## Smelting
 
@@ -151,7 +180,7 @@ Eat the food in your selected hotbar slot with <kbd>F</kbd>.
 | Bark | Splitting logs | Campfires, rope, fuel |
 | Stick | Leaves (70% drop) | Almost every tool and weapon |
 | Coal | Coal ore | Fuel |
-| Raw Iron / Iron Ingot | Iron ore → forge | Iron tools, buckets, repairs |
-| Raw Tungsten / Tungsten Ingot | Tungsten ore → forge | Tungsten gear, fire keys, arena keys |
+| Raw Iron / Iron Ingot | Iron ore → forge | Iron tools, buckets, armor, repairs |
+| Raw Tungsten / Tungsten Ingot | Tungsten ore → forge | Tungsten gear, armor, fire keys, arena keys |
 | Raw Gold / Gold Ingot | Gold ore → forge | Locking chests, arena keys |
 | Rope | Bark | Rope ladders |

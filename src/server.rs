@@ -211,6 +211,13 @@ const DARK_KNIGHT_NIGHT_PERCENT: u32 = 6;
 /// Percent chance a slain dark knight's tungsten haul also includes a finished
 /// tungsten tool or weapon, on top of its ingots.
 const DARK_KNIGHT_TOOL_DROP_PERCENT: u32 = 55;
+/// Percent chance a slain dark knight also spills a full suit of tungsten armor —
+/// deliberately small, so a suit looted from a knight is a rare prize.
+const DARK_KNIGHT_ARMOR_DROP_PERCENT: u32 = 7;
+/// Durability a worn suit of armor loses each time it soaks an enemy blow. One
+/// point per hit, so a suit lasts for as many hits as its
+/// [`max_durability`](crate::block::max_durability) before it must be mended.
+const ARMOR_WEAR_PER_HIT: u16 = 1;
 /// Flight speed of a thrown axe, in pixels/second.
 const AXE_SPEED: f32 = 165.0;
 /// Damage an axe deals on striking a player or knight — heavier than a thrown bone,
@@ -1448,6 +1455,21 @@ impl Shared {
         self.enter_dimension(admin, dim, x, y);
         self.send_to(admin, ServerMessage::Spectate { target: None });
         self.notify(admin, "Stopped spectating.");
+    }
+
+    /// The suit of armor player `id` is currently protected by: the sturdiest one
+    /// in their inventory (armor is worn simply by carrying it, so the best suit on
+    /// hand applies). `None` if they carry none. The blunting it grants is
+    /// [`crate::block::armor_defense`]; the suit named here is the one that takes the
+    /// wear when it soaks a blow.
+    fn worn_armor(&self, id: EntityId) -> Option<BlockId> {
+        let invs = self.inventories.lock();
+        invs.get(&id)?
+            .slots()
+            .iter()
+            .filter_map(|s| s.map(|(b, ..)| b))
+            .filter(|b| crate::block::armor_defense(*b) > 0)
+            .max_by_key(|b| crate::block::armor_defense(*b))
     }
 
     /// Add one `block` to player `id`'s inventory, stacking into existing stacks
@@ -3010,6 +3032,11 @@ fn dark_knight_loot(seed: u32) -> Vec<(BlockId, u32)> {
         };
         loot.push((tool, 1));
     }
+    // Rarely, a full suit of tungsten armor on top of everything else.
+    h = h.wrapping_mul(2_654_435_761) ^ (h >> 12);
+    if h % 100 < DARK_KNIGHT_ARMOR_DROP_PERCENT {
+        loot.push((crate::block::TUNGSTEN_ARMOR, 1));
+    }
     loot
 }
 
@@ -3026,6 +3053,9 @@ fn demon_king_loot() -> Vec<Slot> {
     slots[3] = stack(crate::block::TUNGSTEN_INGOT, 16);
     slots[4] = stack(crate::block::GOLD_INGOT, 12);
     slots[5] = stack(crate::block::COOKED_MEAT, 8);
+    // The king's own armor: a full suit of tungsten at fresh durability (use `tool`,
+    // not `stack`, so it arrives undamaged), the spoils of the final fight.
+    slots[6] = tool(crate::block::TUNGSTEN_ARMOR);
     slots
 }
 
@@ -7623,7 +7653,22 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     drop(world);
 
     let mut respawns = Vec::new();
+    // Suits that soaked a blow this tick, to wear down once the entities lock is
+    // released (wear_tool relocks inventories and pushes a snapshot to the owner).
+    let mut armor_wear: Vec<(EntityId, BlockId)> = Vec::new();
     for (pid, kb, damage) in bites {
+        // Armor softens the blow: a worn suit turns aside a share of the damage,
+        // but a hit always lands for at least 1 — armor never makes you invincible.
+        // A suit that absorbs a blow takes a point of wear for it (applied below).
+        let armor = shared.worn_armor(pid);
+        let damage = match armor {
+            Some(a) => {
+                let defense = crate::block::armor_defense(a);
+                armor_wear.push((pid, a));
+                (damage - damage * defense / 100).max(1)
+            }
+            None => damage,
+        };
         let (msgs, respawn) = apply_damage(
             &mut entities,
             pid,
@@ -7716,6 +7761,14 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         }
     }
     drop(entities);
+
+    // Wear down the armor of every player a blow landed on this tick: one point per
+    // blow soaked. A suit worn to nothing shatters and frees its slot (handled by
+    // wear_tool / damage_tool), and the owner gets a fresh inventory snapshot so the
+    // durability bar — and a now-broken suit's empty slot — updates.
+    for (pid, armor) in armor_wear {
+        shared.wear_tool(pid, armor, ARMOR_WEAR_PER_HIT);
+    }
 
     // Spill the loot of any prey a puppy killed (a chicken leaves raw meat, which
     // the puppy will trot back and eat). Done after the entities lock is released
