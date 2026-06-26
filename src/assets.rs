@@ -178,4 +178,5 @@ sprites!(
 music!(
     "overworld" => [0, 1],
     "underworld" => [0, 1],
+    "arena" => [0],
 );
