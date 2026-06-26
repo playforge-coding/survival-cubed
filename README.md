@@ -10,7 +10,10 @@ and fortify against the creatures that come out at night.
 ## Features
 
 - **Infinite, seeded worlds** — plains, forests, mountains, and deserts on the
-  surface; a charred **underworld** below, reached with a crafted **fire key**.
+  surface; a charred **underworld** below, reached with a crafted **fire key**;
+  and a stone-brick **arena** for the boss fight, reached with an **arena key**.
+- **Boss fight** — a flying **Demon King** holds the arena (one per world); slay it
+  for a chest of loot.
 - **Mining & crafting** — four tool tiers (wood → stone → iron → tungsten),
   smelting at a **forge**, and cooking at a **campfire**.
 - **Survival** — health, fall damage, hunger for cooked food, and hostile mobs

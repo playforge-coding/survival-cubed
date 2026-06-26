@@ -196,6 +196,12 @@ pub const CHEST: BlockId = 57;
 /// It cannot be opened or broken without the password. Never held as an item —
 /// it only exists in the world, created by reinforcing a placed chest.
 pub const LOCKED_CHEST: BlockId = 58;
+/// The arena key: a dimension-crossing artifact crafted from a [`TUNGSTEN_INGOT`]
+/// and a [`GOLD_INGOT`]. An item (not placeable); right-click while holding it to
+/// warp into the [`crate::world::Dimension::Arena`] — the stone-brick boss arena —
+/// and right-click again to return to where you left from (see [`crate::server`]'s
+/// arena-key handling). Reusable — using it does not consume the key.
+pub const ARENA_KEY: BlockId = 59;
 
 /// Gold ingots consumed to reinforce a plain [`CHEST`] into a [`LOCKED_CHEST`].
 /// Shared by the server (which charges it) and the client (which shows the cost).
@@ -333,6 +339,10 @@ impl BlockRegistry {
         // item (it is created in place), so it is registered unplaceable.
         r.register("chest", true, true, true, 1.0);
         r.register("locked_chest", true, true, false, 1.2);
+        // The arena key: a non-placeable artifact item (visible only so its
+        // inventory and dropped sprite have an atlas tile). Right-clicking with it
+        // warps the player into and out of the stone-brick boss arena.
+        r.register("arena_key", false, true, false, 0.0);
         r
     }
 
@@ -528,6 +538,12 @@ pub fn is_bucket(item: BlockId) -> bool {
 /// between dimensions.
 pub fn is_fire_key(item: BlockId) -> bool {
     item == FIRE_KEY
+}
+
+/// Whether `item` is the arena key — the artifact whose use warps the player
+/// into and out of the stone-brick boss arena.
+pub fn is_arena_key(item: BlockId) -> bool {
+    item == ARENA_KEY
 }
 
 /// Whether `item` is a boat — the vehicle ridden to glide across water.

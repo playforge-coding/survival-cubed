@@ -154,6 +154,23 @@ behind it.
 
 In **creator mode** you are invisible to monsters and take no damage from them.
 
+## Bosses
+
+A boss is a unique, far tougher foe with its own **health bar** across the top of
+the screen. There is one (for now), and it lives in the [arena](world.md#the-arena).
+
+| Boss | HP | Where | Behaviour |
+|---|---|---|---|
+| **[Demon King](entities/demon-king.md)** | 320 | The **arena** (one per world) | A towering, **flying** fiend; cycles through a fan of **five fireballs**, a spread of **three magic fireballs**, a single **summoner bolt**, and a melee **slam**; drops a **chest** of loot and never returns once slain |
+
+!!! danger "Read the Demon King's wind-up"
+    The **Demon King** telegraphs every attack with the same wind-up before it
+    releases — when it rears back, it is about to loose a volley or bring its fists
+    down. It flies and hovers in your face, so the fight is up close: trade blows
+    when it is between attacks, and sidestep the moment it winds up (its fireball
+    fans are wide and hard to dodge from point-blank). It has a deep health pool —
+    bring the best [weapon](crafting.md#weapons) and plenty of food.
+
 ## Combat tips
 
 - Left-click within ~80 pixels to attack; each hit knocks the target back and

@@ -9,6 +9,8 @@
 //!     <cx>_<cy>.dat      one file per generated-and-modified overworld chunk
 //!   chunks_underworld/
 //!     <cx>_<cy>.dat      the same, for the underworld dimension
+//!   chunks_arena/
+//!     <cx>_<cy>.dat      the same, for the arena dimension
 //! ```
 //!
 //! Everything is binary (not text): `world.dat` is a small magic/version header
@@ -37,16 +39,19 @@ const WORLD_FILE: &str = "world.dat";
 const CHUNKS_DIR: &str = "chunks";
 /// Subdirectory holding per-chunk block data for the underworld.
 const UNDERWORLD_CHUNKS_DIR: &str = "chunks_underworld";
+/// Subdirectory holding per-chunk block data for the arena.
+const ARENA_CHUNKS_DIR: &str = "chunks_arena";
 /// Magic prefix on `world.dat` ("SCWD" — Survival Cubed World Data).
 const MAGIC: u32 = 0x5343_5744;
 /// On-disk format version; bump on any incompatible layout change.
-const VERSION: u32 = 12;
+const VERSION: u32 = 13;
 
 /// Subdirectory name holding a dimension's chunks.
 fn chunks_dir_name(dim: Dimension) -> &'static str {
     match dim {
         Dimension::Overworld => CHUNKS_DIR,
         Dimension::Underworld => UNDERWORLD_CHUNKS_DIR,
+        Dimension::Arena => ARENA_CHUNKS_DIR,
     }
 }
 /// Bytes per chunk file: one little-endian `u16` per cell.
@@ -95,6 +100,14 @@ pub struct WorldMeta {
     /// Server-simulated underworld creatures (charred skeletons, …).
     #[serde(default)]
     pub underworld_entities: Vec<Entity>,
+    /// Server-simulated arena creatures (the boss [`crate::entity::EntityKind::DemonKing`]
+    /// and any it spawns). Usually empty unless a boss fight is in progress.
+    #[serde(default)]
+    pub arena_entities: Vec<Entity>,
+    /// Whether this world's single [`crate::entity::EntityKind::DemonKing`] has been
+    /// slain. Once `true` no new boss is ever raised in the arena (one per world).
+    #[serde(default)]
+    pub demon_king_slain: bool,
     /// Saved state of every player who has ever joined this world.
     pub players: Vec<SavedPlayer>,
     /// Lit campfires as `(dimension, x, y, remaining_burn_secs)`, so fires keep
@@ -418,6 +431,8 @@ mod tests {
             spawn: (16.0, -32.0),
             entities: vec![Entity::new(7, EntityKind::Slime, 1.5, 2.5)],
             underworld_entities: vec![Entity::new(8, EntityKind::CharredSkeleton, 4.0, 5.0)],
+            arena_entities: vec![Entity::new(9, EntityKind::DemonKing, 6.0, 7.0)],
+            demon_king_slain: true,
             players: vec![SavedPlayer {
                 name: "ada".into(),
                 x: 10.0,
@@ -498,6 +513,9 @@ mod tests {
         assert_eq!(got.players[0].waypoints, meta.players[0].waypoints);
         assert_eq!(got.underworld_entities.len(), 1);
         assert_eq!(got.underworld_entities[0].id, 8);
+        assert_eq!(got.arena_entities.len(), 1);
+        assert_eq!(got.arena_entities[0].id, 9);
+        assert_eq!(got.demon_king_slain, true);
         assert_eq!(got.campfires, meta.campfires);
         assert_eq!(got.placed_logs, meta.placed_logs);
         assert_eq!(got.accounts, meta.accounts);

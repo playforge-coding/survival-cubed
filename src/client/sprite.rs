@@ -220,6 +220,28 @@ pub static DEMON_SPRITE: SpriteDef = SpriteDef {
     fps: 8.0,
 };
 
+/// Demon king: the towering arena boss, drawn on the demon's hunched build but far
+/// larger. Its walk cycle plays as it flies after the player.
+pub static DEMON_KING_SPRITE: SpriteDef = SpriteDef {
+    name: "demon_king",
+    frame_w: 10,
+    frame_h: 15,
+    frames: 5,
+    fps: 8.0,
+};
+
+/// Demon king attack: the one-shot wind-up-and-release the king plays for every one
+/// of its attacks (fireball volley, magic-fireball spread, summoned bolt, or melee
+/// slam), stepped by its attack (lunge) timer. Lives in the `demon_king/attack`
+/// subdirectory.
+pub static DEMON_KING_ATTACK_SPRITE: SpriteDef = SpriteDef {
+    name: "demon_king/attack",
+    frame_w: 12,
+    frame_h: 15,
+    frames: 6,
+    fps: 6.0,
+};
+
 /// Orc: a hulking underworld brute that lumbers along on a slow, heavy stride.
 pub static ORC_SPRITE: SpriteDef = SpriteDef {
     name: "orc",
@@ -401,7 +423,7 @@ pub static SUMMONER_FIREBALL_SPRITE: SpriteDef = SpriteDef {
 };
 
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 38] {
+pub fn all() -> [&'static SpriteDef; 40] {
     [
         &PLAYER_SPRITE,
         &BOAT_SPRITE,
@@ -423,6 +445,8 @@ pub fn all() -> [&'static SpriteDef; 38] {
         &SKELETON_SPRITE,
         &CHARRED_SKELETON_SPRITE,
         &DEMON_SPRITE,
+        &DEMON_KING_SPRITE,
+        &DEMON_KING_ATTACK_SPRITE,
         &ORC_SPRITE,
         &ORC_SLAM_SPRITE,
         &ASH_TWISTER_SPRITE,
@@ -468,6 +492,9 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         EntityKind::Skeleton => &SKELETON_SPRITE,
         EntityKind::CharredSkeleton => &CHARRED_SKELETON_SPRITE,
         EntityKind::Demon => &DEMON_SPRITE,
+        // The demon king's attack pose is handled by the scene builder off its lunge
+        // timer; this walk sheet is its airborne pursuit.
+        EntityKind::DemonKing => &DEMON_KING_SPRITE,
         // An orc's slam pose is handled by the scene builder off its lunge timer;
         // this walk sheet is its plodding stride.
         EntityKind::Orc => &ORC_SPRITE,

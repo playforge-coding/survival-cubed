@@ -103,6 +103,9 @@ fn music_dir(dim: Dimension) -> &'static str {
     match dim {
         Dimension::Overworld => "overworld",
         Dimension::Underworld => "underworld",
+        // The arena ships with no music of its own yet; `music_track_count` returns
+        // 0 for an unknown dir, so this simply plays silence there.
+        Dimension::Arena => "arena",
     }
 }
 

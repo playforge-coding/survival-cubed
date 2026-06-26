@@ -1,0 +1,74 @@
+# Demon King
+
+The **boss** of the [arena](../world.md#the-arena), and the only one of its kind in
+a world. A towering, winged fiend that **flies** — it chases you through the air,
+hovers in your face, and cycles through the whole demonic arsenal: a fan of
+fireballs, a spread of magic fireballs, a summoned bolt, or a crushing melee slam.
+Felling it is a campaign, not a scrap, and it leaves a **chest** of spoils where it
+falls. Once slain it **never rises again** in that world.
+
+| Stat | Value |
+|---|---|
+| **Health** | 320 HP |
+| **Size** | 22 × 30 px |
+| **Speed** | 46 px/s (flying) |
+| **Damage** | 7 HP per fireball · 12 HP per magic fireball · 22 HP per slam |
+| **Found in** | The **arena** — one per world |
+| **Activity** | Always active; never despawns |
+| **Drops** | A **chest** of loot where it dies (not loose items) |
+
+## Behaviour
+
+The Demon King is an **airborne boss**. It flies straight at you, closing to melee
+range and hovering there, and every ~1.7 seconds it commits to one of **four
+attacks**, chosen at random and telegraphed by the same **wind-up animation** before
+it releases:
+
+- **Fireball fan** — looses **five** ordinary [fireballs](demons.md#demon) in a
+  wide spread. Hard to sidestep at point-blank range.
+- **Magic spread** — looses **three** [magic fireballs](demons.md#enchanted-demon)
+  in a tighter fan; they fly farther and hit harder.
+- **Summoner bolt** — a single [summoner fireball](necromancer.md#necromancer) that
+  bursts into a bouncing [skull](necromancer.md#skull).
+- **Slam** — when you are close, it brings its fists down for heavy melee damage,
+  landing only on the frame the blow connects (like an [orc](orcs.md#orc)).
+
+Because it flies and hovers right on top of you, the fight is **up close**: there is
+no ranged weapon to whittle it down with, so you trade sword blows between its
+volleys. Watch for the wind-up and step aside as it releases — its fireball fans are
+wide, and from point-blank they are punishing.
+
+!!! danger "Bring everything"
+    320 HP is a deep pool — far more than anything else in the game. Come with the
+    best [weapon](../crafting.md#weapons) you can forge (a tungsten sword), plenty of
+    **cooked meat**, and room to move. There is no daybreak to save you and the king
+    never gives up the chase.
+
+## The chest
+
+A slain Demon King doesn't scatter loose items — it leaves a **[chest](../blocks.md#special-blocks-in-detail)**
+on the arena floor where it fell, stocked with a king's ransom: the full **tungsten
+arsenal** (sword, pickaxe, and axe at full durability), a hoard of **tungsten
+ingots** and **gold ingots**, and a stack of **cooked meat** for the road. Walk up
+and right-click it to claim the spoils.
+
+Because there is **one king per world**, this is a one-time prize. Slay it, loot the
+chest, and the arena falls silent for good.
+
+## Getting to the fight
+
+The arena is reached with an **[arena key](../crafting.md#tools-and-utility-items)**,
+crafted from **tungsten and gold** — so you must already have braved the underworld
+(or hunted [dark knights](dark-knight.md)) for tungsten and mined gold before you can
+even knock on the king's door. Right-click the key to warp in; the king rises across
+the floor from you, and a **boss health bar** appears at the top of the screen.
+
+## Lore
+
+When the **original king** was overthrown, the throne did not pass to a man. The
+power that backed the usurper had a face of its own, and it withdrew to a hall of
+dressed stone beyond the world's two faces — a court of brick where no sun rises and
+no night falls. The **Demon King** holds that court still, the last and highest of
+the depths' fiends. To reach it you must forge the key from the underworld's own
+tungsten and the gold that locks a king's treasure: the artifacts of its dominion,
+turned at last into the way in.

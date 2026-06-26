@@ -126,6 +126,7 @@ blocks!(
     "gold_ingot",
     "chest",
     "locked_chest",
+    "arena_key",
 );
 
 sprites!(
@@ -152,6 +153,8 @@ sprites!(
     "skeleton" => [0, 1, 2, 3, 4, 5],
     "charred_skeleton" => [0, 1, 2, 3, 4, 5],
     "demon" => [0, 1, 2, 3],
+    "demon_king" => [0, 1, 2, 3, 4],
+    "demon_king/attack" => [0, 1, 2, 3, 4, 5],
     "orc" => [0, 1, 2, 3, 4],
     "orc/slam" => [0, 1, 2, 3, 4, 5],
     "ash_twister" => [0],

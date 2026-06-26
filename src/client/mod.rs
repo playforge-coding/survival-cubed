@@ -1286,6 +1286,7 @@ impl App {
                     return;
                 }
                 self.waypoint_overlay(ui);
+                self.boss_bar_overlay(ui);
                 self.selection_overlay(ui);
                 self.spectate_overlay(ui);
                 self.chat_ui(ui);
@@ -1715,6 +1716,55 @@ impl App {
                 );
             }
         }
+    }
+
+    /// Draw the boss health bar across the top of the screen while a boss (the
+    /// [`EntityKind::DemonKing`]) is present in the current dimension. Driven purely
+    /// by the boss entity's replicated `health`/`max_health`, so it tracks the fight
+    /// without any dedicated message. A no-op when no boss is in view.
+    fn boss_bar_overlay(&self, ui: &mut egui::Ui) {
+        let Some(g) = &self.game else { return };
+        let Some(boss) = g
+            .entities
+            .values()
+            .find(|e| matches!(e.kind, EntityKind::DemonKing))
+        else {
+            return;
+        };
+        let frac = if boss.max_health > 0 {
+            (boss.health as f32 / boss.max_health as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let (health, max_health) = (boss.health, boss.max_health);
+        egui::Area::new(egui::Id::new("boss_bar"))
+            .anchor(egui::Align2::CENTER_TOP, [0.0, 52.0])
+            .interactable(false)
+            .show(ui.ctx(), |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new("The Demon King")
+                            .strong()
+                            .size(16.0)
+                            .color(egui::Color32::from_rgb(230, 170, 60)),
+                    );
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(440.0, 20.0), egui::Sense::hover());
+                    let painter = ui.painter_at(rect);
+                    let radius = egui::CornerRadius::same(3);
+                    painter.rect_filled(rect, radius, egui::Color32::from_rgb(28, 8, 8));
+                    let mut fill = rect;
+                    fill.set_width(rect.width() * frac);
+                    painter.rect_filled(fill, radius, egui::Color32::from_rgb(175, 30, 30));
+                    painter.text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        format!("{health} / {max_health}"),
+                        egui::FontId::proportional(12.0),
+                        egui::Color32::WHITE,
+                    );
+                });
+            });
     }
 
     /// Draw the creator structure-tool overlays in world space: the active
@@ -3248,6 +3298,8 @@ impl App {
         let sky = match self.game.as_ref() {
             // The underworld's sky is a smouldering near-black, not the day sky.
             Some(g) if g.dim == Dimension::Underworld => [0.08, 0.02, 0.02, 1.0],
+            // The arena hangs in a cold, dim slate void behind its stone-brick floor.
+            Some(g) if g.dim == Dimension::Arena => [0.10, 0.10, 0.13, 1.0],
             Some(g) => daylight::sky_color(g.time_of_day),
             None => [0.45, 0.62, 0.86, 1.0],
         };
@@ -3305,6 +3357,10 @@ impl App {
         // knows no day or night — it sits in a permanent dim, faintly warm gloom.
         let tint = if g.dim == Dimension::Underworld {
             [0.5, 0.34, 0.30, 1.0]
+        } else if g.dim == Dimension::Arena {
+            // The arena knows no day or night either — it sits under a steady, even
+            // light so the boss fight reads clearly at any hour.
+            [0.85, 0.85, 0.9, 1.0]
         } else {
             let b = daylight::brightness(g.time_of_day);
             [b, b, b, 1.0]
@@ -3529,6 +3585,15 @@ impl App {
                 // by the cast timer, which rides on the same `lunge` field).
                 let d = &sprite::ORC_MAGE_CAST_SPRITE;
                 let progress = 1.0 - (e.lunge / crate::entity::ORC_MAGE_CAST_TIME).clamp(0.0, 1.0);
+                let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
+                (d, frame)
+            } else if e.lunge > 0.0 && matches!(e.kind, EntityKind::DemonKing) {
+                // An attacking demon king plays its one-shot wind-up-and-release (frame
+                // stepped by the attack timer, which rides on the same `lunge` field) —
+                // the same animation whether it looses bolts or brings its fists down.
+                let d = &sprite::DEMON_KING_ATTACK_SPRITE;
+                let progress =
+                    1.0 - (e.lunge / crate::entity::DEMON_KING_ATTACK_TIME).clamp(0.0, 1.0);
                 let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
                 (d, frame)
             } else if matches!(e.kind, EntityKind::Puppy { sitting: true, .. }) {
@@ -4692,6 +4757,24 @@ fn handle_block_actions(
             let _ = net
                 .commands
                 .send(NetCommand::UseFireKey { slot: slot as u8 });
+            game.action_timer = ACTION_COOLDOWN;
+            return;
+        }
+    }
+
+    // Right-clicking while holding the arena key warps the player into (or back out
+    // of) the boss arena. Like the fire key it acts on the player, not a target
+    // cell, so it needs no reach check; the server picks the landing spot.
+    if input.placing && game.action_timer <= 0.0 {
+        let slot = game.selected_slot;
+        if game
+            .inventory
+            .get(slot)
+            .is_some_and(|(b, _, _)| crate::block::is_arena_key(b))
+        {
+            let _ = net
+                .commands
+                .send(NetCommand::UseArenaKey { slot: slot as u8 });
             game.action_timer = ACTION_COOLDOWN;
             return;
         }

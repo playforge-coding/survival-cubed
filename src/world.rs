@@ -27,11 +27,21 @@ pub enum Dimension {
     Overworld,
     /// The world beneath the overworld: charred rock, fire, and charred skeletons.
     Underworld,
+    /// A separate combat plane built entirely of stone bricks, reached with the
+    /// [arena key](crate::block::ARENA_KEY). Home to the boss [`crate::entity`]
+    /// fights — a single [`crate::entity::EntityKind::DemonKing`] per world holds
+    /// court here until it is slain. Appended last so older saves and the wire
+    /// format keep their dimension indices.
+    Arena,
 }
 
 impl Dimension {
     /// Every dimension, in id order. Used to iterate per-dimension state.
-    pub const ALL: [Dimension; 2] = [Dimension::Overworld, Dimension::Underworld];
+    pub const ALL: [Dimension; 3] = [
+        Dimension::Overworld,
+        Dimension::Underworld,
+        Dimension::Arena,
+    ];
 
     /// Stable index in `[0, NUM_DIMENSIONS)`, for arrays keyed by dimension.
     #[inline]

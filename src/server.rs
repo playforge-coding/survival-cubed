@@ -323,6 +323,43 @@ const MAGIC_FIREBALL_LIFETIME: f32 = 4.0;
 /// Maximum gap (px between AABBs) at which an in-flight magic fireball counts as
 /// striking a player — a touch more forgiving than an ordinary fireball's.
 const MAGIC_FIREBALL_HIT_RANGE: f32 = 3.0;
+
+// --- Demon king (arena boss) ---------------------------------------------------
+/// How far (px) the demon king notices a player and gives chase. Generous — it
+/// commands the whole arena, so a fighter is never out of its sight for long.
+const DEMON_KING_AGGRO: f32 = 460.0;
+/// Flight speed of the demon king, in pixels/second. It cruises after the player
+/// through the air a touch faster than a fleeing target can run.
+const DEMON_KING_SPEED: f32 = 46.0;
+/// The gap (px between AABBs) the demon king closes to before it stops advancing
+/// and hovers in the player's face. Small, so the boss stays in melee reach —
+/// trading blows is how a fighter whittles it down between its volleys.
+const DEMON_KING_HOVER_GAP: f32 = 10.0;
+/// Seconds the demon king waits between attacks (the cooldown set when one begins).
+const DEMON_KING_ATTACK_INTERVAL: f32 = 1.7;
+/// Seconds of attack remaining (of [`crate::entity::DEMON_KING_ATTACK_TIME`]) at
+/// which the wind-up gives way to the strike: the frame the king looses its bolts
+/// or brings its fists down. Half-way through, like the orc slam.
+const DEMON_KING_STRIKE_TIME: f32 = crate::entity::DEMON_KING_ATTACK_TIME * 0.5;
+/// Angular spacing (radians) between the five ordinary fireballs in the king's
+/// fan — a wide sweep that's hard to sidestep at close range.
+const DEMON_KING_FIREBALL_SPREAD: f32 = 0.20;
+/// Angular spacing (radians) between the three magic fireballs in the king's
+/// tighter, harder-hitting spread.
+const DEMON_KING_MAGIC_SPREAD: f32 = 0.28;
+/// Reach (px between AABBs) of the demon king's melee slam — wider than the orc's,
+/// matching its great size.
+const DEMON_KING_SLAM_REACH: f32 = 26.0;
+/// Damage the demon king's slam deals to a player it connects with.
+const DEMON_KING_SLAM_DAMAGE: i32 = 22;
+/// How far to the side of a player (px) a freshly raised demon king first appears,
+/// so it makes a dramatic entrance across the arena rather than on top of them.
+const DEMON_KING_SPAWN_DIST: f32 = 170.0;
+/// How high above the arena floor (px) a freshly raised demon king hovers.
+const DEMON_KING_HOVER_HEIGHT: f32 = 56.0;
+/// Seconds between arena boss-presence checks (raising the king when the arena
+/// holds a player and none yet reigns). Coarse — the boss is a once-per-world event.
+const BOSS_CHECK_INTERVAL: f32 = 2.0;
 /// Lumbering speed of an orc mage, in pixels/second — quicker than the brute orc so
 /// it can reposition to shepherd its demons, but it never closes for a fight.
 const ORC_MAGE_SPEED: f32 = 16.0;
@@ -869,6 +906,21 @@ struct Shared {
     /// password for), keyed by entity id. A standing unlock lets them reopen and
     /// break that chest without re-entering the password. Runtime-only.
     chest_auth: Mutex<HashMap<EntityId, HashSet<(Dimension, i32, i32)>>>,
+    /// Where each player was standing when they last used the [arena
+    /// key](crate::block::ARENA_KEY) to enter the [`Dimension::Arena`], as
+    /// `(dimension, x, y)` in world pixels, so using the key again from inside the
+    /// arena returns them to exactly where they left. Runtime-only — a reconnecting
+    /// player simply re-marks it on their next entry. Keyed by entity id.
+    arena_return: Mutex<HashMap<EntityId, (Dimension, f32, f32)>>,
+    /// Whether this world's single [`EntityKind::DemonKing`] has been slain. Set
+    /// once the boss falls and persisted in [`WorldMeta`]; while it is `true` no new
+    /// king is ever raised in the arena (one boss per world).
+    demon_king_slain: AtomicBool,
+    /// Whether a live [`EntityKind::DemonKing`] currently presides over the arena,
+    /// so the spawn check doesn't have to scan the entity map every tick. Runtime
+    /// mirror of "a king is in `entities(Arena)`". Starts `false`; set when one is
+    /// raised, cleared when it dies or despawns.
+    demon_king_alive: AtomicBool,
 }
 
 impl Shared {
@@ -945,6 +997,7 @@ impl Shared {
             overworld.flush_chunks();
             let seed = overworld.generator.seed();
             self.world(Dimension::Underworld).lock().flush_chunks();
+            self.world(Dimension::Arena).lock().flush_chunks();
             seed
         };
 
@@ -982,7 +1035,7 @@ impl Shared {
                 }
             }
         }
-        let [overworld_entities, underworld_entities] = creatures;
+        let [overworld_entities, underworld_entities, arena_entities] = creatures;
 
         let campfires = self
             .campfires
@@ -1023,6 +1076,8 @@ impl Shared {
             spawn: self.spawn,
             entities: overworld_entities,
             underworld_entities,
+            arena_entities,
+            demon_king_slain: self.demon_king_slain.load(Ordering::SeqCst),
             players: players.into_values().collect(),
             campfires,
             placed_logs,
@@ -2711,6 +2766,9 @@ impl Shared {
         let to = match from {
             Dimension::Overworld => Dimension::Underworld,
             Dimension::Underworld => Dimension::Overworld,
+            // The fire key isn't the way into the arena, but if one is used there it
+            // simply surfaces the bearer back in the overworld.
+            Dimension::Arena => Dimension::Overworld,
         };
         // Where the player is standing now — recorded as this dimension's anchor so
         // a later key from the far side returns them to exactly here.
@@ -2745,6 +2803,49 @@ impl Shared {
                 (x, ((surface - 3).max(0) as f32) * TILE_SIZE)
             }
             Dimension::Overworld => self.carve_overworld_landing(cell_x),
+            // Drop onto the arena's flat stone-brick floor in the same column, a few
+            // tiles up so the player falls cleanly onto it.
+            Dimension::Arena => {
+                let surface = self.world(Dimension::Arena).lock().surface(cell_x);
+                (x, ((surface - 3).max(0) as f32) * TILE_SIZE)
+            }
+        }
+    }
+
+    /// Use the [arena key](crate::block::ARENA_KEY) held in hotbar `slot`: warp
+    /// player `id` into the [`Dimension::Arena`], or — if they are already in the
+    /// arena — back to wherever they last entered from (the overworld, by default).
+    /// The key is a reusable artifact, never consumed. A no-op (resyncing the
+    /// client's inventory) if the slot no longer holds the key, e.g. after an
+    /// inventory move raced with the use.
+    fn use_arena_key(&self, id: EntityId, slot: usize) {
+        if self.peek_slot(id, slot) != Some(crate::block::ARENA_KEY) {
+            self.send_inventory(id);
+            return;
+        }
+        let from = self.dim_of(id);
+        let (x, y) = match self.entities(from).lock().get(id) {
+            Some(p) => (p.x, p.y),
+            None => return,
+        };
+        if from == Dimension::Arena {
+            // Leaving: return to the recorded entry point, falling back to a fresh
+            // overworld landing if we somehow have none (e.g. arrived another way).
+            let dest = self.arena_return.lock().remove(&id);
+            let (to, nx, ny) = match dest {
+                Some((d, rx, ry)) => (d, rx, ry),
+                None => {
+                    let (lx, ly) = self.default_landing(Dimension::Overworld, x);
+                    (Dimension::Overworld, lx, ly)
+                }
+            };
+            self.enter_dimension(id, to, nx, ny);
+        } else {
+            // Entering: remember exactly where we left from so the key brings us
+            // back here, then drop onto the arena floor in the same column.
+            self.arena_return.lock().insert(id, (from, x, y));
+            let (nx, ny) = self.default_landing(Dimension::Arena, x);
+            self.enter_dimension(id, Dimension::Arena, nx, ny);
         }
     }
 
@@ -2887,6 +2988,51 @@ fn dark_knight_loot(seed: u32) -> Vec<(BlockId, u32)> {
         loot.push((tool, 1));
     }
     loot
+}
+
+/// The chest of spoils a slain demon king leaves behind: the full tungsten arsenal
+/// at fresh durability, a hoard of tungsten ingots and gold, and a meal for the road.
+/// Returned as a [`CHEST_SLOTS`]-long slot list ready to drop into [`Shared::chest_store`].
+fn demon_king_loot() -> Vec<Slot> {
+    let tool = |b| Some((b, 1u32, crate::block::max_durability(b)));
+    let stack = |b, n| Some((b, n, 0u16));
+    let mut slots = vec![None; CHEST_SLOTS];
+    slots[0] = tool(crate::block::TUNGSTEN_SWORD);
+    slots[1] = tool(crate::block::TUNGSTEN_PICKAXE);
+    slots[2] = tool(crate::block::TUNGSTEN_AXE);
+    slots[3] = stack(crate::block::TUNGSTEN_INGOT, 16);
+    slots[4] = stack(crate::block::GOLD_INGOT, 12);
+    slots[5] = stack(crate::block::COOKED_MEAT, 8);
+    slots
+}
+
+/// Place the demon king's loot chest on the arena floor in the column it died over,
+/// fill it with [`demon_king_loot`], and announce the new block to the arena. The
+/// chest rests in the open cell just above the floor so a fighter can walk up and
+/// open it. `boss_x` is the slain king's left edge (its size centers the column).
+fn spawn_boss_chest(shared: &Shared, dim: Dimension, boss_x: f32) {
+    let (w, _) = EntityKind::DemonKing.size();
+    let cell_x = ((boss_x + w * 0.5) / TILE_SIZE).floor() as i32;
+    let cy = {
+        let mut world = shared.world(dim).lock();
+        let floor = world.surface(cell_x);
+        let cy = (floor - 1).max(0);
+        world.set(cell_x, cy, crate::block::CHEST);
+        cy
+    };
+    shared
+        .chest_store
+        .lock()
+        .insert((dim, cell_x, cy), demon_king_loot());
+    shared.broadcast_dim(
+        dim,
+        ServerMessage::BlockUpdate {
+            dim,
+            x: cell_x,
+            y: cy,
+            block: crate::block::CHEST,
+        },
+    );
 }
 
 /// Start a server on a background thread. `bind` of port 0 picks an ephemeral
@@ -3094,6 +3240,8 @@ fn build_endpoint(
     // saved set.
     let mut overworld_entities = Entities::new();
     let mut underworld_entities = Entities::new();
+    let mut arena_entities = Entities::new();
+    let mut demon_king_slain = false;
     let mut saved_players = HashMap::new();
     let mut accounts = HashMap::new();
     let mut campfires = HashMap::new();
@@ -3109,6 +3257,10 @@ fn build_endpoint(
         for e in &m.underworld_entities {
             underworld_entities.insert(e.clone());
         }
+        for e in &m.arena_entities {
+            arena_entities.insert(e.clone());
+        }
+        demon_king_slain = m.demon_king_slain;
         for p in &m.players {
             saved_players.insert(p.name.clone(), p.clone());
         }
@@ -3159,12 +3311,23 @@ fn build_endpoint(
         dirty: HashSet::new(),
     });
 
+    // Whether a king is already presiding (e.g. a save captured mid-fight), so the
+    // runtime "alive" mirror starts in agreement with the restored entities.
+    let king_present = arena_entities
+        .values()
+        .any(|e| matches!(e.kind, EntityKind::DemonKing));
+
     let shared = Arc::new(Shared {
-        worlds_by_dim: [overworld, make_world(Dimension::Underworld)],
+        worlds_by_dim: [
+            overworld,
+            make_world(Dimension::Underworld),
+            make_world(Dimension::Arena),
+        ],
         clients: Mutex::new(HashMap::new()),
         entities_by_dim: [
             Mutex::new(overworld_entities),
             Mutex::new(underworld_entities),
+            Mutex::new(arena_entities),
         ],
         client_dim: Mutex::new(HashMap::new()),
         next_id: AtomicU32::new(next_id),
@@ -3194,6 +3357,9 @@ fn build_endpoint(
         chest_locks: Mutex::new(chest_locks),
         chest_viewers: Mutex::new(HashMap::new()),
         chest_auth: Mutex::new(HashMap::new()),
+        arena_return: Mutex::new(HashMap::new()),
+        demon_king_slain: AtomicBool::new(demon_king_slain),
+        demon_king_alive: AtomicBool::new(king_present),
     });
 
     // Only seed fresh creatures for a brand-new world; a loaded one keeps its own.
@@ -4146,6 +4312,59 @@ fn maybe_spawn_zombies(shared: &Shared, rng: &mut u32) {
     );
 }
 
+/// Raise the arena's lone [`EntityKind::DemonKing`] when the time is right: the
+/// boss hasn't already been slain in this world, none currently reigns, and a
+/// player is present in the arena to fight it. The king appears across the arena
+/// from a player, hovering above the stone-brick floor. A no-op otherwise, so the
+/// arena stays empty until a challenger arrives — and stays empty forever once the
+/// king has fallen (one boss per world).
+fn ensure_arena_boss(shared: &Shared) {
+    if shared.demon_king_slain.load(Ordering::SeqCst)
+        || shared.demon_king_alive.load(Ordering::SeqCst)
+    {
+        return;
+    }
+    let dim = Dimension::Arena;
+    // world then entities, matching the lock order step_entities uses.
+    let spawned = {
+        let world = shared.world(dim).lock();
+        let mut entities = shared.entities(dim).lock();
+        // A king restored from a save (mid-fight) means none need be raised; just
+        // bring the runtime mirror into agreement.
+        if entities
+            .values()
+            .any(|e| matches!(e.kind, EntityKind::DemonKing))
+        {
+            shared.demon_king_alive.store(true, Ordering::SeqCst);
+            None
+        } else {
+            let player_pos = entities
+                .values()
+                .find(|e| e.kind.is_player())
+                .map(|e| (e.x, e.y));
+            match player_pos {
+                None => None,
+                Some((px, _py)) => {
+                    let (_, h) = EntityKind::DemonKing.size();
+                    let side = if (px as i32) & 1 == 0 { 1.0 } else { -1.0 };
+                    let bx = px + side * DEMON_KING_SPAWN_DIST;
+                    let cell_x = (bx / TILE_SIZE).floor() as i32;
+                    let surface = world.surface(cell_x);
+                    let by = surface as f32 * TILE_SIZE - h - DEMON_KING_HOVER_HEIGHT;
+                    let bid = shared.alloc_id();
+                    let king = Entity::new(bid, EntityKind::DemonKing, bx, by);
+                    entities.insert(king.clone());
+                    shared.demon_king_alive.store(true, Ordering::SeqCst);
+                    Some(king)
+                }
+            }
+        }
+    };
+    if let Some(entity) = spawned {
+        shared.broadcast_dim(dim, ServerMessage::EntitySpawn { entity });
+    }
+}
+
 /// Spawn a dropped-block item at the center of cell `(cell_x, cell_y)` in `dim`,
 /// popping it upward so it clears the player who mined it, and announce it to that
 /// dimension. Mined/crafted drops are a single item at full durability.
@@ -4211,6 +4430,7 @@ async fn entity_tick_loop(shared: Arc<Shared>) {
     let mut since_time_bcast = 0.0f32;
     let mut since_save = 0.0f32;
     let mut since_zombie_spawn = 0.0f32;
+    let mut since_boss_check = 0.0f32;
     let mut since_water_flow = 0.0f32;
     // Evolving RNG state for scattering night-zombie spawns.
     let mut zombie_rng = 0x9E37_79B9u32;
@@ -4268,6 +4488,14 @@ async fn entity_tick_loop(shared: Arc<Shared>) {
         if since_zombie_spawn >= ZOMBIE_SPAWN_INTERVAL {
             since_zombie_spawn = 0.0;
             maybe_spawn_zombies(&shared, &mut zombie_rng);
+        }
+
+        // Periodically raise the arena's lone boss, if a challenger is present and
+        // it hasn't already been slain in this world.
+        since_boss_check += TICK_DT;
+        if since_boss_check >= BOSS_CHECK_INTERVAL {
+            since_boss_check = 0.0;
+            ensure_arena_boss(&shared);
         }
 
         // Keep every client's day/night clock in sync.
@@ -4363,10 +4591,16 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         entities
             .values()
             // Players are authoritative on their clients; pets and knights never
-            // despawn for distance (they teleport to their owner instead).
-            // Everything else is culled once it drifts beyond DESPAWN_DIST of
-            // every player.
-            .filter(|e| !e.kind.is_player() && !e.kind.is_pet() && !e.kind.is_knight())
+            // despawn for distance (they teleport to their owner instead), and the
+            // arena boss is a fixture of its dimension — it stays put whether or not
+            // a player is nearby. Everything else is culled once it drifts beyond
+            // DESPAWN_DIST of every player.
+            .filter(|e| {
+                !e.kind.is_player()
+                    && !e.kind.is_pet()
+                    && !e.kind.is_knight()
+                    && !matches!(e.kind, EntityKind::DemonKing)
+            })
             .filter(|e| {
                 let (w, h) = e.size();
                 nearest_player(&players, e.x + w * 0.5, e.y + h * 0.5, DESPAWN_DIST).is_none()
@@ -4441,6 +4675,11 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     let orc_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::Orc))
+        .map(|e| e.id)
+        .collect();
+    let demon_king_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::DemonKing))
         .map(|e| e.id)
         .collect();
     let ash_twister_ids: Vec<EntityId> = entities
@@ -6366,6 +6605,223 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         });
     }
 
+    // Demon king: the arena boss. It FLIES after the player like an enchanted demon,
+    // closing to melee range and hovering in their face, and on a cooldown commits to
+    // one of four attacks — chosen at random and telegraphed by its wind-up animation
+    // (riding the `lunge` timer, the chosen attack id stashed in `lunge_dir`): a fan of
+    // five fireballs, a tighter spread of three magic fireballs, a single summoner
+    // bolt, or — when the player is close — a heavy melee slam. The bolts loose (and the
+    // slam lands) on the strike frame partway through the wind-up, so an alert fighter
+    // can read the tell.
+    //
+    // Bolts loosed this tick, spawned after the loop so we aren't holding a mutable
+    // borrow of the king while inserting. Each is `(projectile kind, x, y, vx, vy)`.
+    let mut king_bolts: Vec<(EntityKind, f32, f32, f32, f32)> = Vec::new();
+    let arena_seed = world.generator.seed();
+    for id in demon_king_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+        // Re-acquire the nearest target each tick (for both movement and facing).
+        let target = nearest_prey(&hostile_players, &knight_boxes, scx, scy, DEMON_KING_AGGRO);
+        let toward = match target {
+            Some(ref p) => {
+                if p.x + p.w * 0.5 >= scx {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+            None => {
+                if e.vx >= 0.0 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+        };
+
+        // Mid-attack: a committed wind-up that plays out over DEMON_KING_ATTACK_TIME.
+        // The king hovers in place (it flies, so no gravity settles it) and looses its
+        // attack once, as the wind-up gives way to the strike.
+        if e.lunge > 0.0 {
+            let was_winding = e.lunge > DEMON_KING_STRIKE_TIME;
+            e.lunge = (e.lunge - TICK_DT).max(0.0);
+            let striking = e.lunge <= DEMON_KING_STRIKE_TIME;
+            e.vx = 0.0;
+            e.vy = 0.0;
+            // Broadcast a non-zero vx sign so clients keep facing the player through
+            // the wind-up (facing only updates on a non-zero vx).
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: e.x,
+                y: e.y,
+                vx: toward,
+                vy: 0.0,
+            });
+
+            if was_winding && striking {
+                let attack = e.lunge_dir as i32;
+                let (fw, fh) = FIREBALL_SIZE;
+                let sx = scx - fw * 0.5;
+                let sy = e.y + h * 0.3 - fh * 0.5;
+                // Aim from the king's upper body at the target's center (or straight
+                // ahead if it has lost its quarry mid-cast).
+                let (ux, uy) = match target {
+                    Some(ref p) => {
+                        let dx = (p.x + p.w * 0.5) - (sx + fw * 0.5);
+                        let dy = (p.y + p.h * 0.5) - (sy + fh * 0.5);
+                        let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                        (dx / len, dy / len)
+                    }
+                    None => (toward, 0.0),
+                };
+                // Loose the chosen attack. A `rot` helper fans a bolt off the aim
+                // vector by a signed angle.
+                let rot = |a: f32| -> (f32, f32) {
+                    let (s, c) = a.sin_cos();
+                    (ux * c - uy * s, ux * s + uy * c)
+                };
+                match attack {
+                    // 0: a wide fan of five ordinary fireballs.
+                    0 => {
+                        for k in -2..=2 {
+                            let (rx, ry) = rot(k as f32 * DEMON_KING_FIREBALL_SPREAD);
+                            king_bolts.push((
+                                EntityKind::Fireball,
+                                sx,
+                                sy,
+                                rx * FIREBALL_SPEED,
+                                ry * FIREBALL_SPEED,
+                            ));
+                        }
+                    }
+                    // 1: a tighter spread of three magic fireballs.
+                    1 => {
+                        for k in -1..=1 {
+                            let (rx, ry) = rot(k as f32 * DEMON_KING_MAGIC_SPREAD);
+                            king_bolts.push((
+                                EntityKind::MagicFireball,
+                                sx,
+                                sy,
+                                rx * MAGIC_FIREBALL_SPEED,
+                                ry * MAGIC_FIREBALL_SPEED,
+                            ));
+                        }
+                    }
+                    // 2: a single summoner bolt that bursts into a bouncing skull.
+                    2 => {
+                        king_bolts.push((
+                            EntityKind::SummonerFireball,
+                            sx,
+                            sy,
+                            ux * SUMMONER_FIREBALL_SPEED,
+                            uy * SUMMONER_FIREBALL_SPEED,
+                        ));
+                    }
+                    // 3: a melee slam, landing only if a player is still in reach.
+                    _ => {
+                        if let Some(p) =
+                            nearest_prey(&hostile_players, &knight_boxes, scx, scy, f32::INFINITY)
+                            && aabb_gap(e.x, e.y, w, h, p.x, p.y, p.w, p.h) <= DEMON_KING_SLAM_REACH
+                        {
+                            let kdir = if p.x + p.w * 0.5 >= scx { 1.0 } else { -1.0 };
+                            hit_prey(
+                                &mut bites,
+                                &mut knight_hits,
+                                &p,
+                                (kdir * KNOCKBACK_X, -KNOCKBACK_Y),
+                                DEMON_KING_SLAM_DAMAGE,
+                            );
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Not attacking. Fly toward the target (matching its altitude), closing to
+        // melee range; in range and off cooldown, commit to a random attack.
+        let (vx, vy) = match target {
+            Some(ref p) => {
+                let gap = aabb_gap(e.x, e.y, w, h, p.x, p.y, p.w, p.h);
+                let dx = (p.x + p.w * 0.5) - scx;
+                let dy = (p.y + p.h * 0.5) - scy;
+                let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                if gap > DEMON_KING_HOVER_GAP {
+                    (dx / len * DEMON_KING_SPEED, dy / len * DEMON_KING_SPEED)
+                } else {
+                    (0.0, 0.0)
+                }
+            }
+            // No quarry: drift gently in place at its current altitude.
+            None => (0.0, 0.0),
+        };
+
+        // Begin an attack if a target is in range and the cooldown has elapsed.
+        if target.is_some() && e.attack_cd <= 0.0 {
+            // Pick one of the four attacks. Derived from the seed, the king's
+            // position, and a rolling per-king counter (stashed in the otherwise
+            // unused `flee` field) so the choice varies bout to bout even when the
+            // king hovers stock-still over a stationary target.
+            let salt = id.wrapping_add((e.flee as u32).wrapping_mul(2_654_435_761));
+            e.flee = (e.flee + 1.0) % 1_000_000.0;
+            let attack = chunk_hash(arena_seed, e.x as i32, e.y as i32, salt) % 4;
+            e.lunge = crate::entity::DEMON_KING_ATTACK_TIME;
+            e.lunge_dir = attack as f32;
+            e.attack_cd = DEMON_KING_ATTACK_INTERVAL;
+            e.vx = 0.0;
+            e.vy = 0.0;
+            broadcasts.push(ServerMessage::EntityLunging { id });
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: e.x,
+                y: e.y,
+                vx: toward,
+                vy: 0.0,
+            });
+            continue;
+        }
+
+        // Fly freely (no gravity), each axis stopped independently by walls.
+        let (nx, _) = move_x(&mut world, e.x, e.y, w, h, vx * TICK_DT);
+        let (ny, _) = move_y(&mut world, nx, e.y, w, h, vy * TICK_DT);
+        e.x = nx;
+        e.y = ny;
+        e.vx = vx;
+        e.vy = vy;
+        // Always report a non-zero vx sign toward the target so the king faces the
+        // fighter even while hovering (facing only updates on a non-zero vx).
+        let bcast_vx = if vx.abs() > 0.01 { vx } else { toward };
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: nx,
+            y: ny,
+            vx: bcast_vx,
+            vy,
+        });
+    }
+    // Spawn the bolts the king loosed this tick, each with its own lifetime (they are
+    // not in `fireball_ids`/`summoner_fireball_ids`, so they begin flying next tick).
+    for (kind, x, y, vx, vy) in king_bolts {
+        let life = match kind {
+            EntityKind::MagicFireball => MAGIC_FIREBALL_LIFETIME,
+            EntityKind::SummonerFireball => SUMMONER_FIREBALL_LIFETIME,
+            _ => FIREBALL_LIFETIME,
+        };
+        let bid = shared.alloc_id();
+        let mut bolt = Entity::new(bid, kind, x, y);
+        bolt.vx = vx;
+        bolt.vy = vy;
+        bolt.attack_cd = life; // reused as the airborne lifetime timer
+        entities.insert(bolt.clone());
+        broadcasts.push(ServerMessage::EntitySpawn { entity: bolt });
+    }
+
     // Orc mages: robed underworld support casters. They land no blows of their own —
     // they shy away from players and instead seek out ordinary demons to empower,
     // casting an enchant that turns a demon into a flying, harder-hitting enchanted
@@ -7981,6 +8437,10 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                 maybe_spawn_ash_twisters(&shared, cx, cy);
                                 maybe_spawn_necromancers_ash(&shared, cx, cy);
                             }
+                            // The arena seeds no ambient life from its terrain; its
+                            // lone boss is raised by `ensure_arena_boss` in the tick
+                            // loop instead.
+                            Dimension::Arena => {}
                         }
                     }
                 }
@@ -8402,6 +8862,9 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 ClientMessage::UseFireKey { slot } => {
                     shared.use_fire_key(id, slot as usize);
                 }
+                ClientMessage::UseArenaKey { slot } => {
+                    shared.use_arena_key(id, slot as usize);
+                }
                 ClientMessage::ToggleDoor { x, y } => {
                     let dim = shared.dim_of(id);
                     // Gated by the player's melee reach, the same limit governing
@@ -8728,20 +9191,27 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         }
                         // If that killed a creature (it's no longer in the world),
                         // drop whatever it carries — animals leave raw meat, a dark
-                        // knight spills a tungsten haul.
+                        // knight spills a tungsten haul, and the arena boss leaves a
+                        // whole chest of loot where it fell (and never rises again).
                         if let Some((kind, vx, vy)) = victim
                             && shared.entities(dim).lock().get(target).is_none()
                         {
-                            let cx = (vx / TILE_SIZE) as i32;
-                            let cy = (vy / TILE_SIZE) as i32;
-                            let loot = if matches!(kind, EntityKind::DarkKnight) {
-                                dark_knight_loot(target)
+                            if matches!(kind, EntityKind::DemonKing) {
+                                spawn_boss_chest(&shared, dim, vx);
+                                shared.demon_king_alive.store(false, Ordering::SeqCst);
+                                shared.demon_king_slain.store(true, Ordering::SeqCst);
                             } else {
-                                creature_loot(&kind).to_vec()
-                            };
-                            for (item, n) in loot {
-                                for _ in 0..n {
-                                    spawn_drop(&shared, dim, cx, cy, item);
+                                let cx = (vx / TILE_SIZE) as i32;
+                                let cy = (vy / TILE_SIZE) as i32;
+                                let loot = if matches!(kind, EntityKind::DarkKnight) {
+                                    dark_knight_loot(target)
+                                } else {
+                                    creature_loot(&kind).to_vec()
+                                };
+                                for (item, n) in loot {
+                                    for _ in 0..n {
+                                        spawn_drop(&shared, dim, cx, cy, item);
+                                    }
                                 }
                             }
                         }

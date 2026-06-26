@@ -37,3 +37,9 @@ Projectiles (bones, fireballs) are the exception, flying at 130–170 px/s.
 | [Orcs](orcs.md) | 50 / 30 | Underworld charred expanse |
 | [Necromancer & Skulls](necromancer.md) | 26 / 8 | Deserts & underworld ash valleys |
 | [Ash Twister](ash-twister.md) | 18 | Underworld ash valleys |
+
+## Bosses
+
+| Entity | HP | Where |
+|---|---|---|
+| [Demon King](demon-king.md) | 320 | The **arena** — one per world |

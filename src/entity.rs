@@ -59,6 +59,10 @@ pub const DEMON_SIZE: (f32, f32) = (10.0, 15.0);
 /// an [`EntityKind::OrcMage`] has empowered. Drawn from the same proportions as the
 /// ordinary demon, lit with the mage's purple glamour.
 pub const ENCHANTED_DEMON_SIZE: (f32, f32) = (10.0, 15.0);
+/// Collision/draw size (width, height) in pixels of the demon king — the arena
+/// boss. A towering fiend, drawn far larger than the rank-and-file demon so it
+/// reads as the monarch of the depths.
+pub const DEMON_KING_SIZE: (f32, f32) = (22.0, 30.0);
 /// Collision/draw size (width, height) in pixels of an orc mage — a robed
 /// underworld spellcaster, leaner than the hulking brute it shares the depths with.
 pub const ORC_MAGE_SIZE: (f32, f32) = (10.0, 13.0);
@@ -125,6 +129,15 @@ pub const ORC_SLAM_TIME: f32 = 1.1;
 /// the orc slam it rides on the [`Entity::lunge`] timer; it is purely cosmetic —
 /// the demon is enchanted server-side when the cast is kicked off.
 pub const ORC_MAGE_CAST_TIME: f32 = 0.8;
+
+/// Seconds the demon king's attack animation plays end to end, for every one of
+/// its attacks (a fireball volley, a magic-fireball spread, a summoned bolt, or a
+/// melee slam). Shared by both sides so the server's attack timing and the
+/// client's attack-animation playback agree. The attack resolves partway through
+/// (see [`crate::server`]'s `DEMON_KING_STRIKE_TIME`) — the boss winds up, then
+/// looses its bolts or brings its fists down. Rides on the [`Entity::lunge`] timer
+/// like the orc slam and orc-mage cast.
+pub const DEMON_KING_ATTACK_TIME: f32 = 1.0;
 
 /// Seconds a knight's attack swing animation plays. Like the snake lunge and orc
 /// slam it rides on the [`Entity::lunge`] timer: the server kicks it off (broadcasting
@@ -207,6 +220,10 @@ pub const KNIGHT_MAX_HEALTH: i32 = 40;
 /// the overworld night — a shade harder to fell than even the [`KNIGHT_MAX_HEALTH`]
 /// man-at-arms it hunts, fitting a rare foe that drops tungsten when it falls.
 pub const DARK_KNIGHT_MAX_HEALTH: i32 = 44;
+/// Maximum health of the demon king, in hit points. A boss: vastly tougher than
+/// anything else in the world, so felling it is a real campaign rather than a
+/// brief scrap. Its health drives the boss bar the client shows during the fight.
+pub const DEMON_KING_MAX_HEALTH: i32 = 320;
 
 /// What an entity *is*. Adding a new creature/object means adding a variant
 /// here plus (for server-simulated kinds) a branch in the server tick loop.
@@ -409,6 +426,18 @@ pub enum EntityKind {
     /// velocity. Server-simulated. Appended last so older saves and the wire format
     /// keep their variant indices.
     Axe,
+    /// The demon king: the boss of the [`crate::world::Dimension::Arena`], and the
+    /// only one of its kind in a world. A towering winged fiend that **flies**,
+    /// chasing the player through the air, and wields the whole demonic arsenal: it
+    /// looses a fan of five ordinary [`EntityKind::Fireball`]s, a tighter spread of
+    /// three [`EntityKind::MagicFireball`]s, a single [`EntityKind::SummonerFireball`]
+    /// (which bursts into a bouncing [`EntityKind::Skull`]), or — at close range —
+    /// brings its fists down in a heavy melee **slam** (like the [`EntityKind::Orc`]).
+    /// It picks among these at random as it attacks. Slaying it drops a **chest** of
+    /// loot where it falls rather than loose items, and no new king is ever raised in
+    /// that world (see [`crate::server`]). Server-simulated. Appended last so older
+    /// saves and the wire format keep their variant indices.
+    DemonKing,
 }
 
 impl EntityKind {
@@ -441,6 +470,7 @@ impl EntityKind {
             EntityKind::SummonerFireball => SUMMONER_FIREBALL_SIZE,
             EntityKind::DarkKnight => DARK_KNIGHT_SIZE,
             EntityKind::Axe => AXE_SIZE,
+            EntityKind::DemonKing => DEMON_KING_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -557,6 +587,7 @@ impl EntityKind {
             // An axe is an inert projectile; 1 keeps health == max_health so no health
             // bar shows and a stray melee swing can't meaningfully "kill" it.
             EntityKind::Axe => 1,
+            EntityKind::DemonKing => DEMON_KING_MAX_HEALTH,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }

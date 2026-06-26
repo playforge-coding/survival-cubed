@@ -11,7 +11,7 @@ use fastnoise_lite::{FastNoiseLite, NoiseType};
 
 use crate::block::{
     AIR, ASH, CHARRED_ROCK, COAL_ORE, DIRT, FIRE, GOLD_ORE, GRASS, IRON_ORE, LEAVES, LOG, SAND,
-    STONE, TUNGSTEN_ORE, WATER,
+    STONE, STONE_BRICKS, TUNGSTEN_ORE, WATER,
 };
 use crate::entity::EntityKind;
 use crate::protocol::BlockId;
@@ -168,6 +168,11 @@ const UNDERWORLD_SURFACE_AMP: f32 = 4.0;
 /// below) sprouts a tongue of natural fire. Sparse, so the underworld glows with
 /// scattered flames rather than being a wall of fire.
 const UNDERWORLD_FIRE_CHANCE: u32 = 70;
+/// Floor row of the [`Dimension::Arena`]: the topmost solid stone-brick cell a
+/// player walks on. Open air fills everything above it (a tall fighting space);
+/// solid stone bricks fill everything below it. Flat across every column, so the
+/// arena is a clean, level field with no terrain to break a boss fight up.
+const ARENA_FLOOR: i32 = WORLD_HEIGHT / 2;
 /// Tungsten ore only replaces charred rock at least this many cells below the
 /// underworld ceiling, keeping it out of the exposed surface the player lands on.
 const TUNGSTEN_ORE_MIN_DEPTH: i32 = 6;
@@ -619,7 +624,26 @@ impl WorldGen {
         match dim {
             Dimension::Overworld => self.generate_chunk(cx, cy),
             Dimension::Underworld => self.generate_underworld_chunk(cx, cy),
+            Dimension::Arena => Self::generate_arena_chunk(cy),
         }
+    }
+
+    /// Generate a chunk of the [`Dimension::Arena`]: a flat plane of stone bricks.
+    /// Every cell at or below [`ARENA_FLOOR`] is solid stone brick; everything above
+    /// is open air. Independent of `cx` (the arena looks the same in every column)
+    /// and of the seed (there is nothing random to vary), so it is a pure function
+    /// of the chunk's vertical position.
+    fn generate_arena_chunk(cy: i32) -> Chunk {
+        let mut chunk = Chunk::empty();
+        let base_y = cy * CHUNK_SIZE;
+        for ly in 0..CHUNK_SIZE {
+            if base_y + ly >= ARENA_FLOOR {
+                for lx in 0..CHUNK_SIZE {
+                    chunk.set(lx, ly, STONE_BRICKS);
+                }
+            }
+        }
+        chunk
     }
 
     /// Floor row (topmost solid charred rock the player walks on) of the
@@ -659,6 +683,9 @@ impl WorldGen {
         match dim {
             Dimension::Overworld => self.surface_height(world_x),
             Dimension::Underworld => self.underworld_surface(world_x),
+            // The arena is a flat stone-brick plane: the floor is the same row in
+            // every column, so a warped-in fighter always lands level.
+            Dimension::Arena => ARENA_FLOOR,
         }
     }
 

@@ -5,8 +5,10 @@ numeric **seed** — the same seed always produces the same terrain. The world i
 split into **16×16-cell chunks**; only chunks you modify are saved, and untouched
 terrain regenerates identically from the seed.
 
-There are two dimensions: the **overworld** on the surface and the **underworld**
-below, linked by the [fire key](crafting.md#tools-and-utility-items).
+There are three dimensions: the **overworld** on the surface, the **underworld**
+below (linked by the [fire key](crafting.md#tools-and-utility-items)), and the
+**arena** — a self-contained boss plane reached with the
+[arena key](crafting.md#tools-and-utility-items).
 
 ## Biomes (overworld)
 
@@ -101,6 +103,26 @@ to warp between dimensions. The key remembers where you last used it on each
 side, so warping back drops you at the exact spot you keyed out from rather than
 a generic landing — your first crossing into a dimension picks a fresh spot, and
 every crossing after returns you to where you left.
+
+## The arena
+
+The **arena** is a separate combat plane built entirely of **stone bricks**: a
+single, flat, level floor of dressed stone stretching out forever, with open air
+above it and solid brick below. There is no terrain, no day or night (it sits
+under a steady, even light), and no ambient life — it exists for one thing, the
+**boss fight**.
+
+A world has exactly one **[Demon King](entities/demon-king.md)** — a towering,
+flying boss that holds court in the arena. The first time you step in with the
+king still alive, it rises across the floor from you and gives chase; a **boss
+health bar** appears at the top of the screen for the duration of the fight. Slay
+it and it leaves a **chest** of spoils where it falls (the full tungsten arsenal,
+a hoard of ingots and gold, and a meal) — and **no new king is ever raised** in
+that world. Win the arena once and it is won for good.
+
+To get there, craft an **[arena key](crafting.md#tools-and-utility-items)** from
+tungsten and gold and right-click to warp in. Right-click the key again while in
+the arena to return to exactly where you entered from.
 
 ## Weather
 
