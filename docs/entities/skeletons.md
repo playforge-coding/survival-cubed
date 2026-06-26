@@ -52,3 +52,18 @@ the ash valleys, seeding into nearly **half** of their chunks.
 !!! danger "Mind the fire trail"
     Don't fight a charred skeleton by chasing it through the fire it lays down —
     the trail does as much harm as its fists. Strike, then step onto clean rock.
+
+## Lore
+
+### Skeleton
+
+*To be written.*
+
+### Charred Skeleton
+
+Not every [prisoner](orcs.md) the new king cast down lasted long enough for the
+underworld to remake them. The charred skeletons are the ones who **didn't survive
+the wait** — the bodies that gave out before the charred dark could mutate them
+into [orcs](orcs.md). The fire that would have reforged them only burned them to
+bone, and now they walk the ash valleys trailing the flames that finished them:
+prisoners caught halfway, become nothing but the burning.

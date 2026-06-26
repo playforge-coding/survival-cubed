@@ -36,3 +36,7 @@ the world you left.
 A **wild** (untamed) horse is also a [knight's](knight.md) mount: a knight near a
 wild horse climbs on and gallops into battle, the horse soaking blows on its
 behalf until slain. A knight won't take a horse you've already tamed.
+
+## Lore
+
+*To be written.*

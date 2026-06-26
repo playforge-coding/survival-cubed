@@ -18,3 +18,7 @@ walking speed — you can outrun it in the open. The danger is underground, wher
 **climbs sheer cavern walls** to drop on you in tight spaces with nowhere to back
 off. It's frail, though: a few hits and it's gone. Spiders are a common find,
 seeding into roughly **1 in 3** eligible forest and deep chunks.
+
+## Lore
+
+*To be written.*

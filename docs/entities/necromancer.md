@@ -53,3 +53,7 @@ frail (8 HP — a hit or two) and **short-lived**, giving out on its own after a
     at daybreak** in the desert and overworld — but the underworld is eternal night,
     so in the ash valleys they never burn, and neither do zombies or skeletons that
     wander down.
+
+## Lore
+
+*To be written.*

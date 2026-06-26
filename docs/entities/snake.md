@@ -20,3 +20,7 @@ leaves it striking empty air. It's not especially tough, so once you've baited a
 miss, close in and strike.
 
 Snakes seed into roughly **3 in 10** desert chunks, sometimes more than one.
+
+## Lore
+
+*To be written.*

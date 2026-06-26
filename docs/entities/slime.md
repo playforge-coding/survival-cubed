@@ -18,3 +18,7 @@ A slime is slow, fragile, and hits for little — the gentlest introduction to
 combat the world offers. It only gives chase once it's dark and you're within
 range; in daylight it just bounces around the peaks. A couple of solid hits put
 one down.
+
+## Lore
+
+*To be written.*

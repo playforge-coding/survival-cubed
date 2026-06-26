@@ -45,3 +45,7 @@ The puppy is a genuine **ally**. Wild or tamed, it hunts nearby
 once a second. It also **heals 3 HP** whenever it eats a dropped piece of raw
 meat — so the chickens it kills feed it. A tamed puppy at your side is real help
 against a night skeleton.
+
+## Lore
+
+*To be written.*

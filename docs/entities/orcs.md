@@ -55,3 +55,19 @@ offscreen — better than half the time, an enchanted demon spawns alongside it.
     suddenly comes back stronger. If you see a mage, **run it down** (it's frail at
     30 HP) before it gets to work — but watch the enchanted demons it's already
     made.
+
+## Lore
+
+Orcs were not always monsters. They were **prisoners of the new, evil king** —
+thrown down into the underworld and left in the charred dark, where the place
+**mutated** them into the hulking, slow-witted brutes they are now. Whatever they
+once were, they have **forgotten everything**: their names, their crimes, the
+crown that condemned them. Only the shape of a body kept too long beneath the world
+remains.
+
+The **orc mage** fell the same way, but came from higher up: it was one of the
+**court wizards of the old king**, imprisoned in the underworld alongside the
+others. The mutation took its body like all the rest — but a wizard's craft runs
+deeper than memory, and it **kept a fragment of its old magic**. That is all that
+survived the change: not the man, not the master it served, only the spellwork in
+its hands, now turned to enchanting the demons that share its dark.

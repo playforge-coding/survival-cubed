@@ -46,3 +46,11 @@ Hold a [tungsten ingot](../crafting.md#smelting) and left-click the knight to
     Monsters are hostile to knights as well as to you. Let a knight soak the blows
     while you strike from behind it — and if it's mounted, the horse soaks them
     first.
+
+## Lore
+
+These were the sworn knights of the **original king**, the one who was
+**overthrown**. When the crown fell they refused to bend the knee to the usurper
+and left to wander as **mercenaries** — masterless blades selling their loyalty to
+whoever proves worthy of it. That is why a tungsten ingot can buy what no command
+could: a knight follows you because you earned it, not because a king ordered it.

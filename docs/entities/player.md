@@ -43,3 +43,7 @@ sword drops a zombie in a fraction of the hits a wooden one needs. See
 
 In **[creator mode](../creator-mode.md)** you are invisible to monsters and take
 no damage from them.
+
+## Lore
+
+*To be written.*

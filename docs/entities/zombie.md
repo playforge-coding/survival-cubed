@@ -27,3 +27,7 @@ already hounding you.
 !!! note "The underworld never sleeps"
     Daybreak only comes in the overworld. A zombie that wanders down into the
     **underworld** — which is eternal night — never burns.
+
+## Lore
+
+*To be written.*

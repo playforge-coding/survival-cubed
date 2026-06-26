@@ -25,3 +25,7 @@ to kill it from range or back off before it reaches you.
     Kill an ash twister from range, or retreat before it touches you. If you *are*
     thrown, try to **steer your landing onto a ledge** to shorten the drop — the
     fall, not the twister, is what kills.
+
+## Lore
+
+*To be written.*

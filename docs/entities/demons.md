@@ -59,3 +59,7 @@ dealing 12 HP on a direct hit. Like the ordinary fireball it bursts into an
     demons, hunt down the **[orc mage](orcs.md#orc-mage)** before it builds a whole
     air force — but watch the demons it's already made, which can dive on you from
     any angle.
+
+## Lore
+
+*To be written.*

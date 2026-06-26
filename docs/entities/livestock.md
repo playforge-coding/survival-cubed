@@ -38,3 +38,7 @@ A lone chicken pecking the dunes is often the only life in the desert.
 A calm grazer of the **mountains**, where it shares the slopes with hostile
 [slimes](slime.md). Tougher than a chicken and worth twice the meat, but it won't
 run from you — it just wanders.
+
+## Lore
+
+*To be written.*

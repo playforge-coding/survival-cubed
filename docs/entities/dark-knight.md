@@ -53,3 +53,11 @@ full durability. Hunt them at night for top-tier gear (and the tungsten ingots a
     A dark knight is a hard, rare fight — but the payoff is the best gear in the
     game. Come prepared (a good sword and room to strafe), take the night kill, and
     walk away with tungsten you'd otherwise have had to descend for.
+
+## Lore
+
+Where the [knights](knight.md) abandoned the fallen crown, these did not. When the
+**original king** was overthrown, the dark knights **stuck with the new, evil
+king** — pledging their blades to the usurper. That is why they make war on their
+old brothers-in-arms as readily as on you: to a dark knight, a free knight is a
+deserter, and the only loyalty left is to the throne that bought them.
