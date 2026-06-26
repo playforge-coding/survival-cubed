@@ -223,7 +223,7 @@ pub const DARK_KNIGHT_MAX_HEALTH: i32 = 44;
 /// Maximum health of the demon king, in hit points. A boss: vastly tougher than
 /// anything else in the world, so felling it is a real campaign rather than a
 /// brief scrap. Its health drives the boss bar the client shows during the fight.
-pub const DEMON_KING_MAX_HEALTH: i32 = 320;
+pub const DEMON_KING_MAX_HEALTH: i32 = 1000;
 
 /// What an entity *is*. Adding a new creature/object means adding a variant
 /// here plus (for server-simulated kinds) a branch in the server tick loop.

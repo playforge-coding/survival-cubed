@@ -10,14 +10,14 @@ in the tables below link to them.
 
 ## Passive animals
 
-| Animal | HP | Where | Drops | Notes |
-|---|---|---|---|---|
-| **[Chicken](entities/livestock.md#chicken)** | 8 | Plains, forest, desert | 1 Raw Meat | Pecks the ground, bolts when struck |
-| **[Goat](entities/livestock.md#goat)** | 16 | Mountains | 2 Raw Meat | Calm grazer |
-| **[Cat](entities/pets.md#cat)** | 8 | Forest | — | Wild until tamed |
-| **[Puppy](entities/pets.md#puppy)** | 14 | Forest | — | Wild until tamed; hunts skeletons and chickens |
-| **[Horse](entities/horse.md)** | 30 | Plains | — | Wild until tamed **with an apple**; can be ridden |
-| **[Knight](entities/knight.md)** | 40 | Plains (rare) | — | A wandering man-at-arms who **battles monsters on sight**; recruit it **with a tungsten ingot** |
+| Animal                                       | HP  | Where                  | Drops      | Notes                                                                                           |
+| -------------------------------------------- | --- | ---------------------- | ---------- | ----------------------------------------------------------------------------------------------- |
+| **[Chicken](entities/livestock.md#chicken)** | 8   | Plains, forest, desert | 1 Raw Meat | Pecks the ground, bolts when struck                                                             |
+| **[Goat](entities/livestock.md#goat)**       | 16  | Mountains              | 2 Raw Meat | Calm grazer                                                                                     |
+| **[Cat](entities/pets.md#cat)**              | 8   | Forest                 | —          | Wild until tamed                                                                                |
+| **[Puppy](entities/pets.md#puppy)**          | 14  | Forest                 | —          | Wild until tamed; hunts skeletons and chickens                                                  |
+| **[Horse](entities/horse.md)**               | 30  | Plains                 | —          | Wild until tamed **with an apple**; can be ridden                                               |
+| **[Knight](entities/knight.md)**             | 40  | Plains (rare)          | —          | A wandering man-at-arms who **battles monsters on sight**; recruit it **with a tungsten ingot** |
 
 Cook the raw meat from chickens and goats before eating it — raw meat makes you
 sick. See [Food](crafting.md#food).
@@ -78,9 +78,9 @@ Hold a [tungsten ingot](crafting.md#smelting) and left-click the knight to
   them. The horse shields it — soaking every blow on the knight's behalf — until
   the horse is slain, after which the knight fights on foot. (It won't take a horse
   you've tamed.)
-- **Death breaks the bond.** Unlike a pet, a slain *recruited* knight respawns at
-  **your** respawn point as a *wild* knight — you must **recruit it again** with
-  another tungsten ingot. A *wild* knight killed in battle is gone for good, so
+- **Death breaks the bond.** Unlike a pet, a slain _recruited_ knight respawns at
+  **your** respawn point as a _wild_ knight — you must **recruit it again** with
+  another tungsten ingot. A _wild_ knight killed in battle is gone for good, so
   recruit a promising one before it picks a fight it can't win.
 
 ## Hostile monsters
@@ -88,64 +88,64 @@ Hold a [tungsten ingot](crafting.md#smelting) and left-click the knight to
 Most monsters only **hunt at night** (or in dark caves). Build shelter and keep a
 [weapon](crafting.md#weapons) handy before dusk.
 
-| Monster | HP | Where | Behaviour |
-|---|---|---|---|
-| **[Slime](entities/slime.md)** | 10 | Common in mountains | Wanders by day, hunts at night |
-| **[Zombie](entities/zombie.md)** | 40 | All biomes, night | Slow, tough, hard-hitting; **burns up at daybreak** |
-| **[Dark Knight](entities/dark-knight.md)** | 44 | All biomes, night (overworld), rare | Black-armoured warrior; keeps its distance and throws **axes** at players *and* knights; **drops tungsten gear**; **burns up at daybreak** |
-| **[Spider](entities/spider.md)** | 12 | Forests & caves | Fast and fragile; climbs walls |
-| **[Snake](entities/snake.md)** | 14 | Desert | Ambusher; coils for ~0.7 s, then lunges |
-| **[Skeleton](entities/skeletons.md#skeleton)** | 24 | All biomes, night | Keeps its distance and throws **bone projectiles**; burns at daybreak |
-| **[Charred Skeleton](entities/skeletons.md#charred-skeleton)** | 36 | Underworld **ash valleys** | Charges into melee and **leaves a trail of fire**; active at all hours |
-| **[Demon](entities/demons.md#demon)** | 28 | Underworld charred expanse (rare) | Keeps its distance and hurls **fireballs** that burst into flame; active at all hours |
-| **[Orc](entities/orcs.md#orc)** | 50 | Underworld charred expanse | Slow, hulking brute; plants its feet for a telegraphed **slam** that hits brutally hard; active at all hours |
-| **[Orc Mage](entities/orcs.md#orc-mage)** | 30 | Underworld charred expanse (rare) | A robed support caster; lands **no blows of its own** — it shies from you and **enchants nearby demons** instead; active at all hours |
-| **[Enchanted Demon](entities/demons.md#enchanted-demon)** | 40 | Underworld charred expanse | A demon a mage has empowered: it **flies** and looses **three purple magic fireballs at once** (one straight, two fanned up and down) that reach farther and hit harder; never spawns on its own |
-| **[Ash Twister](entities/ash-twister.md)** | 18 | Underworld **ash valleys** | A whirling column of ash; on contact it **flings you high into the air** — the fall does the damage; active at all hours |
-| **[Necromancer](entities/necromancer.md#necromancer)** | 26 | Overworld **deserts** & underworld **ash valleys** | Hooded caster; keeps its distance and hurls **summoner fireballs** that burst into bouncing skulls; **burns up at daybreak** in the desert (roams the depths around the clock) |
-| **[Skull](entities/necromancer.md#skull)** | 8 | Summoned by necromancers | A bouncing skeleton skull that hops toward you and gnashes on contact; frail and short-lived; **burns up at daybreak** in the overworld |
+| Monster                                                        | HP  | Where                                              | Behaviour                                                                                                                                                                                        |
+| -------------------------------------------------------------- | --- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **[Slime](entities/slime.md)**                                 | 10  | Common in mountains                                | Wanders by day, hunts at night                                                                                                                                                                   |
+| **[Zombie](entities/zombie.md)**                               | 40  | All biomes, night                                  | Slow, tough, hard-hitting; **burns up at daybreak**                                                                                                                                              |
+| **[Dark Knight](entities/dark-knight.md)**                     | 44  | All biomes, night (overworld), rare                | Black-armoured warrior; keeps its distance and throws **axes** at players _and_ knights; **drops tungsten gear**; **burns up at daybreak**                                                       |
+| **[Spider](entities/spider.md)**                               | 12  | Forests & caves                                    | Fast and fragile; climbs walls                                                                                                                                                                   |
+| **[Snake](entities/snake.md)**                                 | 14  | Desert                                             | Ambusher; coils for ~0.7 s, then lunges                                                                                                                                                          |
+| **[Skeleton](entities/skeletons.md#skeleton)**                 | 24  | All biomes, night                                  | Keeps its distance and throws **bone projectiles**; burns at daybreak                                                                                                                            |
+| **[Charred Skeleton](entities/skeletons.md#charred-skeleton)** | 36  | Underworld **ash valleys**                         | Charges into melee and **leaves a trail of fire**; active at all hours                                                                                                                           |
+| **[Demon](entities/demons.md#demon)**                          | 28  | Underworld charred expanse (rare)                  | Keeps its distance and hurls **fireballs** that burst into flame; active at all hours                                                                                                            |
+| **[Orc](entities/orcs.md#orc)**                                | 50  | Underworld charred expanse                         | Slow, hulking brute; plants its feet for a telegraphed **slam** that hits brutally hard; active at all hours                                                                                     |
+| **[Orc Mage](entities/orcs.md#orc-mage)**                      | 30  | Underworld charred expanse (rare)                  | A robed support caster; lands **no blows of its own** — it shies from you and **enchants nearby demons** instead; active at all hours                                                            |
+| **[Enchanted Demon](entities/demons.md#enchanted-demon)**      | 40  | Underworld charred expanse                         | A demon a mage has empowered: it **flies** and looses **three purple magic fireballs at once** (one straight, two fanned up and down) that reach farther and hit harder; never spawns on its own |
+| **[Ash Twister](entities/ash-twister.md)**                     | 18  | Underworld **ash valleys**                         | A whirling column of ash; on contact it **flings you high into the air** — the fall does the damage; active at all hours                                                                         |
+| **[Necromancer](entities/necromancer.md#necromancer)**         | 26  | Overworld **deserts** & underworld **ash valleys** | Hooded caster; keeps its distance and hurls **summoner fireballs** that burst into bouncing skulls; **burns up at daybreak** in the desert (roams the depths around the clock)                   |
+| **[Skull](entities/necromancer.md#skull)**                     | 8   | Summoned by necromancers                           | A bouncing skeleton skull that hops toward you and gnashes on contact; frail and short-lived; **burns up at daybreak** in the overworld                                                          |
 
 !!! danger "Mind the drop after an ash twister hits you"
-    An **ash twister** barely scratches you on contact — but it hurls you skyward,
-    and the fall back to the ground deals heavy **fall damage** when you land
-    (roughly half your health from open ground, more if you come down a pit). It
-    only haunts the underworld's **ash valleys**. Kill it from range or back off
-    before it reaches you; if you are thrown, try to steer your landing onto a
-    ledge to shorten the drop. It is frail, so a couple of solid hits put it down.
+An **ash twister** barely scratches you on contact — but it hurls you skyward,
+and the fall back to the ground deals heavy **fall damage** when you land
+(roughly half your health from open ground, more if you come down a pit). It
+only haunts the underworld's **ash valleys**. Kill it from range or back off
+before it reaches you; if you are thrown, try to steer your landing onto a
+ledge to shorten the drop. It is frail, so a couple of solid hits put it down.
 
 !!! danger "Skeletons and demons shoot back"
-    Skeletons fire bones and demons hurl fireballs in a straight line. The
-    projectile flies until it hits you or a wall — strafe behind cover, or close
-    the distance fast. A demon's fireball leaves a lick of fire where it bursts,
-    so don't linger where it lands. Demons are rarer than charred skeletons, but
-    far deadlier at range.
+Skeletons fire bones and demons hurl fireballs in a straight line. The
+projectile flies until it hits you or a wall — strafe behind cover, or close
+the distance fast. A demon's fireball leaves a lick of fire where it bursts,
+so don't linger where it lands. Demons are rarer than charred skeletons, but
+far deadlier at range.
 
 !!! danger "Don't stand under an orc's slam"
-    An orc is slow and easy to outrun, but once it plants its feet and rears back
-    it is winding up a **slam** that can gut you in two blows. The hit only lands
-    as its fists crash down, so step out of reach during the wind-up — then close
-    in and strike while it recovers.
+An orc is slow and easy to outrun, but once it plants its feet and rears back
+it is winding up a **slam** that can gut you in two blows. The hit only lands
+as its fists crash down, so step out of reach during the wind-up — then close
+in and strike while it recovers.
 
 !!! danger "Kill the orc mage first"
-    An **orc mage** never attacks you directly — it hangs back and **enchants the
-    demons around it**, turning each into a flying **enchanted demon** that chases
-    you through the air and pelts you with **purple fireballs** that reach farther
-    and hit harder than ordinary ones — and it fires them **three at a time**, in a
-    fan you can't simply duck under. A mage heals a demon to full as it empowers
-    it, so a worn-down demon suddenly comes back stronger. If you see a mage, run
-    it down before it builds an air force — but watch its enchanted demons, which can
-    dive on you from any angle. Their magic fireballs still leave only ordinary fire
-    where they burst.
+An **orc mage** never attacks you directly — it hangs back and **enchants the
+demons around it**, turning each into a flying **enchanted demon** that chases
+you through the air and pelts you with **purple fireballs** that reach farther
+and hit harder than ordinary ones — and it fires them **three at a time**, in a
+fan you can't simply duck under. A mage heals a demon to full as it empowers
+it, so a worn-down demon suddenly comes back stronger. If you see a mage, run
+it down before it builds an air force — but watch its enchanted demons, which can
+dive on you from any angle. Their magic fireballs still leave only ordinary fire
+where they burst.
 
 !!! danger "Necromancers raise a tide of skulls"
-    A **necromancer** never closes in — it kites you and lobs **summoner fireballs**,
-    each of which bursts into a bouncing **skull** wherever it lands. The skulls hop
-    after you and gnash on contact, so a necromancer left alone quickly buries you
-    under them. Rush it down (it's frail) before the floor fills with skulls; the
-    skulls themselves pop in a hit or two and give out on their own after a while.
-    Necromancers and their skulls **burn up at daybreak** in the desert and overworld —
-    but the **underworld is eternal night**, so there (in the ash valleys) they never
-    burn, and neither do zombies or skeletons that wander down.
+A **necromancer** never closes in — it kites you and lobs **summoner fireballs**,
+each of which bursts into a bouncing **skull** wherever it lands. The skulls hop
+after you and gnash on contact, so a necromancer left alone quickly buries you
+under them. Rush it down (it's frail) before the floor fills with skulls; the
+skulls themselves pop in a hit or two and give out on their own after a while.
+Necromancers and their skulls **burn up at daybreak** in the desert and overworld —
+but the **underworld is eternal night**, so there (in the ash valleys) they never
+burn, and neither do zombies or skeletons that wander down.
 
 Monsters are hostile to **[knights](#the-knight)** as well as to you — they will
 chase down and attack a man-at-arms whether or not you have recruited it, and a
@@ -159,21 +159,21 @@ In **creator mode** you are invisible to monsters and take no damage from them.
 A boss is a unique, far tougher foe with its own **health bar** across the top of
 the screen. There is one (for now), and it lives in the [arena](world.md#the-arena).
 
-| Boss | HP | Where | Behaviour |
-|---|---|---|---|
-| **[Demon King](entities/demon-king.md)** | 320 | The **arena** (one per world) | A towering fiend; **invulnerable until its 8 orc-mage guardians are slain**; fights **on foot, then flies once past ⅔ health**; cycles through a fan of **five fireballs**, a spread of **three magic fireballs**, a single **summoner bolt**, and a melee **slam**; drops a **chest** of loot and never returns once slain |
+| Boss                                     | HP   | Where                         | Behaviour                                                                                                                                                                                                                                                                                                                   |
+| ---------------------------------------- | ---- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **[Demon King](entities/demon-king.md)** | 1000 | The **arena** (one per world) | A towering fiend; **invulnerable until its 8 orc-mage guardians are slain**; fights **on foot, then flies once past ⅔ health**; cycles through a fan of **five fireballs**, a spread of **three magic fireballs**, a single **summoner bolt**, and a melee **slam**; drops a **chest** of loot and never returns once slain |
 
 !!! danger "Kill the guardians, then read the wind-up"
-    The **Demon King** enters **invulnerable**, shielded by **eight orc mages**
-    scattered across the arena — your hits flash it red but do nothing until the last
-    mage is dead. The mages flee rather than fight, so run them down first (you are
-    faster than they are). Once the shield drops, the king telegraphs every attack
-    with the same wind-up before it releases — when it rears back, it is about to
-    loose a volley or bring its fists down. It flies and hovers in your face, so the
-    fight is up close: trade blows when it is between attacks, and sidestep the moment
-    it winds up (its fireball fans are wide and hard to dodge from point-blank). It
-    has a deep health pool — bring the best [weapon](crafting.md#weapons) and plenty
-    of food.
+The **Demon King** enters **invulnerable**, shielded by **eight orc mages**
+scattered across the arena — your hits flash it red but do nothing until the last
+mage is dead. The mages flee rather than fight, so run them down first (you are
+faster than they are). Once the shield drops, the king telegraphs every attack
+with the same wind-up before it releases — when it rears back, it is about to
+loose a volley or bring its fists down. It flies and hovers in your face, so the
+fight is up close: trade blows when it is between attacks, and sidestep the moment
+it winds up (its fireball fans are wide and hard to dodge from point-blank). It
+has a deep health pool — bring the best [weapon](crafting.md#weapons) and plenty
+of food.
 
 ## Combat tips
 

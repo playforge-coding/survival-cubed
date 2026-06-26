@@ -10,15 +10,15 @@ guardians scattered across the arena — only once every last one is cut down ca
 king itself be harmed. Felling it is a campaign, not a scrap, and it leaves a
 **chest** of spoils where it falls. Once slain it **never rises again** in that world.
 
-| Stat | Value |
-|---|---|
-| **Health** | 320 HP |
-| **Size** | 22 × 30 px |
-| **Speed** | 46 px/s (on foot, then flying past ⅔ health) |
-| **Damage** | 7 HP per fireball · 12 HP per magic fireball · 22 HP per slam |
-| **Found in** | The **arena** — one per world |
-| **Activity** | Always active; never despawns |
-| **Drops** | A **chest** of loot where it dies (not loose items) |
+| Stat         | Value                                                         |
+| ------------ | ------------------------------------------------------------- |
+| **Health**   | 1000 HP                                                       |
+| **Size**     | 22 × 30 px                                                    |
+| **Speed**    | 46 px/s (on foot, then flying past ⅔ health)                  |
+| **Damage**   | 7 HP per fireball · 12 HP per magic fireball · 22 HP per slam |
+| **Found in** | The **arena** — one per world                                 |
+| **Activity** | Always active; never despawns                                 |
+| **Drops**    | A **chest** of loot where it dies (not loose items)           |
 
 ## The guardians
 
@@ -28,7 +28,7 @@ while a single one still lives — your blows land and flash it red, but deal no
 damage. The mages don't fight back: like their underworld kin they **shy away** from
 you, so the opening of the fight is a **hunt** — run each one down (you are faster
 than they are) and cut it out while dodging the king's volleys overhead. The
-king's health bar glows **cold blue** and reads *"Invulnerable"* with a live count
+king's health bar glows **cold blue** and reads _"Invulnerable"_ with a live count
 of how many guardians remain; when the last falls, the bar turns **red** and the
 king is finally yours to kill.
 
@@ -58,10 +58,10 @@ hardest stretch, but a flying king is harder to corner, so press the advantage w
 it is still grounded.
 
 !!! danger "Bring everything"
-    320 HP is a deep pool — far more than anything else in the game. Come with the
-    best [weapon](../crafting.md#weapons) you can forge (a tungsten sword), plenty of
-    **cooked meat**, and room to move. There is no daybreak to save you and the king
-    never gives up the chase.
+1000 HP is a deep pool — far more than anything else in the game. Come with the
+best [weapon](../crafting.md#weapons) you can forge (a tungsten sword), plenty of
+**cooked meat**, and room to move. There is no daybreak to save you and the king
+never gives up the chase.
 
 ## The chest
 

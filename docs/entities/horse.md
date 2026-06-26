@@ -2,17 +2,17 @@
 
 A tall, peaceable grazer that roams the **plains** — uncommon, found in about
 **1 in 16 plains chunks**. Like the cat and puppy it's a pet: immune to your
-attacks, never lost (it teleports to you if you stray past ~320 px), and
+attacks, never lost (it teleports to you if you stray past ~1000 px), and
 respawning at your respawn point if it ever dies. Two things set it apart.
 
-| Stat | Value |
-|---|---|
-| **Health** | 30 HP |
-| **Size** | 17 × 14 px |
-| **Speed** | Wanders at 26 px/s |
-| **Damage** | None |
-| **Found in** | Plains (surface), uncommon |
-| **Tamed with** | An apple |
+| Stat           | Value                      |
+| -------------- | -------------------------- |
+| **Health**     | 30 HP                      |
+| **Size**       | 17 × 14 px                 |
+| **Speed**      | Wanders at 26 px/s         |
+| **Damage**     | None                       |
+| **Found in**   | Plains (surface), uncommon |
+| **Tamed with** | An apple                   |
 
 ## Taming
 
@@ -39,4 +39,4 @@ behalf until slain. A knight won't take a horse you've already tamed.
 
 ## Lore
 
-*To be written.*
+_To be written._
