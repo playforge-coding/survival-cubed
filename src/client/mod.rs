@@ -3061,71 +3061,78 @@ impl App {
 
                 ui.separator();
                 ui.label("Spawn entity (at player)");
-                ui.horizontal(|ui| {
-                    if ui.button("Slime").clicked() {
-                        spawn = Some(EntityKind::Slime);
-                    }
-                    if ui.button("Chicken").clicked() {
-                        spawn = Some(EntityKind::Chicken);
-                    }
-                    if ui.button("Goat").clicked() {
-                        spawn = Some(EntityKind::Goat);
-                    }
-                    if ui.button("Cat").clicked() {
-                        spawn = Some(EntityKind::Cat {
-                            owner: None,
-                            sitting: false,
+                egui::ScrollArea::horizontal()
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if ui.button("Slime").clicked() {
+                                spawn = Some(EntityKind::Slime);
+                            }
+                            if ui.button("Chicken").clicked() {
+                                spawn = Some(EntityKind::Chicken);
+                            }
+                            if ui.button("Goat").clicked() {
+                                spawn = Some(EntityKind::Goat);
+                            }
+                            if ui.button("Cat").clicked() {
+                                spawn = Some(EntityKind::Cat {
+                                    owner: None,
+                                    sitting: false,
+                                });
+                            }
+                            if ui.button("Puppy").clicked() {
+                                spawn = Some(EntityKind::Puppy {
+                                    owner: None,
+                                    sitting: false,
+                                });
+                            }
+                            if ui.button("Horse").clicked() {
+                                spawn = Some(EntityKind::Horse { owner: None });
+                            }
+                            if ui.button("Zombie").clicked() {
+                                spawn = Some(EntityKind::Zombie);
+                            }
+                            if ui.button("Spider").clicked() {
+                                spawn = Some(EntityKind::Spider);
+                            }
+                            if ui.button("Snake").clicked() {
+                                spawn = Some(EntityKind::Snake);
+                            }
+                            if ui.button("Skeleton").clicked() {
+                                spawn = Some(EntityKind::Skeleton);
+                            }
+                            if ui.button("Charred Skeleton").clicked() {
+                                spawn = Some(EntityKind::CharredSkeleton);
+                            }
+                            if ui.button("Demon").clicked() {
+                                spawn = Some(EntityKind::Demon);
+                            }
+                            if ui.button("Orc").clicked() {
+                                spawn = Some(EntityKind::Orc);
+                            }
+                            if ui.button("Orc Mage").clicked() {
+                                spawn = Some(EntityKind::OrcMage);
+                            }
+                            if ui.button("Enchanted Demon").clicked() {
+                                spawn = Some(EntityKind::EnchantedDemon);
+                            }
+                            if ui.button("Necromancer").clicked() {
+                                spawn = Some(EntityKind::Necromancer);
+                            }
+                            if ui.button("Skull").clicked() {
+                                spawn = Some(EntityKind::Skull);
+                            }
+                            if ui.button("Knight").clicked() {
+                                spawn = Some(EntityKind::Knight { owner: None });
+                            }
+                            if ui.button("Dark Knight").clicked() {
+                                spawn = Some(EntityKind::DarkKnight);
+                            }
+                            if ui.button("Dragon").clicked() {
+                                spawn = Some(EntityKind::Dragon);
+                            }
                         });
-                    }
-                    if ui.button("Puppy").clicked() {
-                        spawn = Some(EntityKind::Puppy {
-                            owner: None,
-                            sitting: false,
-                        });
-                    }
-                    if ui.button("Horse").clicked() {
-                        spawn = Some(EntityKind::Horse { owner: None });
-                    }
-                    if ui.button("Zombie").clicked() {
-                        spawn = Some(EntityKind::Zombie);
-                    }
-                    if ui.button("Spider").clicked() {
-                        spawn = Some(EntityKind::Spider);
-                    }
-                    if ui.button("Snake").clicked() {
-                        spawn = Some(EntityKind::Snake);
-                    }
-                    if ui.button("Skeleton").clicked() {
-                        spawn = Some(EntityKind::Skeleton);
-                    }
-                    if ui.button("Charred Skeleton").clicked() {
-                        spawn = Some(EntityKind::CharredSkeleton);
-                    }
-                    if ui.button("Demon").clicked() {
-                        spawn = Some(EntityKind::Demon);
-                    }
-                    if ui.button("Orc").clicked() {
-                        spawn = Some(EntityKind::Orc);
-                    }
-                    if ui.button("Orc Mage").clicked() {
-                        spawn = Some(EntityKind::OrcMage);
-                    }
-                    if ui.button("Enchanted Demon").clicked() {
-                        spawn = Some(EntityKind::EnchantedDemon);
-                    }
-                    if ui.button("Necromancer").clicked() {
-                        spawn = Some(EntityKind::Necromancer);
-                    }
-                    if ui.button("Skull").clicked() {
-                        spawn = Some(EntityKind::Skull);
-                    }
-                    if ui.button("Knight").clicked() {
-                        spawn = Some(EntityKind::Knight { owner: None });
-                    }
-                    if ui.button("Dark Knight").clicked() {
-                        spawn = Some(EntityKind::DarkKnight);
-                    }
-                });
+                    });
 
                 ui.separator();
                 ui.label("Infinite block (RMB places)");
