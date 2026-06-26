@@ -358,6 +358,10 @@ const DEMON_KING_KNIGHT_COUNT: u32 = 4;
 const DEMON_KING_KNIGHT_SPACING: f32 = 64.0;
 /// Seconds the demon king waits between attacks (the cooldown set when one begins).
 const DEMON_KING_ATTACK_INTERVAL: f32 = 1.7;
+/// Seconds the demon king waits between attacks while airborne — shorter than its
+/// grounded cooldown so it commits to its **dive-slam** more often. Aloft it is
+/// otherwise out of reach, so frequent dives are the player's window to strike back.
+const DEMON_KING_FLY_ATTACK_INTERVAL: f32 = 1.0;
 /// Seconds of attack remaining (of [`crate::entity::DEMON_KING_ATTACK_TIME`]) at
 /// which the wind-up gives way to the strike: the frame the king looses its bolts
 /// or brings its fists down. Half-way through, like the orc slam.
@@ -6891,10 +6895,23 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             // king stands stock-still over a stationary target.
             let salt = id.wrapping_add((e.flee as u32).wrapping_mul(2_654_435_761));
             e.flee = (e.flee + 1.0) % 1_000_000.0;
-            let attack = chunk_hash(arena_seed, e.x as i32, e.y as i32, salt) % 4;
+            let roll = chunk_hash(arena_seed, e.x as i32, e.y as i32, salt);
+            // On foot the king picks evenly among its four attacks (0/1/2 ranged,
+            // 3 the slam). Airborne it is otherwise untouchable, so it favours the
+            // dive-slam (attack 3) — every other airborne attack is a dive, giving
+            // the player a chance to strike it as it plunges; the rest stay ranged.
+            let attack = if flying {
+                if roll % 2 == 0 { 3 } else { roll % 3 }
+            } else {
+                roll % 4
+            };
             e.lunge = crate::entity::DEMON_KING_ATTACK_TIME;
             e.lunge_dir = attack as f32;
-            e.attack_cd = DEMON_KING_ATTACK_INTERVAL;
+            e.attack_cd = if flying {
+                DEMON_KING_FLY_ATTACK_INTERVAL
+            } else {
+                DEMON_KING_ATTACK_INTERVAL
+            };
             e.vx = 0.0;
             broadcasts.push(ServerMessage::EntityLunging { id });
             broadcasts.push(ServerMessage::EntityMoved {
@@ -6931,7 +6948,19 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
                     };
                     (dir * DEMON_KING_FLY_SPEED, vy)
                 }
-                None => (0.0, 0.0),
+                None => {
+                    // No quarry — the player died or slipped out of aggro. Wheel back
+                    // to a hover above the throne it rose over instead of freezing
+                    // wherever the last dive left it: stranded high in the sky off to
+                    // one side, it reads as having vanished. It resumes the hunt the
+                    // instant a challenger returns.
+                    let home_col = ((home + w * 0.5) / TILE_SIZE).floor() as i32;
+                    let floor_y = world.surface(home_col) as f32 * TILE_SIZE;
+                    let perch_y = floor_y - h - DEMON_KING_SKY_HEIGHT;
+                    let vx = (home - e.x).clamp(-DEMON_KING_FLY_SPEED, DEMON_KING_FLY_SPEED);
+                    let vy = (perch_y - e.y).clamp(-DEMON_KING_FLY_SPEED, DEMON_KING_FLY_SPEED);
+                    (vx, vy)
+                }
             };
             let (nx, _) = move_x(&mut world, e.x, e.y, w, h, vx * TICK_DT);
             let (ny, _) = move_y(&mut world, nx, e.y, w, h, vy * TICK_DT);

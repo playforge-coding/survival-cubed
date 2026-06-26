@@ -42,8 +42,11 @@ high overhead and **wheels back and forth across the sky**, raining fire down, a
 **summons a host of four [dark knights](dark-knight.md)** to swarm you on the ground
 while it rules the air.
 
-On both footings it attacks every ~1.7 seconds, choosing at random from **four
-attacks**, each telegraphed by the same **wind-up animation** before it releases:
+On foot it attacks every ~1.7 seconds, choosing at random from **four attacks**;
+once airborne it attacks faster — every ~1 second — and, since it is otherwise out
+of reach up there, it **strongly favours the dive-slam** (roughly every other
+airborne attack is a dive), giving you frequent windows to strike back. Every attack
+is telegraphed by the same **wind-up animation** before it releases:
 
 - **Fireball fan** — looses **five** ordinary [fireballs](demons.md#demon) in a
   wide spread. Hard to sidestep at point-blank range.
