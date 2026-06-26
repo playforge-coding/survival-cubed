@@ -68,6 +68,7 @@ nav:
     - Knight: entities/knight.md
     - Slime: entities/slime.md
     - Zombie: entities/zombie.md
+    - Dark Knight: entities/dark-knight.md
     - Spider: entities/spider.md
     - Snake: entities/snake.md
     - Skeletons: entities/skeletons.md

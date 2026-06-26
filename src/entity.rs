@@ -91,6 +91,13 @@ pub const MAGIC_FIREBALL_SIZE: (f32, f32) = (10.0, 7.0);
 /// Collision/draw size (width, height) in pixels of a summoner fireball — the bolt
 /// a [`EntityKind::Necromancer`] hurls, the same low, small bolt as the others.
 pub const SUMMONER_FIREBALL_SIZE: (f32, f32) = (10.0, 7.0);
+/// Collision/draw size (width, height) in pixels of a dark knight — a broad,
+/// black-armoured humanoid, bulkier across the shoulders than the [`KNIGHT_SIZE`]
+/// man-at-arms it preys on.
+pub const DARK_KNIGHT_SIZE: (f32, f32) = (12.0, 13.0);
+/// Collision/draw size (width, height) in pixels of a thrown axe — a small
+/// tumbling projectile, like the [`BONE_SIZE`] bone but a touch smaller.
+pub const AXE_SIZE: (f32, f32) = (8.0, 8.0);
 /// Collision/draw size (width, height) in pixels of a dropped block item.
 pub const ITEM_SIZE: (f32, f32) = (8.0, 8.0);
 
@@ -196,6 +203,10 @@ pub const SKULL_MAX_HEALTH: i32 = 8;
 /// Maximum health of a knight, in hit points. A sturdy man-at-arms — hardier than
 /// any pet, so a recruited knight can trade blows with the monsters it hunts.
 pub const KNIGHT_MAX_HEALTH: i32 = 40;
+/// Maximum health of a dark knight, in hit points. The toughest thing that stalks
+/// the overworld night — a shade harder to fell than even the [`KNIGHT_MAX_HEALTH`]
+/// man-at-arms it hunts, fitting a rare foe that drops tungsten when it falls.
+pub const DARK_KNIGHT_MAX_HEALTH: i32 = 44;
 
 /// What an entity *is*. Adding a new creature/object means adding a variant
 /// here plus (for server-simulated kinds) a branch in the server tick loop.
@@ -382,6 +393,22 @@ pub enum EntityKind {
     /// [`Entity::vx`]/[`Entity::vy`] carry its flight velocity. Server-simulated.
     /// Appended last so older saves and the wire format keep their variant indices.
     SummonerFireball,
+    /// A dark knight: a black-armoured warrior that stalks the **overworld** night in
+    /// any biome, rare and dangerous. Like the [`EntityKind::Skeleton`] it is a ranged
+    /// kiter — it keeps its distance and hurls [`EntityKind::Axe`] projectiles rather
+    /// than closing for melee — but it is hardier and hits harder, and it makes war on
+    /// the [`EntityKind::Knight`] as readily as on players (throwing axes at both). It
+    /// **burns up at daybreak** like the other overworld night undead, and a slain one
+    /// spills **tungsten** gear — the only way to win tungsten without braving the
+    /// underworld. Server-simulated. Appended last so older saves and the wire format
+    /// keep their variant indices.
+    DarkKnight,
+    /// An axe hurled by a [`EntityKind::DarkKnight`], flying in a straight line until
+    /// it strikes a player or knight or a wall (or its short life runs out), tumbling
+    /// end over end as it flies. Its [`Entity::vx`]/[`Entity::vy`] carry its flight
+    /// velocity. Server-simulated. Appended last so older saves and the wire format
+    /// keep their variant indices.
+    Axe,
 }
 
 impl EntityKind {
@@ -412,6 +439,8 @@ impl EntityKind {
             EntityKind::Necromancer => NECROMANCER_SIZE,
             EntityKind::Skull => SKULL_SIZE,
             EntityKind::SummonerFireball => SUMMONER_FIREBALL_SIZE,
+            EntityKind::DarkKnight => DARK_KNIGHT_SIZE,
+            EntityKind::Axe => AXE_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -524,6 +553,10 @@ impl EntityKind {
             // A summoner fireball is an inert projectile; 1 keeps health == max_health so
             // no health bar shows and a stray melee swing can't meaningfully "kill" it.
             EntityKind::SummonerFireball => 1,
+            EntityKind::DarkKnight => DARK_KNIGHT_MAX_HEALTH,
+            // An axe is an inert projectile; 1 keeps health == max_health so no health
+            // bar shows and a stray melee swing can't meaningfully "kill" it.
+            EntityKind::Axe => 1,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }

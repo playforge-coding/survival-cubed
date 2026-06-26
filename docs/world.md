@@ -55,7 +55,7 @@ dark enough for hostile creatures even by day.
 |---|---|
 | **Coal** | Shallow (a few blocks down), fairly common |
 | **Iron** | Deeper (6+ blocks down), rarer, and richest inside mountains |
-| **Tungsten** | Underworld only, deep in charred rock |
+| **Tungsten** | Ore is underworld-only, deep in charred rock (but **[dark knights](entities/dark-knight.md)** drop tungsten gear in the overworld) |
 
 See [Blocks](blocks.md#ores) for the tool tier each ore requires.
 
@@ -84,9 +84,11 @@ of ash that flings you skywards for a punishing fall, and of the fire-trailing
 rock falls away to bedrock, riddled with the same **winding tunnels** and deep
 **caverns** as the overworld's caves — where the tungsten hides.
 
-The underworld is the only source of **tungsten ore**, the top tier of gear, and
-of **gold ore** — too soft for tools, but the key to reinforcing a
-[chest](blocks.md#special-blocks-in-detail) into a locked one. It sits in
+The underworld is the only source of **tungsten ore** — the top tier of gear — and
+of **gold ore**, too soft for tools but the key to reinforcing a
+[chest](blocks.md#special-blocks-in-detail) into a locked one. (Tungsten *gear* and
+*ingots* can also be won in the overworld by hunting **[dark
+knights](entities/dark-knight.md)** at night, but the ore itself is only down here.) It sits in
 permanent dim, warm light (no day/night), and its creatures are active around the
 clock. Because it is **eternal night** down there, undead that would burn up at
 daybreak on the surface — zombies, skeletons, necromancers and their skulls — never

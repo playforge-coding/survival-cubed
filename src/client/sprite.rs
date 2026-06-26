@@ -341,6 +341,26 @@ pub static KNIGHT_HORSE_ATTACK_SPRITE: SpriteDef = SpriteDef {
     fps: 8.0,
 };
 
+/// Dark knight: a black-armoured warrior that strides along its walk cycle as it
+/// kites its quarry and hurls axes. Bulkier than the man-at-arms knight.
+pub static DARK_KNIGHT_SPRITE: SpriteDef = SpriteDef {
+    name: "dark_knight",
+    frame_w: 13,
+    frame_h: 13,
+    frames: 5,
+    fps: 8.0,
+};
+
+/// Axe: a small thrown projectile a dark knight hurls, tumbling end over end as it
+/// flies (its frames are the spin).
+pub static AXE_SPRITE: SpriteDef = SpriteDef {
+    name: "axe",
+    frame_w: 10,
+    frame_h: 10,
+    frames: 8,
+    fps: 14.0,
+};
+
 /// Bone: a small thrown projectile that tumbles end over end as it flies.
 pub static BONE_SPRITE: SpriteDef = SpriteDef {
     name: "bone",
@@ -381,7 +401,7 @@ pub static SUMMONER_FIREBALL_SPRITE: SpriteDef = SpriteDef {
 };
 
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 36] {
+pub fn all() -> [&'static SpriteDef; 38] {
     [
         &PLAYER_SPRITE,
         &BOAT_SPRITE,
@@ -415,6 +435,8 @@ pub fn all() -> [&'static SpriteDef; 36] {
         &KNIGHT_ATTACK_SPRITE,
         &KNIGHT_HORSE_SPRITE,
         &KNIGHT_HORSE_ATTACK_SPRITE,
+        &DARK_KNIGHT_SPRITE,
+        &AXE_SPRITE,
         &BONE_SPRITE,
         &FIREBALL_SPRITE,
         &MAGIC_FIREBALL_SPRITE,
@@ -461,6 +483,10 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         // A knight's mounted and attack poses are handled by the scene builder (off
         // its `riding` and lunge state); this on-foot walk sheet is its base.
         EntityKind::Knight { .. } => &KNIGHT_SPRITE,
+        // A dark knight has no special pose sheets (it kites and throws like a
+        // skeleton); this walk sheet is its base.
+        EntityKind::DarkKnight => &DARK_KNIGHT_SPRITE,
+        EntityKind::Axe => &AXE_SPRITE,
         EntityKind::Bone => &BONE_SPRITE,
         EntityKind::Fireball => &FIREBALL_SPRITE,
         // Dropped items are drawn from their block texture, not an animation

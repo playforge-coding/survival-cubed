@@ -92,6 +92,7 @@ Most monsters only **hunt at night** (or in dark caves). Build shelter and keep 
 |---|---|---|---|
 | **[Slime](entities/slime.md)** | 10 | Common in mountains | Wanders by day, hunts at night |
 | **[Zombie](entities/zombie.md)** | 40 | All biomes, night | Slow, tough, hard-hitting; **burns up at daybreak** |
+| **[Dark Knight](entities/dark-knight.md)** | 44 | All biomes, night (overworld), rare | Black-armoured warrior; keeps its distance and throws **axes** at players *and* knights; **drops tungsten gear**; **burns up at daybreak** |
 | **[Spider](entities/spider.md)** | 12 | Forests & caves | Fast and fragile; climbs walls |
 | **[Snake](entities/snake.md)** | 14 | Desert | Ambusher; coils for ~0.7 s, then lunges |
 | **[Skeleton](entities/skeletons.md#skeleton)** | 24 | All biomes, night | Keeps its distance and throws **bone projectiles**; burns at daybreak |
@@ -167,6 +168,8 @@ In **creator mode** you are invisible to monsters and take no damage from them.
 
 - **Bone** — the projectile a skeleton throws; it disappears on impact or after a
   short flight.
+- **Axe** — the projectile a dark knight throws (at players and knights alike); it
+  tumbles end over end and disappears on impact or after a short flight.
 - **Fireball** — the projectile a demon hurls; it disappears on impact or after a
   short flight, leaving a tongue of fire where it bursts.
 - **Magic fireball** — the purple bolt an enchanted demon hurls; it flies farther

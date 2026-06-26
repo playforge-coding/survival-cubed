@@ -166,6 +166,8 @@ sprites!(
     "knight/attack" => [0, 1, 2, 3],
     "knight/horse" => [0, 1, 2, 3],
     "knight/horse/attack" => [0, 1, 2, 3],
+    "dark_knight" => [0, 1, 2, 3, 4],
+    "axe" => [0, 1, 2, 3, 4, 5, 6, 7],
     "bone" => [0, 1, 2, 3],
     "fireball" => [0],
 );

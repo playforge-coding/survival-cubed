@@ -3001,6 +3001,9 @@ impl App {
                     if ui.button("Knight").clicked() {
                         spawn = Some(EntityKind::Knight { owner: None });
                     }
+                    if ui.button("Dark Knight").clicked() {
+                        spawn = Some(EntityKind::DarkKnight);
+                    }
                 });
 
                 ui.separator();

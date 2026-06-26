@@ -29,6 +29,7 @@ Projectiles (bones, fireballs) are the exception, flying at 130–170 px/s.
 |---|---|---|
 | [Slime](slime.md) | 10 | Mountains |
 | [Zombie](zombie.md) | 40 | All biomes, night |
+| [Dark Knight](dark-knight.md) | 44 | All biomes, night (overworld) — drops tungsten |
 | [Spider](spider.md) | 12 | Forests & caves |
 | [Snake](snake.md) | 14 | Desert |
 | [Skeletons](skeletons.md) | 24 / 36 | All biomes (night) / underworld ash valleys |

@@ -24,7 +24,7 @@ use crate::auth;
 use crate::block::BlockRegistry;
 use crate::daylight;
 use crate::entity::{
-    BONE_SIZE, Entities, Entity, EntityId, EntityKind, FIREBALL_SIZE, ITEM_SIZE,
+    AXE_SIZE, BONE_SIZE, Entities, Entity, EntityId, EntityKind, FIREBALL_SIZE, ITEM_SIZE,
     MAGIC_FIREBALL_SIZE, PLAYER_SIZE, SUMMONER_FIREBALL_SIZE,
 };
 use crate::inventory::{CHEST_SLOTS, Inventory, Slot, move_between, move_within};
@@ -192,6 +192,36 @@ const BONE_LIFETIME: f32 = 3.0;
 /// Maximum gap (px between AABBs) at which an in-flight bone counts as striking a
 /// player.
 const BONE_HIT_RANGE: f32 = 2.0;
+/// Stalking speed of a dark knight, in pixels/second — a trained warrior, quicker on
+/// its feet than the shambling skeleton it otherwise fights like.
+const DARK_KNIGHT_SPEED: f32 = 24.0;
+/// How far (px) a dark knight notices a player or knight and begins stalking/throwing.
+const DARK_KNIGHT_AGGRO: f32 = 260.0;
+/// Maximum gap (px between AABBs) at which a dark knight will loose an axe — it stops
+/// advancing and throws once a target is this close.
+const DARK_KNIGHT_THROW_RANGE: f32 = 200.0;
+/// Standoff gap (px between AABBs) a dark knight tries to keep: it backs away from a
+/// target closer than this so it can keep peppering them from range.
+const DARK_KNIGHT_KEEP_DIST: f32 = 95.0;
+/// Seconds a dark knight waits between axe throws.
+const DARK_KNIGHT_THROW_INTERVAL: f32 = 1.8;
+/// Of the night mobs the server spawns near players, the percent that arrive as dark
+/// knights (in any biome). Deliberately small — they are a rare, dangerous prize.
+const DARK_KNIGHT_NIGHT_PERCENT: u32 = 6;
+/// Percent chance a slain dark knight's tungsten haul also includes a finished
+/// tungsten tool or weapon, on top of its ingots.
+const DARK_KNIGHT_TOOL_DROP_PERCENT: u32 = 55;
+/// Flight speed of a thrown axe, in pixels/second.
+const AXE_SPEED: f32 = 165.0;
+/// Damage an axe deals on striking a player or knight — heavier than a thrown bone,
+/// fitting a deadlier foe.
+const AXE_DAMAGE: i32 = 8;
+/// Seconds a thrown axe stays airborne before it gives out and despawns, in case it
+/// never hits anything.
+const AXE_LIFETIME: f32 = 3.0;
+/// Maximum gap (px between AABBs) at which an in-flight axe counts as striking a
+/// player or knight.
+const AXE_HIT_RANGE: f32 = 2.0;
 /// Charging speed of a charred skeleton, in pixels/second — quicker than a zombie,
 /// since it commits hard to running its prey down.
 const CHARRED_SKELETON_SPEED: f32 = 26.0;
@@ -2836,6 +2866,29 @@ fn creature_loot(kind: &EntityKind) -> &'static [(BlockId, u32)] {
     }
 }
 
+/// The tungsten haul a slain [`EntityKind::DarkKnight`] spills — the only way to win
+/// tungsten without braving the underworld. Always a clutch of ingots, and often a
+/// finished tungsten tool or weapon on top. `seed` (the victim's entity id) varies the
+/// drop from kill to kill without needing a live rng handle at the spill site.
+fn dark_knight_loot(seed: u32) -> Vec<(BlockId, u32)> {
+    let mut h = seed.wrapping_mul(2_654_435_761) ^ (seed >> 15);
+    // 1..=3 tungsten ingots, always.
+    let ingots = 1 + h % 3;
+    let mut loot = vec![(crate::block::TUNGSTEN_INGOT, ingots)];
+    // Often also a finished tungsten tool or weapon (full durability via spawn_drop).
+    h = h.wrapping_mul(40_503) ^ (h >> 13);
+    if h % 100 < DARK_KNIGHT_TOOL_DROP_PERCENT {
+        h = h.wrapping_mul(2_246_822_519) ^ (h >> 16);
+        let tool = match h % 3 {
+            0 => crate::block::TUNGSTEN_PICKAXE,
+            1 => crate::block::TUNGSTEN_SWORD,
+            _ => crate::block::TUNGSTEN_AXE,
+        };
+        loot.push((tool, 1));
+    }
+    loot
+}
+
 /// Start a server on a background thread. `bind` of port 0 picks an ephemeral
 /// port (used for the embedded singleplayer server). Returns once the endpoint
 /// is listening, with its actual address and certificate fingerprint.
@@ -4027,15 +4080,18 @@ fn maybe_spawn_zombies(shared: &Shared, rng: &mut u32) {
     if players.is_empty() {
         return;
     }
-    // Skeletons and desert necromancers share the zombie's nightly budget, so the
-    // night undead together stay capped per player rather than each filling the cap
-    // on their own.
+    // Skeletons, desert necromancers and dark knights share the zombie's nightly
+    // budget, so the night mobs together stay capped per player rather than each
+    // filling the cap on their own.
     let undead = entities
         .values()
         .filter(|e| {
             matches!(
                 e.kind,
-                EntityKind::Zombie | EntityKind::Skeleton | EntityKind::Necromancer
+                EntityKind::Zombie
+                    | EntityKind::Skeleton
+                    | EntityKind::Necromancer
+                    | EntityKind::DarkKnight
             )
         })
         .count();
@@ -4054,10 +4110,16 @@ fn maybe_spawn_zombies(shared: &Shared, rng: &mut u32) {
     let cell_x = ((px + side * dist) / TILE_SIZE).floor() as i32;
     let surface = world.surface(cell_x);
 
-    // Pick what arrives. The desert raises necromancers at night; elsewhere (and on
-    // the rest of the desert rolls) the night yields ranged skeletons or plain zombies.
+    // Pick what arrives. A rare roll (in any biome) raises a dark knight; otherwise the
+    // desert raises necromancers, and elsewhere (and on the rest of the desert rolls)
+    // the night yields ranged skeletons or plain zombies. The dark-knight roll is its
+    // own draw so it doesn't perturb the existing necromancer/skeleton/zombie split.
     next_rng(rng);
-    let kind = if world.biome(cell_x) == Biome::Desert && *rng % 100 < NECROMANCER_NIGHT_PERCENT {
+    let dark_knight = *rng % 100 < DARK_KNIGHT_NIGHT_PERCENT;
+    next_rng(rng);
+    let kind = if dark_knight {
+        EntityKind::DarkKnight
+    } else if world.biome(cell_x) == Biome::Desert && *rng % 100 < NECROMANCER_NIGHT_PERCENT {
         EntityKind::Necromancer
     } else if *rng % 100 < SKELETON_SPAWN_PERCENT {
         EntityKind::Skeleton
@@ -4419,6 +4481,16 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     let bone_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::Bone))
+        .map(|e| e.id)
+        .collect();
+    let dark_knight_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::DarkKnight))
+        .map(|e| e.id)
+        .collect();
+    let axe_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Axe))
         .map(|e| e.id)
         .collect();
     // Both ordinary and magic fireballs fly under one loop below; they differ only
@@ -5561,6 +5633,115 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         broadcasts.push(ServerMessage::EntitySpawn { entity: bone });
     }
 
+    // Dark knights: black-armoured warriors that stalk the overworld night and kite
+    // their quarry like a skeleton — hanging at range and hurling axes — but harder and
+    // deadlier, and they hunt knights as readily as players (nearest_prey hands back
+    // both). They burn up at daybreak like the other overworld night mobs.
+    let mut dark_knight_despawns: Vec<EntityId> = Vec::new();
+    // Axes loosed this tick, spawned after the loop so we aren't holding a mutable
+    // borrow of the thrower while inserting. Each is the axe's spawn `(x, y)` and its
+    // flight `(vx, vy)`.
+    let mut axe_throws: Vec<(f32, f32, f32, f32)> = Vec::new();
+    for id in dark_knight_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+
+        // Daybreak: burn up and vanish on the spot (no death animation).
+        if !night {
+            dark_knight_despawns.push(id);
+            continue;
+        }
+
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let home = *e.home_x.get_or_insert(e.x);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+        let target = nearest_prey(&hostile_players, &knight_boxes, scx, scy, DARK_KNIGHT_AGGRO);
+        let chasing = target.is_some();
+
+        // Kiting heading: close in when out of throwing range, back off when the target
+        // slips inside the standoff distance, otherwise hold and throw.
+        let (dir, gap, aim) = match target {
+            Some(p) => {
+                let gap = aabb_gap(e.x, e.y, w, h, p.x, p.y, p.w, p.h);
+                let toward = if p.x + p.w * 0.5 >= scx { 1.0 } else { -1.0 };
+                let dir = if gap < DARK_KNIGHT_KEEP_DIST {
+                    -toward // too close: retreat
+                } else if gap > DARK_KNIGHT_THROW_RANGE {
+                    toward // too far: advance
+                } else {
+                    0.0 // in the sweet spot: stand and throw
+                };
+                (dir, gap, Some((p.x, p.y, p.w, p.h)))
+            }
+            None => (wander_dir(scx, e.vx, home), f32::INFINITY, None),
+        };
+
+        let m = step_ground(
+            &mut world,
+            (e.x, e.y, w, h),
+            e.vy,
+            dir,
+            DARK_KNIGHT_SPEED,
+            chasing,
+        );
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        // Face the target even while striding backwards to keep distance (see the
+        // skeleton loop): point the broadcast vx's sign at the target, true magnitude.
+        let bcast_vx = match aim {
+            Some((px, _, pw, _)) => {
+                let cx = m.x + w * 0.5;
+                let toward = if px + pw * 0.5 >= cx { 1.0 } else { -1.0 };
+                toward * m.vx.abs()
+            }
+            None => m.vx,
+        };
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: bcast_vx,
+            vy: m.vy,
+        });
+
+        // Loose an axe when a target is within range and we're off cooldown, aiming
+        // from the dark knight's upper body straight at the target's center.
+        if let Some((px, py, pw, ph)) = aim {
+            if e.attack_cd <= 0.0 && gap <= DARK_KNIGHT_THROW_RANGE {
+                e.attack_cd = DARK_KNIGHT_THROW_INTERVAL;
+                let (aw, ah) = AXE_SIZE;
+                let sx = m.x + w * 0.5 - aw * 0.5;
+                let sy = m.y + h * 0.3 - ah * 0.5;
+                let tx = px + pw * 0.5;
+                let ty = py + ph * 0.5;
+                let dx = tx - (sx + aw * 0.5);
+                let dy = ty - (sy + ah * 0.5);
+                let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                axe_throws.push((sx, sy, dx / len * AXE_SPEED, dy / len * AXE_SPEED));
+            }
+        }
+    }
+    for id in dark_knight_despawns {
+        entities.remove(id);
+        broadcasts.push(ServerMessage::EntityDespawn { id });
+    }
+    // Spawn the axes loosed this tick. They aren't in `axe_ids`, so they begin flying
+    // next tick rather than being simulated again immediately.
+    for (x, y, vx, vy) in axe_throws {
+        let aid = shared.alloc_id();
+        let mut axe = Entity::new(aid, EntityKind::Axe, x, y);
+        axe.vx = vx;
+        axe.vy = vy;
+        axe.attack_cd = AXE_LIFETIME; // reused as the airborne lifetime timer
+        entities.insert(axe.clone());
+        broadcasts.push(ServerMessage::EntitySpawn { entity: axe });
+    }
+
     // Necromancers: hooded ranged casters that kite the player like a skeleton but,
     // instead of bones, hurl summoner fireballs that burst into bouncing skulls. They
     // burn up at daybreak (in the overworld; the underworld is always "night").
@@ -6506,6 +6687,71 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         broadcasts.push(ServerMessage::EntityDespawn { id });
     }
 
+    // Axes in flight: like bones they travel in a straight line (no gravity), striking
+    // the first player or knight they overlap (a knight soaks it via `knight_hits`) or
+    // winking out on a wall or when their short life ends. They tumble end over end (a
+    // multi-frame sprite), leaving nothing behind where they land.
+    let mut axe_despawns: Vec<EntityId> = Vec::new();
+    for id in axe_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+
+        let (nx, hit_x) = move_x(&mut world, e.x, e.y, w, h, e.vx * TICK_DT);
+        let (ny, hit_y) = move_y(&mut world, nx, e.y, w, h, e.vy * TICK_DT);
+        e.x = nx;
+        e.y = ny;
+
+        // Struck a wall, or flew long enough without hitting anything: gone.
+        if hit_x || hit_y || e.attack_cd <= 0.0 {
+            axe_despawns.push(id);
+            continue;
+        }
+
+        // Struck a player or knight: deal damage, knock them along the axe's flight (a
+        // knight soaks it via `knight_hits`), gone.
+        let kx = if e.vx >= 0.0 {
+            KNOCKBACK_X
+        } else {
+            -KNOCKBACK_X
+        };
+        let mut struck = false;
+        for &(pid, px, py) in &players {
+            if aabb_gap(nx, ny, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1) <= AXE_HIT_RANGE {
+                bites.push((pid, (kx, -KNOCKBACK_Y), AXE_DAMAGE));
+                struck = true;
+                break;
+            }
+        }
+        if !struck {
+            for &(kid, kx2, ky, kw, kh) in &knight_boxes {
+                if aabb_gap(nx, ny, w, h, kx2, ky, kw, kh) <= AXE_HIT_RANGE {
+                    knight_hits.push((kid, AXE_DAMAGE));
+                    struck = true;
+                    break;
+                }
+            }
+        }
+        if struck {
+            axe_despawns.push(id);
+            continue;
+        }
+
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: nx,
+            y: ny,
+            vx: e.vx,
+            vy: e.vy,
+        });
+    }
+    for id in axe_despawns {
+        entities.remove(id);
+        broadcasts.push(ServerMessage::EntityDespawn { id });
+    }
+
     // Fireballs in flight: like bones they travel in a straight line (no gravity),
     // striking the first player they overlap or winking out on a wall or when their
     // short life ends — but where they burst they leave a lick of fire behind.
@@ -7034,6 +7280,7 @@ fn is_hostile(kind: &EntityKind) -> bool {
             | EntityKind::EnchantedDemon
             | EntityKind::Necromancer
             | EntityKind::Skull
+            | EntityKind::DarkKnight
     )
 }
 
@@ -8480,13 +8727,19 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             shared.finish_respawn(info, dim);
                         }
                         // If that killed a creature (it's no longer in the world),
-                        // drop whatever it carries — animals leave raw meat.
+                        // drop whatever it carries — animals leave raw meat, a dark
+                        // knight spills a tungsten haul.
                         if let Some((kind, vx, vy)) = victim
                             && shared.entities(dim).lock().get(target).is_none()
                         {
                             let cx = (vx / TILE_SIZE) as i32;
                             let cy = (vy / TILE_SIZE) as i32;
-                            for &(item, n) in creature_loot(&kind) {
+                            let loot = if matches!(kind, EntityKind::DarkKnight) {
+                                dark_knight_loot(target)
+                            } else {
+                                creature_loot(&kind).to_vec()
+                            };
+                            for (item, n) in loot {
                                 for _ in 0..n {
                                     spawn_drop(&shared, dim, cx, cy, item);
                                 }
