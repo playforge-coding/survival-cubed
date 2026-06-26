@@ -493,7 +493,7 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         EntityKind::CharredSkeleton => &CHARRED_SKELETON_SPRITE,
         EntityKind::Demon => &DEMON_SPRITE,
         // The demon king's attack pose is handled by the scene builder off its lunge
-        // timer; this walk sheet is its airborne pursuit.
+        // timer; this walk sheet is its plodding pursuit across the arena floor.
         EntityKind::DemonKing => &DEMON_KING_SPRITE,
         // An orc's slam pose is handled by the scene builder off its lunge timer;
         // this walk sheet is its plodding stride.

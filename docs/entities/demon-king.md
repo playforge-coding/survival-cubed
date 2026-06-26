@@ -1,11 +1,11 @@
 # Demon King
 
 The **boss** of the [arena](../world.md#the-arena), and the only one of its kind in
-a world. A towering, winged fiend that opens **on foot** and **takes to the skies
-once wounded past two-thirds health** — soaring overhead, raining fire, **summoning
-a host of dark knights**, and **diving** to slam the ground. It wields the whole
-demonic arsenal: a fan of fireballs, a spread of magic fireballs, a summoned bolt,
-or a crushing slam.
+a world. A towering, winged fiend that **fights on foot** the whole bout, striding
+across the arena floor after you. Once wounded past **two-thirds health** it
+**enrages**, calling down a **host of dark knights** to swarm you alongside it. It
+wields the whole demonic arsenal: a fan of fireballs, a spread of magic fireballs, a
+summoned bolt, or a crushing slam.
 It enters **invulnerable**, shielded by eight [orc-mage](orcs.md#orc-mage)
 guardians scattered across the arena — only once every last one is cut down can the
 king itself be harmed. Felling it is a campaign, not a scrap, and it leaves a
@@ -15,7 +15,7 @@ king itself be harmed. Felling it is a campaign, not a scrap, and it leaves a
 | ------------ | ------------------------------------------------------------- |
 | **Health**   | 1000 HP                                                       |
 | **Size**     | 22 × 30 px                                                    |
-| **Speed**    | 46 px/s on foot · 78 px/s soaring (past ⅔ health)            |
+| **Speed**    | 46 px/s on foot                                              |
 | **Damage**   | 7 HP per fireball · 12 HP per magic fireball · 22 HP per slam |
 | **Found in** | The **arena** — one per world                                 |
 | **Activity** | Always active; never despawns                                 |
@@ -35,18 +35,14 @@ king is finally yours to kill.
 
 ## Behaviour
 
-The Demon King fights in **two phases**. Above **two-thirds health** it stays **on
-foot**, striding across the arena floor after you — this is your best window to land
-sword blows. Once you wound it past that mark it **takes to the skies**: it rises
-high overhead and **wheels back and forth across the sky**, raining fire down, and
-**summons a host of four [dark knights](dark-knight.md)** to swarm you on the ground
-while it rules the air.
+The Demon King fights **on foot the whole bout**, striding across the arena floor
+after you — so it is always in reach of your sword. Once you wound it past
+**two-thirds health** it **enrages**, calling down a **host of four
+[dark knights](dark-knight.md)** to swarm you alongside it. The king itself fights
+exactly the same before and after; the enrage only adds the knights to deal with.
 
-On foot it attacks every ~1.7 seconds, choosing at random from **four attacks**;
-once airborne it attacks faster — every ~1 second — and, since it is otherwise out
-of reach up there, it **strongly favours the dive-slam** (roughly every other
-airborne attack is a dive), giving you frequent windows to strike back. Every attack
-is telegraphed by the same **wind-up animation** before it releases:
+It attacks every ~1.7 seconds, choosing at random from **four attacks**, each
+telegraphed by the same **wind-up animation** before it releases:
 
 - **Fireball fan** — looses **five** ordinary [fireballs](demons.md#demon) in a
   wide spread. Hard to sidestep at point-blank range.
@@ -54,16 +50,13 @@ is telegraphed by the same **wind-up animation** before it releases:
   in a tighter fan; they fly farther and hit harder.
 - **Summoner bolt** — a single [summoner fireball](necromancer.md#necromancer) that
   bursts into a bouncing [skull](necromancer.md#skull).
-- **Slam** — on foot, it brings its fists down for heavy melee damage where it
-  stands. **In the air, the slam becomes a dive**: it folds its wings, **plunges
-  straight down at you**, hammers the ground, then **bounds back into the sky**. The
-  blow only lands on the frame of impact, so read the plunge and roll clear.
+- **Slam** — it brings its fists down for heavy melee damage where it stands. The
+  blow only lands on the frame of impact, so read the wind-up and step clear.
 
-While it is grounded the fight is up close — trade sword blows between its volleys.
-Once it is aloft you can only reach it during its **dive-slams**, so deal with the
-**dark knights** first (they throw axes and drop tungsten when they fall), then
-punish the king each time it comes down to ground. There is no ranged weapon to
-whittle it with, so every window to strike counts.
+The fight is up close throughout — trade sword blows between its volleys. After it
+enrages, deal with the **dark knights** (they throw axes and drop tungsten when they
+fall) while you keep punishing the king. There is no ranged weapon to whittle it
+with, so every window to strike counts.
 
 !!! danger "Bring everything"
 1000 HP is a deep pool — far more than anything else in the game. Come with the

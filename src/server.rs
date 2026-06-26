@@ -335,33 +335,17 @@ const MAGIC_FIREBALL_HIT_RANGE: f32 = 3.0;
 /// How far (px) the demon king notices a player and gives chase. Generous — it
 /// commands the whole arena, so a fighter is never out of its sight for long.
 const DEMON_KING_AGGRO: f32 = 460.0;
-/// Ground speed of the demon king, in pixels/second, while it fights on foot (its
-/// first phase). A touch faster than a fleeing target can run.
+/// Ground speed of the demon king, in pixels/second. It fights on foot the whole
+/// bout. A touch faster than a fleeing target can run.
 const DEMON_KING_SPEED: f32 = 46.0;
-/// Flight speed of the demon king once airborne, in pixels/second — quicker than its
-/// ground stride, so it sweeps across the sky with menace.
-const DEMON_KING_FLY_SPEED: f32 = 78.0;
-/// How high (px) above the player the airborne demon king soars: it does not hover in
-/// your face but rides the sky overhead, raining fire down.
-const DEMON_KING_SKY_HEIGHT: f32 = 150.0;
-/// How far (px) to either side of the player the airborne king sweeps before banking
-/// back, so it wheels back and forth across the sky rather than sitting still.
-const DEMON_KING_SWEEP_RANGE: f32 = 150.0;
-/// Speed (px/s) of the king's airborne **dive-slam**: it folds its wings and plunges
-/// at the player, then bounds back into the sky on the recovery. Much faster than its
-/// cruise, so the dive lands before a slow fighter can clear the impact.
-const DEMON_KING_DIVE_SPEED: f32 = 320.0;
-/// How many dark knights the demon king summons when it first takes to the skies.
+/// How many dark knights the demon king summons when it enrages (past two-thirds
+/// health).
 const DEMON_KING_KNIGHT_COUNT: u32 = 4;
 /// Spacing (px) between the dark knights the king summons as they appear around the
 /// player on the arena floor.
 const DEMON_KING_KNIGHT_SPACING: f32 = 64.0;
 /// Seconds the demon king waits between attacks (the cooldown set when one begins).
 const DEMON_KING_ATTACK_INTERVAL: f32 = 1.7;
-/// Seconds the demon king waits between attacks while airborne — shorter than its
-/// grounded cooldown so it commits to its **dive-slam** more often. Aloft it is
-/// otherwise out of reach, so frequent dives are the player's window to strike back.
-const DEMON_KING_FLY_ATTACK_INTERVAL: f32 = 1.0;
 /// Seconds of attack remaining (of [`crate::entity::DEMON_KING_ATTACK_TIME`]) at
 /// which the wind-up gives way to the strike: the frame the king looses its bolts
 /// or brings its fists down. Half-way through, like the orc slam.
@@ -951,7 +935,7 @@ struct Shared {
     /// raised, cleared when it dies or despawns.
     demon_king_alive: AtomicBool,
     /// Whether the reigning demon king has already summoned its host of dark knights
-    /// (it does so once, the moment it takes to the skies past two-thirds health).
+    /// (it does so once, the moment it enrages past two-thirds health).
     /// Reset when a fresh king is raised, so each king's second phase summons its own
     /// host exactly once. Runtime-only.
     demon_king_knights_summoned: AtomicBool,
@@ -6707,8 +6691,8 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     // Bolts loosed this tick, spawned after the loop so we aren't holding a mutable
     // borrow of the king while inserting. Each is `(projectile kind, x, y, vx, vy)`.
     let mut king_bolts: Vec<(EntityKind, f32, f32, f32, f32)> = Vec::new();
-    // World-x to summon the king's dark-knight host around, set the instant it first
-    // takes wing (spawned after the loop so we don't insert while borrowing the king).
+    // World-x to summon the king's dark-knight host around, set the instant it enrages
+    // (spawned after the loop so we don't insert while borrowing the king).
     let mut summon_around: Option<f32> = None;
     let arena_seed = world.generator.seed();
     for id in demon_king_ids {
@@ -6718,8 +6702,9 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         let (w, h) = e.size();
         e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
         let home = *e.home_x.get_or_insert(e.x);
-        // It fights on foot until wounded past two-thirds health, then takes wing.
-        let flying = e.health * 3 <= e.max_health * 2;
+        // The king fights on foot the entire bout — it never takes wing. Past
+        // two-thirds health it enrages, calling down its host of dark knights.
+        let enraged = e.health * 3 <= e.max_health * 2;
         let scx = e.x + w * 0.5;
         let scy = e.y + h * 0.5;
         // Re-acquire the nearest target each tick (for both movement and facing).
@@ -6741,9 +6726,9 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             }
         };
 
-        // The instant the king takes wing, it calls down a host of dark knights to swarm
-        // the player on the ground — once per fight (the swap latches the flag).
-        if flying
+        // The instant the king enrages, it calls down a host of dark knights to swarm
+        // the player alongside it — once per fight (the swap latches the flag).
+        if enraged
             && !shared
                 .demon_king_knights_summoned
                 .swap(true, Ordering::SeqCst)
@@ -6755,42 +6740,13 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         }
 
         // Mid-attack: a committed wind-up over DEMON_KING_ATTACK_TIME, resolving once on
-        // the strike. On the ground it stands planted; in the air it normally hovers —
-        // but an airborne **slam** is a dive: it folds its wings and plunges at the
-        // player through the wind-up, then bounds back into the sky on the recovery.
+        // the strike. The king stands planted through the wind-up (gravity still settles
+        // it onto the floor), then looses its bolts or brings its fists down.
         if e.lunge > 0.0 {
             let was_winding = e.lunge > DEMON_KING_STRIKE_TIME;
             e.lunge = (e.lunge - TICK_DT).max(0.0);
             let striking = e.lunge <= DEMON_KING_STRIKE_TIME;
-            let diving = flying && e.lunge_dir as i32 == 3;
-            if diving {
-                // Plunge toward the player on the wind-up, then leap back skyward on the
-                // recovery; the floor stops the dive cleanly.
-                let (vx, vy) = if was_winding {
-                    let (tx, ty) = match target {
-                        Some(ref p) => (p.x + p.w * 0.5, p.y + p.h * 0.5),
-                        None => (scx, scy + DEMON_KING_SKY_HEIGHT),
-                    };
-                    let dx = tx - scx;
-                    let dy = ty - scy;
-                    let len = (dx * dx + dy * dy).sqrt().max(1.0);
-                    (
-                        dx / len * DEMON_KING_DIVE_SPEED,
-                        dy / len * DEMON_KING_DIVE_SPEED,
-                    )
-                } else {
-                    (0.0, -DEMON_KING_DIVE_SPEED) // bound straight back up into the sky
-                };
-                let (nx, _) = move_x(&mut world, e.x, e.y, w, h, vx * TICK_DT);
-                let (ny, _) = move_y(&mut world, nx, e.y, w, h, vy * TICK_DT);
-                e.x = nx;
-                e.y = ny;
-                e.vx = vx;
-                e.vy = vy;
-            } else if flying {
-                e.vx = 0.0;
-                e.vy = 0.0;
-            } else {
+            {
                 let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, 0.0, 0.0, true);
                 e.x = m.x;
                 e.y = m.y;
@@ -6896,22 +6852,11 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             let salt = id.wrapping_add((e.flee as u32).wrapping_mul(2_654_435_761));
             e.flee = (e.flee + 1.0) % 1_000_000.0;
             let roll = chunk_hash(arena_seed, e.x as i32, e.y as i32, salt);
-            // On foot the king picks evenly among its four attacks (0/1/2 ranged,
-            // 3 the slam). Airborne it is otherwise untouchable, so it favours the
-            // dive-slam (attack 3) — every other airborne attack is a dive, giving
-            // the player a chance to strike it as it plunges; the rest stay ranged.
-            let attack = if flying {
-                if roll % 2 == 0 { 3 } else { roll % 3 }
-            } else {
-                roll % 4
-            };
+            // Pick one of its four attacks (0/1/2 ranged, 3 the melee slam) evenly.
+            let attack = roll % 4;
             e.lunge = crate::entity::DEMON_KING_ATTACK_TIME;
             e.lunge_dir = attack as f32;
-            e.attack_cd = if flying {
-                DEMON_KING_FLY_ATTACK_INTERVAL
-            } else {
-                DEMON_KING_ATTACK_INTERVAL
-            };
+            e.attack_cd = DEMON_KING_ATTACK_INTERVAL;
             e.vx = 0.0;
             broadcasts.push(ServerMessage::EntityLunging { id });
             broadcasts.push(ServerMessage::EntityMoved {
@@ -6924,62 +6869,9 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             continue;
         }
 
-        // Not attacking: advance on the king's current footing.
-        if flying {
-            // Airborne: ride the sky high above the player, wheeling back and forth
-            // rather than hovering in their face, and rain fire down from on high. No
-            // gravity; walls stop each axis.
-            let (vx, vy) = match target {
-                Some(ref p) => {
-                    let pcx = p.x + p.w * 0.5;
-                    // Steer toward a station well above the player's head.
-                    let target_y = p.y - DEMON_KING_SKY_HEIGHT;
-                    let vy = (target_y - e.y).clamp(-DEMON_KING_FLY_SPEED, DEMON_KING_FLY_SPEED);
-                    // Sweep across the sky, banking back when it sails too far past the
-                    // player on either flank (otherwise holding its current heading).
-                    let dir = if scx > pcx + DEMON_KING_SWEEP_RANGE {
-                        -1.0
-                    } else if scx < pcx - DEMON_KING_SWEEP_RANGE {
-                        1.0
-                    } else if e.vx >= 0.0 {
-                        1.0
-                    } else {
-                        -1.0
-                    };
-                    (dir * DEMON_KING_FLY_SPEED, vy)
-                }
-                None => {
-                    // No quarry — the player died or slipped out of aggro. Wheel back
-                    // to a hover above the throne it rose over instead of freezing
-                    // wherever the last dive left it: stranded high in the sky off to
-                    // one side, it reads as having vanished. It resumes the hunt the
-                    // instant a challenger returns.
-                    let home_col = ((home + w * 0.5) / TILE_SIZE).floor() as i32;
-                    let floor_y = world.surface(home_col) as f32 * TILE_SIZE;
-                    let perch_y = floor_y - h - DEMON_KING_SKY_HEIGHT;
-                    let vx = (home - e.x).clamp(-DEMON_KING_FLY_SPEED, DEMON_KING_FLY_SPEED);
-                    let vy = (perch_y - e.y).clamp(-DEMON_KING_FLY_SPEED, DEMON_KING_FLY_SPEED);
-                    (vx, vy)
-                }
-            };
-            let (nx, _) = move_x(&mut world, e.x, e.y, w, h, vx * TICK_DT);
-            let (ny, _) = move_y(&mut world, nx, e.y, w, h, vy * TICK_DT);
-            e.x = nx;
-            e.y = ny;
-            e.vx = vx;
-            e.vy = vy;
-            // Keep the wing-flap cycle playing and face the player it harries.
-            let bcast_vx = toward * DEMON_KING_FLY_SPEED;
-            broadcasts.push(ServerMessage::EntityMoved {
-                id,
-                x: nx,
-                y: ny,
-                vx: bcast_vx,
-                vy,
-            });
-        } else {
-            // On foot: stride toward the target across the floor (gravity-bound), or
-            // wander its home patch when it has no quarry.
+        // Not attacking: stride toward the target across the floor (gravity-bound), or
+        // wander its home patch when it has no quarry.
+        {
             let chasing = target.is_some();
             let dir = match target {
                 Some(ref p) if p.x + p.w * 0.5 < scx => -1.0,
@@ -7025,8 +6917,8 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         entities.insert(bolt.clone());
         broadcasts.push(ServerMessage::EntitySpawn { entity: bolt });
     }
-    // Spawn the host of dark knights the king called down as it took flight, fanned out
-    // across the floor around the player to swarm them while the king rules the sky.
+    // Spawn the host of dark knights the king called down as it enraged, fanned out
+    // across the floor around the player to swarm them alongside the king.
     if let Some(px) = summon_around {
         let (_, kh) = EntityKind::DarkKnight.size();
         for i in 0..DEMON_KING_KNIGHT_COUNT {

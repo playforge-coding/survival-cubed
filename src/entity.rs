@@ -427,13 +427,14 @@ pub enum EntityKind {
     /// keep their variant indices.
     Axe,
     /// The demon king: the boss of the [`crate::world::Dimension::Arena`], and the
-    /// only one of its kind in a world. A towering winged fiend that **flies**,
-    /// chasing the player through the air, and wields the whole demonic arsenal: it
-    /// looses a fan of five ordinary [`EntityKind::Fireball`]s, a tighter spread of
+    /// only one of its kind in a world. A towering winged fiend that fights **on foot**
+    /// the whole bout, striding after the player, and wields the whole demonic arsenal:
+    /// it looses a fan of five ordinary [`EntityKind::Fireball`]s, a tighter spread of
     /// three [`EntityKind::MagicFireball`]s, a single [`EntityKind::SummonerFireball`]
     /// (which bursts into a bouncing [`EntityKind::Skull`]), or — at close range —
     /// brings its fists down in a heavy melee **slam** (like the [`EntityKind::Orc`]).
-    /// It picks among these at random as it attacks. Slaying it drops a **chest** of
+    /// It picks among these at random as it attacks, and past two-thirds health it
+    /// **enrages**, summoning a host of dark knights. Slaying it drops a **chest** of
     /// loot where it falls rather than loose items, and no new king is ever raised in
     /// that world (see [`crate::server`]). Server-simulated. Appended last so older
     /// saves and the wire format keep their variant indices.
