@@ -218,6 +218,29 @@ pub const TUNGSTEN_ARMOR: BlockId = 61;
 /// An item (not placeable); five of them, alongside a tungsten and a gold ingot,
 /// are crafted into an [`ARENA_KEY`].
 pub const DRAGON_SCALE: BlockId = 62;
+/// The summoner spellbook: the first of the world's spellbooks and the seed of its
+/// magic system. An item (not placeable, stacks to one) rarely spilled by a slain
+/// [`crate::entity::EntityKind::Necromancer`]. Right-click while holding it to spend
+/// [`SUMMONER_SPELL_MANA_COST`] mana and loose a friendly summoner fireball that
+/// bursts into a bouncing skull which hunts *monsters* on your behalf (see
+/// [`crate::entity::EntityKind::FriendlySkull`]). Reusable — casting never consumes
+/// the book, only mana (won by slaying monsters; see [`crate::server`]).
+pub const SUMMONER_SPELL: BlockId = 63;
+/// The sunburst spellbook: a spellbook found in the loot chest of a ruin (see
+/// [`crate::worldgen`]). An item (not placeable, stacks to one). Right-click while
+/// holding it to spend [`SUNBURST_SPELL_MANA_COST`] mana and loose a burst of
+/// sunlight that **instantly slays every creature that burns in daylight** (zombies,
+/// skeletons, dark knights, necromancers and their skulls) within ten blocks.
+/// Reusable — casting never consumes the book, only mana.
+pub const SUNBURST_SPELL: BlockId = 64;
+/// The restore spellbook: a spellbook found in the [demon king](crate::entity::EntityKind::DemonKing)'s
+/// loot chest. An item (not placeable, stacks to one). Right-click while holding it
+/// to spend [`RESTORE_SPELL_MANA_COST`] mana and **restore** the creature under your
+/// cursor: an orc or a dark knight becomes a [`knight`](crate::entity::EntityKind::Knight),
+/// an orc mage becomes a [`mage`](crate::entity::EntityKind::Mage), and an enchanted
+/// demon is calmed back into an ordinary one. A knight or mage you restore is
+/// **recruited** to you. Reusable — casting never consumes the book, only mana.
+pub const RESTORE_SPELL: BlockId = 65;
 
 /// Gold ingots consumed to reinforce a plain [`CHEST`] into a [`LOCKED_CHEST`].
 /// Shared by the server (which charges it) and the client (which shows the cost).
@@ -367,6 +390,16 @@ impl BlockRegistry {
         // A dragon scale: a non-placeable item dropped by a slain dragon, crafted
         // (in fives) into an arena key.
         r.register("dragon_scale", false, true, false, 0.0);
+        // The summoner spellbook: a non-placeable artifact item (visible only so its
+        // inventory and dropped sprite have an atlas tile). Right-clicking with it
+        // spends mana to cast the summoner spell, rather than placing a block.
+        r.register("summoner_spell", false, true, false, 0.0);
+        // The sunburst spellbook: another non-placeable artifact item, found in a
+        // ruin's loot chest. Cast (right-click) to burst daylight-burning undead.
+        r.register("sunburst_spell", false, true, false, 0.0);
+        // The restore spellbook: a non-placeable artifact item from the demon king's
+        // chest. Cast (right-click) to restore the creature under the cursor.
+        r.register("restore_spell", false, true, false, 0.0);
         r
     }
 
@@ -433,6 +466,8 @@ pub fn max_stack(id: BlockId) -> u32 {
         BOAT => 1,
         // A suit of armor is a single bulky piece, so it never stacks.
         IRON_ARMOR | TUNGSTEN_ARMOR => 1,
+        // A spellbook is a single bound tome, so it never stacks.
+        SUMMONER_SPELL | SUNBURST_SPELL | RESTORE_SPELL => 1,
         _ => crate::inventory::STACK_MAX,
     }
 }
@@ -594,6 +629,35 @@ pub fn is_arena_key(item: BlockId) -> bool {
 /// Whether `item` is a boat — the vehicle ridden to glide across water.
 pub fn is_boat(item: BlockId) -> bool {
     item == BOAT
+}
+
+/// Mana spent casting the summoner spell once. Shared by the server (which charges
+/// it) and the client (which previews the cost and gates the cast on having enough).
+pub const SUMMONER_SPELL_MANA_COST: i32 = 25;
+
+/// Mana spent casting the sunburst spell once. Costlier than the summoner spell — it
+/// is a panic-button area-of-effect that wipes daylight-burning undead at a stroke.
+pub const SUNBURST_SPELL_MANA_COST: i32 = 50;
+
+/// Mana spent casting the restore spell once. The dearest of the spells — it turns a
+/// deadly foe into a loyal ally (a knight or mage) at a stroke.
+pub const RESTORE_SPELL_MANA_COST: i32 = 60;
+
+/// Whether `item` is a spellbook — a magic tome cast (by right-clicking) at the
+/// cost of mana rather than placed or consumed.
+pub fn is_spellbook(item: BlockId) -> bool {
+    matches!(item, SUMMONER_SPELL | SUNBURST_SPELL | RESTORE_SPELL)
+}
+
+/// The mana cost of casting the spellbook `item` once, or `None` if `item` is not a
+/// spellbook. Casting a spellbook never consumes the book — only this much mana.
+pub fn spell_mana_cost(item: BlockId) -> Option<i32> {
+    match item {
+        SUMMONER_SPELL => Some(SUMMONER_SPELL_MANA_COST),
+        SUNBURST_SPELL => Some(SUNBURST_SPELL_MANA_COST),
+        RESTORE_SPELL => Some(RESTORE_SPELL_MANA_COST),
+        _ => None,
+    }
 }
 
 /// Whether `item` is a pickaxe (mining is its intended use).
@@ -955,6 +1019,38 @@ mod tests {
         assert_eq!(forge_fuel_units(STONE), None);
         // Every offered fuel must actually be a fuel.
         assert!(FORGE_FUELS.iter().all(|f| forge_fuel_units(*f).is_some()));
+    }
+
+    #[test]
+    fn summoner_spell_is_a_castable_unstacking_spellbook() {
+        let reg = BlockRegistry::new();
+        // The spellbook is a recognized spellbook with a mana cost; ordinary items
+        // are not and have no cost.
+        assert!(is_spellbook(SUMMONER_SPELL));
+        assert!(!is_spellbook(STONE));
+        assert_eq!(
+            spell_mana_cost(SUMMONER_SPELL),
+            Some(SUMMONER_SPELL_MANA_COST)
+        );
+        assert_eq!(spell_mana_cost(STONE), None);
+        // The sunburst and restore spells are spellbooks too, each costlier than the
+        // last — and every spellbook has a mana cost.
+        for (book, cost) in [
+            (SUNBURST_SPELL, SUNBURST_SPELL_MANA_COST),
+            (RESTORE_SPELL, RESTORE_SPELL_MANA_COST),
+        ] {
+            assert!(is_spellbook(book));
+            assert_eq!(spell_mana_cost(book), Some(cost));
+        }
+        assert!(SUNBURST_SPELL_MANA_COST > SUMMONER_SPELL_MANA_COST);
+        assert!(RESTORE_SPELL_MANA_COST > SUNBURST_SPELL_MANA_COST);
+        // A single bound tome: each never stacks, and is a plain (non-placeable)
+        // item with an atlas tile for its inventory/dropped sprite.
+        for book in [SUMMONER_SPELL, SUNBURST_SPELL, RESTORE_SPELL] {
+            assert_eq!(max_stack(book), 1);
+            assert!(reg.get(book).visible);
+            assert!(!reg.is_placeable(book));
+        }
     }
 
     #[test]

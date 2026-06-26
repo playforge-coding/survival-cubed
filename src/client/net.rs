@@ -133,6 +133,11 @@ pub enum NetEvent {
     Inventory {
         slots: Vec<Slot>,
     },
+    /// Authoritative snapshot of this client's mana and its maximum.
+    Mana {
+        mana: i32,
+        max: i32,
+    },
     /// A chat line to display, attributed to player `from`.
     Chat {
         from: String,
@@ -178,6 +183,13 @@ pub enum NetCommand {
     /// (server validates the slot, moves the player, and resyncs).
     UseArenaKey {
         slot: u8,
+    },
+    /// Cast the spellbook in hotbar `slot` toward world pixel `(tx, ty)` (the cursor),
+    /// spending mana (server validates the slot and mana, then looses the spell).
+    CastSpell {
+        slot: u8,
+        tx: f32,
+        ty: f32,
     },
     /// Swing the door touching cell `(x, y)` open or shut (server flips both
     /// halves and resyncs).
@@ -498,6 +510,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::UseBucket { x, y, slot } => ClientMessage::UseBucket { x, y, slot },
         NetCommand::UseFireKey { slot } => ClientMessage::UseFireKey { slot },
         NetCommand::UseArenaKey { slot } => ClientMessage::UseArenaKey { slot },
+        NetCommand::CastSpell { slot, tx, ty } => ClientMessage::CastSpell { slot, tx, ty },
         NetCommand::ToggleDoor { x, y } => ClientMessage::ToggleDoor { x, y },
         NetCommand::MoveItem { from, to } => ClientMessage::MoveItem { from, to },
         NetCommand::DropItem { slot, all, dir } => ClientMessage::DropItem { slot, all, dir },
@@ -611,6 +624,7 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
         ServerMessage::Respawn { x, y, died } => NetEvent::Respawn { x, y, died },
         ServerMessage::Waypoints { list, home } => NetEvent::Waypoints { list, home },
         ServerMessage::Inventory { slots } => NetEvent::Inventory { slots },
+        ServerMessage::Mana { mana, max } => NetEvent::Mana { mana, max },
         ServerMessage::Chat { from, text } => NetEvent::Chat { from, text },
         ServerMessage::Spectate { target } => NetEvent::Spectate { target },
     };

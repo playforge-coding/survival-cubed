@@ -70,8 +70,9 @@ A slain Demon King doesn't scatter loose items — it leaves a **[chest](../bloc
 on the arena floor where it fell, stocked with a king's ransom: the full **tungsten
 arsenal** (sword, pickaxe, and axe at full durability), a suit of **[tungsten
 armor](../crafting.md#armor)**, a hoard of **tungsten ingots** and **gold ingots**,
-and a stack of **cooked meat** for the road. Walk up and right-click it to claim
-the spoils.
+a stack of **cooked meat** for the road, and — its deepest secret — the
+**[restore spell](../magic.md)**, the only one in the world. Walk up and right-click
+it to claim the spoils.
 
 Because there is **one king per world**, this is a one-time prize. Slay it, loot the
 chest, and the arena falls silent for good.

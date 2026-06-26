@@ -56,6 +56,12 @@ offscreen — better than half the time, an enchanted demon spawns alongside it.
     30 HP) before it gets to work — but watch the enchanted demons it's already
     made.
 
+!!! tip "Or redeem it"
+    With the **[restore spell](../magic.md)** you needn't kill the orc mage at all —
+    cast it to turn the brute caster into a friendly **[mage](mage.md)** that casts
+    the world's spells at your side. The restore spell likewise turns an **orc** into
+    a recruited **[knight](knight.md)**.
+
 ## Lore
 
 Orcs were not always monsters. They were **prisoners of the new, evil king** —

@@ -67,6 +67,10 @@ Occasionally (about 0.4% of lowland columns) the world generates a pre-built
 **ruin** — a stone hut resting on the surface — with a creature guarding it.
 These make natural landmarks across plains and forests.
 
+A ruin also generates with a **loot chest** on its floor, holding the
+**[sunburst spell](magic.md)** — a spellbook that incinerates the night undead at a
+stroke. The chest is the spell's only source, so a ruin is well worth cracking open.
+
 Structures are stored in a compact `.scst` ("Survival Cubed STructure") format
 that captures a grid of blocks and any creatures inside. In **creator mode** you
 can select a region of the world and save your own builds as `.scst` files, then

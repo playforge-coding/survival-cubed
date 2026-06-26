@@ -19,7 +19,7 @@ and fall normally) — see **[Creatures](creatures.md#mounts)**.
 | Input | Action |
 |---|---|
 | **Left button** (hold) | Mine/break the targeted block, or melee-attack a creature |
-| **Right button** | Place the selected block, or interact (doors, forge, campfire, sign, quest board, chest, bucket, fire key, boat) · mount/dismount a tamed horse |
+| **Right button** | Place the selected block, or interact (doors, forge, campfire, sign, quest board, chest, bucket, fire key, boat) · mount/dismount a tamed horse · **cast a held [spellbook](magic.md)** toward the cursor |
 | **Scroll wheel** | In creator flight: adjust fly-speed multiplier (1.0×–8.0×) |
 
 Your reach is about **80 pixels** (five blocks) from your body, and both mining
@@ -92,6 +92,7 @@ it back.
 ### Top bar
 
 - Game title and your **health bar** (out of 20 HP).
+- Your **mana bar** (✦, out of 100) — the magic resource for casting [spellbooks](magic.md).
 - A **day/night indicator** (☀ Day / 🌙 Night).
 - Control hints and the **number of players online**.
 - **Inventory** and **Leave** buttons.

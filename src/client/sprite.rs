@@ -334,6 +334,26 @@ pub static NECROMANCER_SPRITE: SpriteDef = SpriteDef {
     fps: 8.0,
 };
 
+/// Mage: a robed spellcaster the restore spell conjures, drawn along its walk cycle
+/// as it follows its owner and casts.
+pub static MAGE_SPRITE: SpriteDef = SpriteDef {
+    name: "mage",
+    frame_w: 9,
+    frame_h: 12,
+    frames: 4,
+    fps: 8.0,
+};
+
+/// Mage cast: the one-shot spell-casting gesture, played off the mage's cast (lunge)
+/// timer when it looses a spell. Lives in the `mage/cast` subdirectory.
+pub static MAGE_CAST_SPRITE: SpriteDef = SpriteDef {
+    name: "mage/cast",
+    frame_w: 12,
+    frame_h: 12,
+    frames: 1,
+    fps: 1.0,
+};
+
 /// Skull: a bouncing skeleton skull a necromancer summons. A single frame that
 /// caroms around the screen.
 pub static SKULL_SPRITE: SpriteDef = SpriteDef {
@@ -444,7 +464,7 @@ pub static SUMMONER_FIREBALL_SPRITE: SpriteDef = SpriteDef {
 };
 
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 40] {
+pub fn all() -> [&'static SpriteDef; 42] {
     [
         &PLAYER_SPRITE,
         &BOAT_SPRITE,
@@ -475,6 +495,8 @@ pub fn all() -> [&'static SpriteDef; 40] {
         &ORC_MAGE_CAST_SPRITE,
         &ENCHANTED_DEMON_SPRITE,
         &NECROMANCER_SPRITE,
+        &MAGE_SPRITE,
+        &MAGE_CAST_SPRITE,
         &SKULL_SPRITE,
         &KNIGHT_SPRITE,
         &KNIGHT_ATTACK_SPRITE,
@@ -531,6 +553,13 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         EntityKind::Necromancer => &NECROMANCER_SPRITE,
         EntityKind::Skull => &SKULL_SPRITE,
         EntityKind::SummonerFireball => &SUMMONER_FIREBALL_SPRITE,
+        // The player-summoned counterparts reuse the necromancer's art (the scene
+        // builder tints friendly summons so they read as the caster's own).
+        EntityKind::FriendlySummonerFireball => &SUMMONER_FIREBALL_SPRITE,
+        EntityKind::FriendlySkull => &SKULL_SPRITE,
+        // A mage's cast pose is handled by the scene builder off its lunge timer;
+        // this walk sheet is its base, as it follows its owner.
+        EntityKind::Mage { .. } => &MAGE_SPRITE,
         // A knight's mounted and attack poses are handled by the scene builder (off
         // its `riding` and lunge state); this on-foot walk sheet is its base.
         EntityKind::Knight { .. } => &KNIGHT_SPRITE,

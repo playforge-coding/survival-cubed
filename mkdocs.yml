@@ -57,6 +57,7 @@ nav:
   - Gameplay & Survival: gameplay.md
   - Blocks: blocks.md
   - Crafting & Tools: crafting.md
+  - Magic & Spellbooks: magic.md
   - The World: world.md
   - Creatures: creatures.md
   - The Story: story.md
@@ -76,6 +77,7 @@ nav:
     - Demons: entities/demons.md
     - Orcs: entities/orcs.md
     - Necromancer & Skulls: entities/necromancer.md
+    - Mage: entities/mage.md
     - Ash Twister: entities/ash-twister.md
     - Dragon: entities/dragon.md
     - Demon King: entities/demon-king.md

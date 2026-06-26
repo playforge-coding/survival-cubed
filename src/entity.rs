@@ -82,6 +82,9 @@ pub const NECROMANCER_SIZE: (f32, f32) = (9.0, 13.0);
 /// Collision/draw size (width, height) in pixels of a skull — a small, bouncing
 /// skeleton skull a necromancer summons.
 pub const SKULL_SIZE: (f32, f32) = (10.0, 11.0);
+/// Collision/draw size (width, height) in pixels of a mage — a robed spellcaster
+/// conjured by the [`crate::block::RESTORE_SPELL`], the lean build of its art.
+pub const MAGE_SIZE: (f32, f32) = (9.0, 12.0);
 /// Collision/draw size (width, height) in pixels of a knight — a compact armoured
 /// humanoid on foot. When mounted it is drawn from its larger horse sheet, but its
 /// collision box stays this on-foot size (as a ridden player keeps their own box).
@@ -99,6 +102,13 @@ pub const MAGIC_FIREBALL_SIZE: (f32, f32) = (10.0, 7.0);
 /// Collision/draw size (width, height) in pixels of a summoner fireball — the bolt
 /// a [`EntityKind::Necromancer`] hurls, the same low, small bolt as the others.
 pub const SUMMONER_FIREBALL_SIZE: (f32, f32) = (10.0, 7.0);
+/// Collision/draw size (width, height) in pixels of a friendly summoner fireball —
+/// the bolt a player's summoner spell looses, the same low, small bolt as the
+/// necromancer's [`SUMMONER_FIREBALL_SIZE`].
+pub const FRIENDLY_SUMMONER_FIREBALL_SIZE: (f32, f32) = (10.0, 7.0);
+/// Collision/draw size (width, height) in pixels of a friendly skull — a player's
+/// summoned helper, the same small bouncing skull as the necromancer's [`SKULL_SIZE`].
+pub const FRIENDLY_SKULL_SIZE: (f32, f32) = (10.0, 11.0);
 /// Collision/draw size (width, height) in pixels of a dark knight — a broad,
 /// black-armoured humanoid, bulkier across the shoulders than the [`KNIGHT_SIZE`]
 /// man-at-arms it preys on.
@@ -142,6 +152,13 @@ pub const ORC_MAGE_CAST_TIME: f32 = 0.8;
 /// looses its bolts or brings its fists down. Rides on the [`Entity::lunge`] timer
 /// like the orc slam and orc-mage cast.
 pub const DEMON_KING_ATTACK_TIME: f32 = 1.0;
+
+/// Seconds a mage's spell-casting animation plays end to end: it raises its staff
+/// through the gesture that looses a spell. Shared by both sides so the server's cast
+/// timing and the client's cast-animation playback agree. Like the orc-mage cast it
+/// rides on the [`Entity::lunge`] timer and is purely cosmetic — the spell resolves
+/// server-side when the cast is kicked off.
+pub const MAGE_CAST_TIME: f32 = 0.8;
 
 /// Seconds a knight's attack swing animation plays. Like the snake lunge and orc
 /// slam it rides on the [`Entity::lunge`] timer: the server kicks it off (broadcasting
@@ -227,6 +244,10 @@ pub const SKULL_MAX_HEALTH: i32 = 8;
 /// Maximum health of a knight, in hit points. A sturdy man-at-arms — hardier than
 /// any pet, so a recruited knight can trade blows with the monsters it hunts.
 pub const KNIGHT_MAX_HEALTH: i32 = 40;
+/// Maximum health of a mage, in hit points. A robed spellcaster conjured by the
+/// restore spell. It is never harmed (nothing attacks it — see [`crate::server`]),
+/// so this is mostly nominal, but it keeps a caster's frail figure on the books.
+pub const MAGE_MAX_HEALTH: i32 = 30;
 /// Maximum health of a dark knight, in hit points. The toughest thing that stalks
 /// the overworld night — a shade harder to fell than even the [`KNIGHT_MAX_HEALTH`]
 /// man-at-arms it hunts, fitting a rare foe that drops tungsten when it falls.
@@ -462,6 +483,35 @@ pub enum EntityKind {
     /// its own miniboss music and health bar on the client. Server-simulated.
     /// Appended last so older saves and the wire format keep their variant indices.
     Dragon,
+    /// A friendly summoner fireball: the bolt a player's **summoner spell** looses
+    /// (see [`crate::block::SUMMONER_SPELL`]). It flies in a straight line like the
+    /// necromancer's [`EntityKind::SummonerFireball`], but where it bursts — on a
+    /// wall, on a monster, or when its short life runs out — it summons a *friendly*
+    /// [`EntityKind::FriendlySkull`] rather than a hostile one. Its [`Entity::vx`]/
+    /// [`Entity::vy`] carry its flight velocity. Never hostile, so knights and
+    /// monsters ignore it. Server-simulated. Appended last so older saves and the
+    /// wire format keep their variant indices.
+    FriendlySummonerFireball,
+    /// A friendly skull: a bouncing skull a player's summoner spell conjured. It
+    /// caroms around under gravity exactly like the necromancer's
+    /// [`EntityKind::Skull`], but it **helps the caster** — it hunts and gnashes at
+    /// nearby *monsters* instead of players, and gives out after a short life. It is
+    /// never hostile, so [`EntityKind::Knight`]s won't attack it (nor it them), and
+    /// monsters pay it no mind. Server-simulated. Appended last so older saves and
+    /// the wire format keep their variant indices.
+    FriendlySkull,
+    /// A mage: a robed spellcaster that **only** ever comes into being through the
+    /// [`crate::block::RESTORE_SPELL`] — cast on an [`EntityKind::OrcMage`], it
+    /// restores the brute caster to this gentler one. A mage casts the world's
+    /// spells of its own accord — the summoner spell, the sunburst spell, and even
+    /// the restore spell itself — to aid whoever it serves. Like a
+    /// [`EntityKind::Knight`] it can be **recruited** (`owner` = the caster's name,
+    /// stored by name so the bond survives a restart) or **wild** (`owner` = `None`);
+    /// a recruited one follows its owner and, when *it* casts restore, recruits the
+    /// result on its owner's behalf. Nothing attacks a mage (it is never hostile, and
+    /// players cannot strike it). Server-simulated. Appended last so older saves and
+    /// the wire format keep their variant indices.
+    Mage { owner: Option<String> },
 }
 
 impl EntityKind {
@@ -496,6 +546,9 @@ impl EntityKind {
             EntityKind::Axe => AXE_SIZE,
             EntityKind::DemonKing => DEMON_KING_SIZE,
             EntityKind::Dragon => DRAGON_SIZE,
+            EntityKind::FriendlySummonerFireball => FRIENDLY_SUMMONER_FIREBALL_SIZE,
+            EntityKind::FriendlySkull => FRIENDLY_SKULL_SIZE,
+            EntityKind::Mage { .. } => MAGE_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -536,6 +589,14 @@ impl EntityKind {
         matches!(self, EntityKind::Knight { .. })
     }
 
+    /// Whether this is a mage (recruited or wild) — the spellcaster the restore
+    /// spell conjures. Like a knight it is not a [pet](Self::is_pet), but it is a
+    /// companion: immune to harm, exempt from distance despawn, and (when recruited)
+    /// following its owner.
+    pub fn is_mage(&self) -> bool {
+        matches!(self, EntityKind::Mage { .. })
+    }
+
     /// Whether this is a tameable companion (a cat, a puppy, or a horse). Pets share
     /// a bundle of special rules: immune to player attacks, exempt from distance
     /// despawn, singed by fire (their one mortal hazard), and — once tamed —
@@ -566,7 +627,8 @@ impl EntityKind {
             EntityKind::Cat { owner, .. }
             | EntityKind::Puppy { owner, .. }
             | EntityKind::Horse { owner }
-            | EntityKind::Knight { owner } => owner.as_deref(),
+            | EntityKind::Knight { owner }
+            | EntityKind::Mage { owner } => owner.as_deref(),
             _ => None,
         }
     }
@@ -614,6 +676,13 @@ impl EntityKind {
             EntityKind::Axe => 1,
             EntityKind::DemonKing => DEMON_KING_MAX_HEALTH,
             EntityKind::Dragon => DRAGON_MAX_HEALTH,
+            // A friendly summoner fireball is an inert projectile; 1 keeps health ==
+            // max_health so no health bar shows and a stray swing can't "kill" it.
+            EntityKind::FriendlySummonerFireball => 1,
+            // A friendly skull is as frail as the necromancer's; nothing attacks it,
+            // so its health is moot — it simply gives out when its short life ends.
+            EntityKind::FriendlySkull => SKULL_MAX_HEALTH,
+            EntityKind::Mage { .. } => MAGE_MAX_HEALTH,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }

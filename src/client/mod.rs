@@ -296,6 +296,11 @@ struct GameState {
     /// the HUD.
     health: i32,
     max_health: i32,
+    /// Local player mana, authoritative on the server but mirrored here for the HUD
+    /// (and to gate a cast optimistically). Won by slaying monsters, spent casting
+    /// spellbooks (see [`crate::block::SUMMONER_SPELL`]).
+    mana: i32,
+    max_mana: i32,
     /// Normalized time of day in `[0, 1)`; advanced locally and corrected by the
     /// server (see [`crate::daylight`]).
     time_of_day: f32,
@@ -419,6 +424,8 @@ impl GameState {
             last_sent: spawn,
             health: PLAYER_MAX_HEALTH,
             max_health: PLAYER_MAX_HEALTH,
+            mana: 0,
+            max_mana: 100,
             time_of_day: 0.0,
             break_target: None,
             break_progress: 0.0,
@@ -1065,6 +1072,7 @@ impl App {
                         e.lunge = match e.kind {
                             EntityKind::Orc => crate::entity::ORC_SLAM_TIME,
                             EntityKind::OrcMage => crate::entity::ORC_MAGE_CAST_TIME,
+                            EntityKind::Mage { .. } => crate::entity::MAGE_CAST_TIME,
                             EntityKind::Knight { .. } => crate::entity::KNIGHT_ATTACK_TIME,
                             EntityKind::Dragon => crate::entity::DRAGON_ATTACK_TIME,
                             _ => crate::entity::SNAKE_LUNGE_TIME,
@@ -1133,6 +1141,12 @@ impl App {
             NetEvent::Inventory { slots } => {
                 if let Some(g) = &mut self.game {
                     g.inventory = Inventory::from_slots(slots);
+                }
+            }
+            NetEvent::Mana { mana, max } => {
+                if let Some(g) = &mut self.game {
+                    g.mana = mana;
+                    g.max_mana = max;
                 }
             }
             NetEvent::Chat { from, text } => {
@@ -1570,7 +1584,17 @@ impl App {
     }
 
     fn hud_ui(&mut self, ui: &mut egui::Ui) {
-        let (selected_slot, other_players, pos, health, max_health, time_of_day, hotbar) = {
+        let (
+            selected_slot,
+            other_players,
+            pos,
+            health,
+            max_health,
+            mana,
+            max_mana,
+            time_of_day,
+            hotbar,
+        ) = {
             let g = self.game.as_ref().unwrap();
             let hotbar: Vec<Slot> = g.inventory.slots()[..HOTBAR_SLOTS].to_vec();
             (
@@ -1579,6 +1603,8 @@ impl App {
                 g.pos,
                 g.health,
                 g.max_health,
+                g.mana,
+                g.max_mana,
                 g.time_of_day,
                 hotbar,
             )
@@ -1597,9 +1623,11 @@ impl App {
                 ui.separator();
                 health_bar(ui, health, max_health);
                 ui.separator();
+                mana_bar(ui, mana, max_mana);
+                ui.separator();
                 ui.label(if night { "🌙 Night" } else { "☀ Day" });
                 ui.separator();
-                ui.label("Move: A/D · Jump/Climb: Space · Down: S · Mine: LMB · Place: RMB");
+                ui.label("Move: A/D · Jump/Climb: Space · Down: S · Mine: LMB · Place/Cast: RMB");
                 ui.separator();
                 ui.label("[1–9] Select · [E] Inventory · [F] Eat · [M] Mark · [N] Unmark");
                 ui.separator();
@@ -3665,6 +3693,13 @@ impl App {
                 let progress = 1.0 - (e.lunge / crate::entity::ORC_MAGE_CAST_TIME).clamp(0.0, 1.0);
                 let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
                 (d, frame)
+            } else if e.lunge > 0.0 && matches!(e.kind, EntityKind::Mage { .. }) {
+                // A casting mage plays its one-shot spell gesture (frame stepped by the
+                // cast timer, which rides on the same `lunge` field).
+                let d = &sprite::MAGE_CAST_SPRITE;
+                let progress = 1.0 - (e.lunge / crate::entity::MAGE_CAST_TIME).clamp(0.0, 1.0);
+                let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
+                (d, frame)
             } else if e.lunge > 0.0 && matches!(e.kind, EntityKind::Dragon) {
                 // A breathing dragon plays its one-shot fire-breath (frame stepped by
                 // the attack timer, which rides on the same `lunge` field).
@@ -3695,6 +3730,18 @@ impl App {
                 )
             };
             let facing = g.facing.get(&e.id).copied().unwrap_or(true);
+            // A player's friendly summons (its summoner-spell fireball and skull) are
+            // cast in a cool blue glamour so they read as the caster's own magic,
+            // plainly apart from the necromancer's bone-white hostile versions.
+            let base = flash_tint(tint, e.hit_flash);
+            let color = if matches!(
+                e.kind,
+                EntityKind::FriendlySkull | EntityKind::FriendlySummonerFireball
+            ) {
+                [base[0] * 0.45, base[1] * 0.8, base[2], base[3]]
+            } else {
+                base
+            };
             tiles.push(entity_instance(
                 self.atlas.sprite_frame(def.name, frame),
                 e.x,
@@ -3702,7 +3749,7 @@ impl App {
                 w,
                 h,
                 facing,
-                flash_tint(tint, e.hit_flash),
+                color,
             ));
             // A small health bar floats over any wounded creature (but not while
             // it is crumbling away).
@@ -4155,6 +4202,30 @@ fn health_bar(ui: &mut egui::Ui, health: i32, max_health: i32) {
         rect.center(),
         egui::Align2::CENTER_CENTER,
         format!("♥ {health} / {max_health}"),
+        egui::FontId::proportional(12.0),
+        egui::Color32::WHITE,
+    );
+}
+
+/// Paint the player's HUD mana bar: a blue fill over a dark backing with a
+/// `✦ current / max` readout. Mirrors [`health_bar`] for the magic resource.
+fn mana_bar(ui: &mut egui::Ui, mana: i32, max_mana: i32) {
+    let frac = if max_mana > 0 {
+        (mana as f32 / max_mana as f32).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(130.0, 16.0), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let radius = egui::CornerRadius::same(3);
+    painter.rect_filled(rect, radius, egui::Color32::from_rgb(12, 20, 40));
+    let mut fill = rect;
+    fill.set_width(rect.width() * frac);
+    painter.rect_filled(fill, radius, egui::Color32::from_rgb(60, 120, 220));
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        format!("✦ {mana} / {max_mana}"),
         egui::FontId::proportional(12.0),
         egui::Color32::WHITE,
     );
@@ -4860,6 +4931,34 @@ fn handle_block_actions(
             let _ = net
                 .commands
                 .send(NetCommand::UseArenaKey { slot: slot as u8 });
+            game.action_timer = ACTION_COOLDOWN;
+            return;
+        }
+    }
+
+    // Right-clicking while holding a spellbook casts it toward the cursor, spending
+    // mana. Like the keys it acts on aim rather than a target cell, so it needs no
+    // reach check; the server validates the mana and looses the spell (and resyncs
+    // the authoritative mana). We optimistically deduct so the bar responds at once.
+    if input.placing && game.action_timer <= 0.0 {
+        let slot = game.selected_slot;
+        if let Some((held, _, _)) = game
+            .inventory
+            .get(slot)
+            .filter(|(b, _, _)| crate::block::is_spellbook(*b))
+        {
+            if let Some(cost) = crate::block::spell_mana_cost(held)
+                && game.mana >= cost
+            {
+                game.mana -= cost; // optimistic; the server resyncs authoritative mana
+                let _ = net.commands.send(NetCommand::CastSpell {
+                    slot: slot as u8,
+                    tx: world.x,
+                    ty: world.y,
+                });
+            }
+            // Either way, consume the click so a spellbook never falls through to
+            // ordinary block placement.
             game.action_timer = ACTION_COOLDOWN;
             return;
         }

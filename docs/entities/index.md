@@ -22,6 +22,7 @@ Projectiles (bones, fireballs) are the exception, flying at 130–170 px/s.
 | [Cat & Puppy](pets.md)         | 8 / 14 | Tameable pets                     |
 | [Horse](horse.md)              | 30     | Tameable mount                    |
 | [Knight](knight.md)            | 40     | Recruitable man-at-arms           |
+| [Mage](mage.md)                | 30     | Spellcaster made by the restore spell |
 
 ## Hostile monsters
 

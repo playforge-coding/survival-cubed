@@ -26,6 +26,12 @@ of the desert's night spawns is a necromancer rather than a zombie or skeleton â
 and **burns up at daybreak**. In the underworld's **ash valleys** (about **1 in 5**
 chunks) it roams around the clock, since the depths are eternal night.
 
+!!! tip "Rare drop: the summoner spellbook"
+    A slain necromancer **rarely** (about 1 in 12) spills the **[summoner
+    spell](../magic.md)** â€” the world's first spellbook. Cast it back at the depths
+    and the necromancer's own trick becomes yours: a friendly skull that hunts
+    monsters for you. It is, for now, the only source of the book.
+
 ### Summoner fireball
 
 The bolt a necromancer hurls: flies at 130 px/s for up to 2.5 seconds, dealing

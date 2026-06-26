@@ -954,6 +954,40 @@ impl WorldGen {
         }
         out
     }
+
+    /// Every embedded-structure root whose base row lies in overworld chunk
+    /// `(cx, cy)`, as `(root_x, top_row)` — its left-edge column and the world row
+    /// of its top. Mirrors the eligibility checks in [`structure_entities_in_chunk`]
+    /// but is reported for *every* placed structure (even one with no captured
+    /// entities), so the server can realize each ruin's loot chest exactly once.
+    pub fn structure_roots_in_chunk(&self, cx: i32, cy: i32) -> Vec<(i32, i32)> {
+        let mut out = Vec::new();
+        let Some(s) = &self.structure else {
+            return out;
+        };
+        let base_x = cx * CHUNK_SIZE;
+        for root_x in base_x..base_x + CHUNK_SIZE {
+            if !self.structure_root_at(root_x) {
+                continue;
+            }
+            let surface = self.surface_height(root_x);
+            if surface > SEA_LEVEL || self.is_cave(root_x, surface, surface) {
+                continue;
+            }
+            if (surface - 1).div_euclid(CHUNK_SIZE) != cy {
+                continue;
+            }
+            out.push((root_x, surface - s.height as i32));
+        }
+        out
+    }
+
+    /// The `(dx, dy)` cell offset (from a structure root's top-left) at which to
+    /// rest its loot chest, or `None` if the embedded structure has no floored
+    /// interior cell. See [`Structure::chest_offset`].
+    pub fn structure_chest_offset(&self) -> Option<(i32, i32)> {
+        self.structure.as_ref().and_then(|s| s.chest_offset())
+    }
 }
 
 /// Set a world cell within a chunk, ignoring writes that fall outside the chunk

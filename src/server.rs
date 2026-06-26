@@ -214,6 +214,10 @@ const DARK_KNIGHT_TOOL_DROP_PERCENT: u32 = 55;
 /// Percent chance a slain dark knight also spills a full suit of tungsten armor —
 /// deliberately small, so a suit looted from a knight is a rare prize.
 const DARK_KNIGHT_ARMOR_DROP_PERCENT: u32 = 7;
+/// Percent chance a slain [`EntityKind::Necromancer`] drops its
+/// [`crate::block::SUMMONER_SPELL`] spellbook. Deliberately small — the spellbook is
+/// a rare prize and (for now) the only source of the world's first spell.
+const NECROMANCER_SPELLBOOK_DROP_PERCENT: u32 = 8;
 /// Durability a worn suit of armor loses each time it soaks an enemy blow. One
 /// point per hit, so a suit lasts for as many hits as its
 /// [`max_durability`](crate::block::max_durability) before it must be mended.
@@ -497,6 +501,10 @@ const SKULL_DAMAGE: i32 = 5;
 const SKULL_ATTACK_INTERVAL: f32 = 0.8;
 /// Seconds a summoned skull caroms around before it gives out and despawns.
 const SKULL_LIFETIME: f32 = 14.0;
+/// Radius (world px) of the [sunburst spell](crate::block::SUNBURST_SPELL)'s blast —
+/// ten blocks out from the caster, within which every daylight-burning undead is
+/// slain at once.
+const SUNBURST_RADIUS: f32 = 10.0 * TILE_SIZE;
 /// Marching speed of a knight on foot, in pixels/second — brisk enough to keep up
 /// with a walking owner and run down the foes it's sent against.
 const KNIGHT_SPEED: f32 = 40.0;
@@ -526,6 +534,25 @@ const KNIGHT_CHUNK_CHANCE: u32 = 3;
 /// Percent of freshly spawned knights that arrive already mounted (riding behind a
 /// horse's worth of [`crate::entity::HORSE_MAX_HEALTH`] shield from the off).
 const KNIGHT_SPAWN_MOUNTED_CHANCE: u32 = 30;
+
+/// Marching speed of a mage on foot, in pixels/second — it keeps pace with a walking
+/// owner as it shadows them and casts.
+const MAGE_SPEED: f32 = 38.0;
+/// How far (px, between AABBs) a mage will reach to loose a spell at a foe — a long
+/// ranged caster, a touch farther than a knight's charge.
+const MAGE_CAST_RANGE: f32 = 300.0;
+/// Gap (px between AABBs) past which a recruited mage that is just following (not
+/// casting) walks toward its owner; inside it, it holds station.
+const MAGE_FOLLOW_GAP: f32 = 40.0;
+/// Center-distance (px) past which a recruited mage teleports to its owner, the way a
+/// knight (or pet) does.
+const MAGE_TELEPORT_DIST: f32 = 360.0;
+/// Seconds a mage waits between casts, so it looses a spell at a measured cadence
+/// rather than every tick.
+const MAGE_CAST_INTERVAL: f32 = 2.2;
+/// How near the cursor (world px) a creature must be for a player's restore spell to
+/// catch it — generous, so an aimed cast finds the foe under the pointer.
+const RESTORE_RANGE: f32 = 4.0 * TILE_SIZE;
 /// Seconds a tongue of charred-skeleton trail fire burns before guttering out.
 /// Naturally generated fire (part of the terrain) is permanent and untracked.
 const TRAIL_FIRE_LIFETIME: f32 = 4.0;
@@ -873,6 +900,11 @@ struct Shared {
     /// Authoritative: placements consume from it and pickups add to it. Folded
     /// into [`SavedPlayer`] on disconnect so it persists.
     inventories: Mutex<HashMap<EntityId, Inventory>>,
+    /// Banked mana of every currently-connected player, keyed by entity id. Mana is
+    /// the magic resource: it is won by slaying monsters (see [`creature_mana`]) and
+    /// spent casting spellbooks (see [`crate::block::SUMMONER_SPELL`]). Capped at
+    /// [`MANA_MAX`]. Folded into [`SavedPlayer`] on disconnect so it persists.
+    mana: Mutex<HashMap<EntityId, i32>>,
     /// Campfire cell each connected player last interacted with, keyed by entity
     /// id. Death returns the player to this campfire (instead of world
     /// [`spawn`](Self::spawn)) — but only if the campfire is still there; a broken
@@ -1052,6 +1084,7 @@ impl Shared {
         // is freshest), tagged with the dimension they are in.
         let mut players = self.saved_players.lock().clone();
         let invs = self.inventories.lock().clone();
+        let manas = self.mana.lock().clone();
         let mut creatures: [Vec<Entity>; NUM_DIMENSIONS] = Default::default();
         for dim in Dimension::ALL {
             for e in self.entities(dim).lock().values() {
@@ -1073,6 +1106,7 @@ impl Shared {
                                     .get(&e.id)
                                     .cloned()
                                     .unwrap_or_default(),
+                                mana: manas.get(&e.id).copied().unwrap_or(0),
                             },
                         );
                     }
@@ -1701,6 +1735,32 @@ impl Shared {
             .map(Inventory::to_slots)
             .unwrap_or_default();
         self.send_to(id, ServerMessage::Inventory { slots });
+    }
+
+    /// Push the authoritative mana value to its owner.
+    fn send_mana(&self, id: EntityId) {
+        let mana = self.mana.lock().get(&id).copied().unwrap_or(0);
+        self.send_to(
+            id,
+            ServerMessage::Mana {
+                mana,
+                max: MANA_MAX,
+            },
+        );
+    }
+
+    /// Grant player `id` `amount` mana (capped at [`MANA_MAX`], floored at `0`) and
+    /// resync it to them. A non-positive net no-op still resends so the client never
+    /// drifts. Does nothing for an id with no mana entry (not a connected player).
+    fn add_mana(&self, id: EntityId, amount: i32) {
+        {
+            let mut mana = self.mana.lock();
+            let Some(m) = mana.get_mut(&id) else {
+                return;
+            };
+            *m = (*m + amount).clamp(0, MANA_MAX);
+        }
+        self.send_mana(id);
     }
 
     /// Eat the food in player `id`'s inventory `slot`: consume one and adjust the
@@ -2754,16 +2814,16 @@ impl Shared {
         // the inventory, which travels with the player across dimensions.
         self.send_waypoints(id);
         self.send_inventory(id);
-        // A recruited knight follows its owner across the divide: move every knight
-        // this player owns from the old dimension into the new one, beside them.
+        // A recruited knight or mage follows its owner across the divide: move every
+        // companion this player owns from the old dimension into the new one, beside them.
         self.transfer_knights(player_name.as_deref(), from, to, x, y);
     }
 
-    /// Carry player `owner`'s recruited [knights](EntityKind::Knight) from dimension
-    /// `from` to `to`, landing them next to the player at `(x, y)` on foot (any mount
-    /// is left behind, like the player's own horse). Broadcasts the despawn/spawn so
-    /// both dimensions' onlookers see the knight leave and arrive. A no-op if `owner`
-    /// is `None` (an unnamed player owns nothing).
+    /// Carry player `owner`'s recruited companions — [knights](EntityKind::Knight) and
+    /// [mages](EntityKind::Mage) — from dimension `from` to `to`, landing them next to
+    /// the player at `(x, y)` on foot (any mount is left behind, like the player's own
+    /// horse). Broadcasts the despawn/spawn so both dimensions' onlookers see them leave
+    /// and arrive. A no-op if `owner` is `None` (an unnamed player owns nothing).
     fn transfer_knights(
         &self,
         owner: Option<&str>,
@@ -2773,12 +2833,16 @@ impl Shared {
         y: f32,
     ) {
         let Some(owner) = owner else { return };
-        // Pull the owned knights out of the old dimension first.
+        // Pull the owner's recruited companions — knights and mages alike — out of the
+        // old dimension first, so they cross over with their owner.
         let mut moving: Vec<Entity> = {
             let mut src = self.entities(from).lock();
             let ids: Vec<EntityId> = src
                 .values()
-                .filter(|e| matches!(&e.kind, EntityKind::Knight { owner: Some(o) } if o == owner))
+                .filter(|e| {
+                    matches!(&e.kind, EntityKind::Knight { owner: Some(o) } if o == owner)
+                        || matches!(&e.kind, EntityKind::Mage { owner: Some(o) } if o == owner)
+                })
                 .map(|e| e.id)
                 .collect();
             ids.into_iter().filter_map(|kid| src.remove(kid)).collect()
@@ -2910,6 +2974,206 @@ impl Shared {
         }
     }
 
+    /// Cast the spellbook held in hotbar `slot` toward world pixel `(tx, ty)`. The
+    /// book must really be a [spellbook](crate::block::is_spellbook) and the caster
+    /// must hold at least its [mana cost](crate::block::spell_mana_cost); on success
+    /// the mana is spent and the spell's effect is loosed (dispatched by which book
+    /// it is). The book is never consumed. A no-op (resyncing the client's
+    /// mana/inventory) if the slot doesn't hold a spellbook or mana is short — e.g.
+    /// after an inventory move raced the cast.
+    fn cast_spell(&self, id: EntityId, slot: usize, tx: f32, ty: f32) {
+        let Some(item) = self
+            .peek_slot(id, slot)
+            .filter(|i| crate::block::is_spellbook(*i))
+        else {
+            self.send_inventory(id);
+            return;
+        };
+        let Some(cost) = crate::block::spell_mana_cost(item) else {
+            return;
+        };
+        // Charge the mana up front; bail (resyncing) if the caster can't afford it.
+        {
+            let mut mana = self.mana.lock();
+            let Some(m) = mana.get_mut(&id) else {
+                return;
+            };
+            if *m < cost {
+                drop(mana);
+                self.send_mana(id);
+                return;
+            }
+            *m -= cost;
+        }
+        self.send_mana(id);
+
+        let dim = self.dim_of(id);
+        // Resolve the caster's name so a restored knight/mage can be recruited to them.
+        let caster = self
+            .entities(dim)
+            .lock()
+            .get(id)
+            .and_then(|e| match &e.kind {
+                EntityKind::Player { name } if !name.is_empty() => Some(name.clone()),
+                _ => None,
+            });
+        let did = match item {
+            crate::block::SUMMONER_SPELL => {
+                self.cast_summoner(id, dim, tx, ty);
+                true
+            }
+            crate::block::SUNBURST_SPELL => {
+                self.cast_sunburst(id, dim);
+                true
+            }
+            crate::block::RESTORE_SPELL => self.cast_restore(dim, tx, ty, caster),
+            _ => false,
+        };
+        // The restore spell does nothing if the cursor isn't on a restorable creature;
+        // refund its mana rather than burning it on a miss (the area/projectile spells
+        // always "happen", so they keep their cost).
+        if !did {
+            self.add_mana(id, cost);
+        }
+    }
+
+    /// Cast the restore spell at world pixel `(tx, ty)`: find the nearest
+    /// [restorable](is_restorable) creature to the cursor (within
+    /// [`RESTORE_RANGE`]) and turn it (see [`restored_kind`]). A restored knight/mage
+    /// is recruited to `owner` (the caster's name) — `None` leaves it wild. Returns
+    /// whether anything was actually restored, so the caller can refund a miss.
+    fn cast_restore(&self, dim: Dimension, tx: f32, ty: f32, owner: Option<String>) -> bool {
+        // Pick the restorable creature whose center is nearest the cursor, in range.
+        let target = {
+            let entities = self.entities(dim).lock();
+            entities
+                .values()
+                .filter(|e| is_restorable(&e.kind))
+                .map(|e| {
+                    let (w, h) = e.size();
+                    let cx = e.x + w * 0.5;
+                    let cy = e.y + h * 0.5;
+                    (e.id, (cx - tx).powi(2) + (cy - ty).powi(2))
+                })
+                .filter(|&(_, d2)| d2 <= RESTORE_RANGE * RESTORE_RANGE)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(id, _)| id)
+        };
+        let Some(tid) = target else {
+            return false;
+        };
+        // Re-read the kind under the lock and compute its restored form.
+        let new_kind = {
+            let entities = self.entities(dim).lock();
+            entities
+                .get(tid)
+                .and_then(|e| restored_kind(&e.kind, &owner))
+        };
+        let Some(new_kind) = new_kind else {
+            return false;
+        };
+        let msgs = {
+            let mut entities = self.entities(dim).lock();
+            transform_entity(&mut entities, tid, new_kind)
+        };
+        if msgs.is_empty() {
+            return false;
+        }
+        for m in msgs {
+            self.broadcast_dim(dim, m);
+        }
+        true
+    }
+
+    /// Loose the summoner spell: a friendly summoner fireball from the caster's upper
+    /// body toward the cursor `(tx, ty)`, which bursts into a monster-hunting
+    /// [`EntityKind::FriendlySkull`] (see the tick loop). Mana is already charged.
+    fn cast_summoner(&self, id: EntityId, dim: Dimension, tx: f32, ty: f32) {
+        let (fw, fh) = crate::entity::FRIENDLY_SUMMONER_FIREBALL_SIZE;
+        let bolt = {
+            let entities = self.entities(dim).lock();
+            let Some(p) = entities.get(id) else {
+                return;
+            };
+            let (pw, ph) = p.size();
+            let sx = p.x + pw * 0.5 - fw * 0.5;
+            let sy = p.y + ph * 0.3 - fh * 0.5;
+            let dx = tx - (sx + fw * 0.5);
+            let dy = ty - (sy + fh * 0.5);
+            let len = (dx * dx + dy * dy).sqrt().max(1.0);
+            let mut bolt = Entity::new(
+                self.alloc_id(),
+                EntityKind::FriendlySummonerFireball,
+                sx,
+                sy,
+            );
+            bolt.vx = dx / len * SUMMONER_FIREBALL_SPEED;
+            bolt.vy = dy / len * SUMMONER_FIREBALL_SPEED;
+            bolt.attack_cd = SUMMONER_FIREBALL_LIFETIME; // reused as the airborne life timer
+            bolt
+        };
+        self.entities(dim).lock().insert(bolt.clone());
+        self.broadcast_dim(dim, ServerMessage::EntitySpawn { entity: bolt });
+    }
+
+    /// Loose the sunburst spell: a burst of sunlight centered on the caster that
+    /// **instantly slays every creature that [burns in daylight](burns_in_daylight)**
+    /// — zombies, skeletons, dark knights, necromancers and their skulls — within
+    /// [`SUNBURST_RADIUS`]. It works at any hour and in any dimension (the burst
+    /// supplies its own sunlight), but spares the caster's own friendly summons and
+    /// everything that doesn't fear the sun. Mana is already charged.
+    fn cast_sunburst(&self, id: EntityId, dim: Dimension) {
+        // The caster's center, to measure the blast radius from.
+        let Some((pcx, pcy)) = ({
+            let entities = self.entities(dim).lock();
+            entities.get(id).map(|p| {
+                let (pw, ph) = p.size();
+                (p.x + pw * 0.5, p.y + ph * 0.5)
+            })
+        }) else {
+            return;
+        };
+        let r2 = SUNBURST_RADIUS * SUNBURST_RADIUS;
+        let targets: Vec<EntityId> = {
+            let entities = self.entities(dim).lock();
+            entities
+                .values()
+                .filter(|e| burns_in_daylight(&e.kind))
+                .filter(|e| {
+                    let (w, h) = e.size();
+                    let ex = e.x + w * 0.5;
+                    let ey = e.y + h * 0.5;
+                    (ex - pcx).powi(2) + (ey - pcy).powi(2) <= r2
+                })
+                .map(|e| e.id)
+                .collect()
+        };
+        if targets.is_empty() {
+            return;
+        }
+        let mut msgs = Vec::new();
+        {
+            let mut entities = self.entities(dim).lock();
+            for tid in targets {
+                // A killing blow — far above any creature's health, but well clear
+                // of `i32::MAX` so the damage subtraction can't overflow. The respawn
+                // arg is unused for these non-player foes.
+                let (m, _) = apply_damage(
+                    &mut entities,
+                    tid,
+                    1_000_000,
+                    (0.0, 0.0),
+                    dim,
+                    (dim, 0.0, 0.0),
+                );
+                msgs.extend(m);
+            }
+        }
+        for m in msgs {
+            self.broadcast_dim(dim, m);
+        }
+    }
+
     /// Enact a death respawn returned by [`apply_damage`]: a same-dimension respawn
     /// just teleports the avatar (already repositioned server-side) and drops a
     /// death marker; a cross-dimension one routes through [`enter_dimension`].
@@ -3018,6 +3282,51 @@ fn leaf_supported(world: &mut ServerWorld, x: i32, y: i32) -> bool {
     false
 }
 
+/// The most mana a player can bank at once. Mana over this is wasted (a kill never
+/// pushes it past the cap). Shared with the client only as the `max` in a
+/// [`ServerMessage::Mana`] so its bar knows its denominator.
+const MANA_MAX: i32 = 100;
+
+/// How much mana slaying a creature of `kind` rewards the killer. Tougher and rarer
+/// monsters give more; peaceable animals and companions give none (mana is won by
+/// fighting *monsters*). A non-hostile kind always returns `0`.
+fn creature_mana(kind: &EntityKind) -> i32 {
+    match kind {
+        EntityKind::Slime => 2,
+        EntityKind::Spider => 3,
+        EntityKind::Snake => 4,
+        EntityKind::Skeleton => 5,
+        EntityKind::Zombie => 7,
+        EntityKind::AshTwister => 6,
+        EntityKind::CharredSkeleton => 9,
+        EntityKind::Demon => 9,
+        EntityKind::EnchantedDemon => 12,
+        EntityKind::Necromancer => 11,
+        EntityKind::OrcMage => 11,
+        EntityKind::Orc => 13,
+        EntityKind::Skull => 1,
+        EntityKind::DarkKnight => 16,
+        EntityKind::Dragon => 60,
+        EntityKind::DemonKing => 100,
+        // Animals, companions, projectiles, items, players: no mana.
+        _ => 0,
+    }
+}
+
+/// The loot a slain [`EntityKind::Necromancer`] spills. Nothing most kills, but
+/// *rarely* it yields its [`crate::block::SUMMONER_SPELL`] spellbook — the seed of
+/// the world's magic system and (for now) its only source. `seed` (the victim's
+/// entity id) varies the roll from kill to kill without needing a live rng handle at
+/// the spill site, mirroring [`dark_knight_loot`].
+fn necromancer_loot(seed: u32) -> Vec<(BlockId, u32)> {
+    let h = seed.wrapping_mul(2_654_435_761) ^ (seed >> 15);
+    if h % 100 < NECROMANCER_SPELLBOOK_DROP_PERCENT {
+        vec![(crate::block::SUMMONER_SPELL, 1)]
+    } else {
+        Vec::new()
+    }
+}
+
 /// Items a slain creature of `kind` drops, as `(item, count)` pairs. Animals
 /// (chickens, goats) drop raw meat; everything else drops nothing.
 fn creature_loot(kind: &EntityKind) -> &'static [(BlockId, u32)] {
@@ -3073,6 +3382,18 @@ fn demon_king_loot() -> Vec<Slot> {
     // The king's own armor: a full suit of tungsten at fresh durability (use `tool`,
     // not `stack`, so it arrives undamaged), the spoils of the final fight.
     slots[6] = tool(crate::block::TUNGSTEN_ARMOR);
+    // The restore spellbook: the king's deepest secret — the magic to turn its own
+    // brutes and shades into loyal knights and mages.
+    slots[7] = Some((crate::block::RESTORE_SPELL, 1u32, 0u16));
+    slots
+}
+
+/// The contents of the loot chest a ruin generates with: its prize is the
+/// [sunburst spellbook](crate::block::SUNBURST_SPELL). Returned as a
+/// [`CHEST_SLOTS`]-long slot list ready to drop into [`Shared::chest_store`].
+fn ruin_chest_loot() -> Vec<Slot> {
+    let mut slots = vec![None; CHEST_SLOTS];
+    slots[0] = Some((crate::block::SUNBURST_SPELL, 1u32, 0u16));
     slots
 }
 
@@ -3410,6 +3731,7 @@ fn build_endpoint(
         saved_players: Mutex::new(saved_players),
         accounts: Mutex::new(accounts),
         inventories: Mutex::new(HashMap::new()),
+        mana: Mutex::new(HashMap::new()),
         respawn_points: Mutex::new(HashMap::new()),
         waypoints: Mutex::new(HashMap::new()),
         campfires: Mutex::new(campfires),
@@ -3565,41 +3887,76 @@ fn maybe_spawn_in_chunk(shared: &Shared, cx: i32, cy: i32) {
     }
 }
 
-/// Spawn the creatures embedded in a worldgen structure when its overworld chunk
-/// first comes into existence — but only once per structure, ever. The root
-/// column is recorded in [`Shared::spawned_structure_roots`] (persisted), so a
-/// re-streamed chunk or a reloaded world never duplicates them.
-fn maybe_spawn_structure_entities(shared: &Shared, cx: i32, cy: i32) {
-    let candidates = {
+/// Realize a worldgen structure when its overworld chunk first comes into
+/// existence — but only once per structure, ever. This both **spawns the creatures**
+/// the structure embeds *and* **drops its loot chest** (a ruin's holds the
+/// [sunburst spellbook](crate::block::SUNBURST_SPELL)) onto the structure's floor.
+/// The root column is recorded in [`Shared::spawned_structure_roots`] (persisted),
+/// so a re-streamed chunk or a reloaded world never duplicates them.
+fn maybe_realize_structures(shared: &Shared, cx: i32, cy: i32) {
+    let (roots, entities, chest_off) = {
         let world = shared.world(Dimension::Overworld).lock();
-        world.generator.structure_entities_in_chunk(cx, cy)
+        (
+            world.generator.structure_roots_in_chunk(cx, cy),
+            world.generator.structure_entities_in_chunk(cx, cy),
+            world.generator.structure_chest_offset(),
+        )
     };
-    if candidates.is_empty() {
+    if roots.is_empty() {
         return;
     }
 
+    // Realize each root not yet done: spawn its creatures and remember it so we can
+    // drop its loot chest below (after releasing the entities lock).
     let mut spawned = Vec::new();
+    let mut newly_done: Vec<(i32, i32)> = Vec::new(); // (root_x, top_row)
     {
         let mut done = shared.spawned_structure_roots.lock();
-        let mut entities = shared.entities(Dimension::Overworld).lock();
-        for (x, y, root_x, kind) in candidates {
-            // `contains` (not `insert`) here so every creature of a not-yet-done
-            // root spawns; the root is marked done after the loop.
+        let mut ents = shared.entities(Dimension::Overworld).lock();
+        for &(root_x, top) in &roots {
             if done.contains(&root_x) {
                 continue;
             }
-            let id = shared.alloc_id();
-            let entity = Entity::new(id, kind, x, y);
-            entities.insert(entity.clone());
-            spawned.push((root_x, entity));
-        }
-        for (root_x, _) in &spawned {
-            done.insert(*root_x);
+            for (x, y, _, kind) in entities.iter().filter(|(.., rx, _)| *rx == root_x) {
+                let id = shared.alloc_id();
+                let entity = Entity::new(id, kind.clone(), *x, *y);
+                ents.insert(entity.clone());
+                spawned.push(entity);
+            }
+            done.insert(root_x);
+            newly_done.push((root_x, top));
         }
     }
 
-    for (_, entity) in spawned {
+    for entity in spawned {
         shared.broadcast_dim(Dimension::Overworld, ServerMessage::EntitySpawn { entity });
+    }
+
+    // Drop each freshly-realized structure's loot chest onto its floor.
+    if let Some((odx, ody)) = chest_off {
+        for (root_x, top) in newly_done {
+            let (cell_x, cell_y) = (root_x + odx, top + ody);
+            let placed =
+                shared
+                    .world(Dimension::Overworld)
+                    .lock()
+                    .set(cell_x, cell_y, crate::block::CHEST);
+            if placed {
+                shared
+                    .chest_store
+                    .lock()
+                    .insert((Dimension::Overworld, cell_x, cell_y), ruin_chest_loot());
+                shared.broadcast_dim(
+                    Dimension::Overworld,
+                    ServerMessage::BlockUpdate {
+                        dim: Dimension::Overworld,
+                        x: cell_x,
+                        y: cell_y,
+                        block: crate::block::CHEST,
+                    },
+                );
+            }
+        }
     }
 }
 
@@ -4758,6 +5115,7 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
                 !e.kind.is_player()
                     && !e.kind.is_pet()
                     && !e.kind.is_knight()
+                    && !e.kind.is_mage()
                     && !matches!(e.kind, EntityKind::DemonKing)
                     && !(dim == Dimension::Arena && matches!(e.kind, EntityKind::OrcMage))
             })
@@ -4877,9 +5235,26 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         .filter(|e| matches!(e.kind, EntityKind::SummonerFireball))
         .map(|e| e.id)
         .collect();
+    // The player-summoned counterparts: a friendly fireball that bursts into a
+    // friendly skull, and the skull itself (which hunts monsters, not players).
+    let friendly_fireball_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::FriendlySummonerFireball))
+        .map(|e| e.id)
+        .collect();
+    let friendly_skull_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::FriendlySkull))
+        .map(|e| e.id)
+        .collect();
     let knight_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::Knight { .. }))
+        .map(|e| e.id)
+        .collect();
+    let mage_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Mage { .. }))
         .map(|e| e.id)
         .collect();
     let bone_ids: Vec<EntityId> = entities
@@ -5826,6 +6201,200 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         }
     }
 
+    // Mages: the spellcasters the restore spell conjures. A recruited mage shadows
+    // its owner (teleporting over when they stray, like a knight); a wild one ambles
+    // its home patch. On a measured cadence it looses one of the world's spells at
+    // whatever's nearby — restoring a foe it can turn, bursting daylight-burning
+    // undead, or summoning a friendly skull against any other monster. A mage it
+    // restores is recruited to *its* owner (so a recruited mage builds its master a
+    // retinue); a wild mage's restorations stay wild. Nothing attacks a mage, so
+    // there is no combat to resolve here. Snapshots of restorable foes and
+    // daylight-burners are taken now so a mage can choose a spell without re-borrowing
+    // the entities map mid-loop.
+    let restorable_boxes: Vec<(EntityId, f32, f32, f32, f32)> = entities
+        .values()
+        .filter(|e| is_restorable(&e.kind))
+        .map(|e| {
+            let (w, h) = e.size();
+            (e.id, e.x, e.y, w, h)
+        })
+        .collect();
+    let burner_boxes: Vec<(EntityId, f32, f32, f32, f32)> = entities
+        .values()
+        .filter(|e| burns_in_daylight(&e.kind))
+        .map(|e| {
+            let (w, h) = e.size();
+            (e.id, e.x, e.y, w, h)
+        })
+        .collect();
+    // Spells a mage loosed this tick, applied after the loop so we never hold two
+    // mutable entity borrows at once.
+    let mut mage_restores: Vec<(EntityId, Option<String>)> = Vec::new();
+    let mut mage_sunbursts: Vec<(f32, f32)> = Vec::new(); // blast centers
+    let mut mage_bolts: Vec<(f32, f32, f32, f32)> = Vec::new(); // friendly summoner bolts
+    for id in mage_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        e.lunge = (e.lunge - TICK_DT).max(0.0);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+        let owner_name = e.kind.owner().map(str::to_owned);
+
+        // Resolve a recruited mage's owner (by name) to a live player in this
+        // dimension; a wild mage (or one whose owner is away) has none.
+        let owner_pos: Option<(f32, f32)> = owner_name.as_deref().and_then(|name| {
+            named_players
+                .iter()
+                .find(|(n, ..)| n == name)
+                .map(|&(_, _, ox, oy)| (ox, oy))
+        });
+
+        // Recruited & owner present and strayed too far: snap to them, like a knight.
+        if let Some((ox, oy)) = owner_pos {
+            let ocx = ox + PLAYER_SIZE.0 * 0.5;
+            let ocy = oy + PLAYER_SIZE.1 * 0.5;
+            if (ocx - scx).powi(2) + (ocy - scy).powi(2) > MAGE_TELEPORT_DIST * MAGE_TELEPORT_DIST {
+                e.x = ox;
+                e.y = oy;
+                e.vx = 0.0;
+                e.vy = 0.0;
+                e.home_x = Some(ox);
+                broadcasts.push(ServerMessage::EntityMoved {
+                    id,
+                    x: ox,
+                    y: oy,
+                    vx: 0.0,
+                    vy: 0.0,
+                });
+                continue;
+            }
+        }
+
+        // Loose a spell if the cast cooldown is up and something nearby calls for one.
+        if e.attack_cd <= 0.0 {
+            // 1. A foe it can restore (turn to its side) takes priority.
+            let restore_target = nearest_of(&restorable_boxes, scx, scy, MAGE_CAST_RANGE);
+            // 2. Else a cluster of daylight-burning undead to incinerate.
+            let burner_target = nearest_of(&burner_boxes, scx, scy, SUNBURST_RADIUS);
+            // 3. Else any other monster to fling a friendly skull at.
+            let hostile_target = nearest_of(&hostiles, scx, scy, MAGE_CAST_RANGE);
+            let cast =
+                restore_target.is_some() || burner_target.is_some() || hostile_target.is_some();
+            if cast {
+                if let Some((tid, ..)) = restore_target {
+                    mage_restores.push((tid, owner_name.clone()));
+                } else if burner_target.is_some() {
+                    mage_sunbursts.push((scx, scy));
+                } else if let Some((_, hx, hy, hw, hh)) = hostile_target {
+                    let (fw, fh) = crate::entity::FRIENDLY_SUMMONER_FIREBALL_SIZE;
+                    let sx = scx - fw * 0.5;
+                    let sy = e.y + h * 0.3 - fh * 0.5;
+                    let tx = hx + hw * 0.5;
+                    let ty = hy + hh * 0.5;
+                    let dx = tx - (sx + fw * 0.5);
+                    let dy = ty - (sy + fh * 0.5);
+                    let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                    mage_bolts.push((
+                        sx,
+                        sy,
+                        dx / len * SUMMONER_FIREBALL_SPEED,
+                        dy / len * SUMMONER_FIREBALL_SPEED,
+                    ));
+                }
+                e.attack_cd = MAGE_CAST_INTERVAL;
+                e.lunge = crate::entity::MAGE_CAST_TIME;
+                e.vx = 0.0;
+                broadcasts.push(ServerMessage::EntityLunging { id });
+                broadcasts.push(ServerMessage::EntityMoved {
+                    id,
+                    x: e.x,
+                    y: e.y,
+                    vx: 0.0,
+                    vy: e.vy,
+                });
+                continue;
+            }
+        }
+
+        // No spell to cast: a recruited mage heels to its owner; a wild one (or one
+        // whose owner is away) ambles its home patch.
+        let dir = match owner_pos {
+            Some((ox, oy)) => {
+                let ocx = ox + PLAYER_SIZE.0 * 0.5;
+                let owner_gap = aabb_gap(e.x, e.y, w, h, ox, oy, PLAYER_SIZE.0, PLAYER_SIZE.1);
+                if owner_gap <= MAGE_FOLLOW_GAP {
+                    0.0
+                } else if ocx < scx {
+                    -1.0
+                } else {
+                    1.0
+                }
+            }
+            None => {
+                let home = *e.home_x.get_or_insert(e.x);
+                wander_dir(scx, e.vx, home)
+            }
+        };
+        let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, MAGE_SPEED, true);
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: m.vx,
+            vy: m.vy,
+        });
+    }
+    // Apply the mage casts queued above (the entities lock is free of the per-mage
+    // borrow now). Restores turn a foe (recruiting it to the mage's owner, if any);
+    // sunbursts wipe daylight-burners around the mage; bolts spawn friendly skulls.
+    for (tid, owner) in mage_restores {
+        let new_kind = entities
+            .get(tid)
+            .and_then(|e| restored_kind(&e.kind, &owner));
+        if let Some(nk) = new_kind {
+            broadcasts.extend(transform_entity(&mut entities, tid, nk));
+        }
+    }
+    for (bx, by) in mage_sunbursts {
+        let r2 = SUNBURST_RADIUS * SUNBURST_RADIUS;
+        let targets: Vec<EntityId> = entities
+            .values()
+            .filter(|e| burns_in_daylight(&e.kind))
+            .filter(|e| {
+                let (w, h) = e.size();
+                (e.x + w * 0.5 - bx).powi(2) + (e.y + h * 0.5 - by).powi(2) <= r2
+            })
+            .map(|e| e.id)
+            .collect();
+        for tid in targets {
+            let (msgs, _) = apply_damage(
+                &mut entities,
+                tid,
+                1_000_000,
+                (0.0, 0.0),
+                dim,
+                (dim, 0.0, 0.0),
+            );
+            broadcasts.extend(msgs);
+        }
+    }
+    for (x, y, vx, vy) in mage_bolts {
+        let fid = shared.alloc_id();
+        let mut bolt = Entity::new(fid, EntityKind::FriendlySummonerFireball, x, y);
+        bolt.vx = vx;
+        bolt.vy = vy;
+        bolt.attack_cd = SUMMONER_FIREBALL_LIFETIME; // reused as the airborne life timer
+        entities.insert(bolt.clone());
+        broadcasts.push(ServerMessage::EntitySpawn { entity: bolt });
+    }
+
     // Zombies: slow, relentless night hunters that hit hard. When day breaks
     // they crumble where they stand, playing a death animation before despawning.
     // Ids whose death animation finished this tick and must be removed below.
@@ -6339,6 +6908,80 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         }
     }
     for id in skull_despawns {
+        entities.remove(id);
+        broadcasts.push(ServerMessage::EntityDespawn { id });
+    }
+
+    // Friendly skulls: a player's summoner spell conjured these to fight on their
+    // behalf. They carom under gravity exactly like a necromancer's skull, but they
+    // steer their hops toward — and gnash at — the nearest *monster* (`hostiles`)
+    // rather than players or knights, and they pay no heed to day or night. Like the
+    // hostile skull they give out after a short life. Being non-hostile, knights and
+    // monsters ignore them entirely.
+    let mut friendly_skull_despawns: Vec<EntityId> = Vec::new();
+    for id in friendly_skull_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+
+        // Run out its short life, then despawn.
+        e.flee = (e.flee - TICK_DT).max(0.0); // `flee` repurposed as the skull's life timer
+        if e.flee <= 0.0 {
+            friendly_skull_despawns.push(id);
+            continue;
+        }
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+        let target = nearest_of(&hostiles, scx, scy, SKULL_AGGRO);
+
+        // Ballistic bounce: gravity pulls it down; it reflects off walls and springs
+        // back up off floors, biasing each hop toward the monster it can see.
+        e.vy = (e.vy + GRAVITY * TICK_DT).min(MAX_FALL);
+        let (nx, hit_x) = move_x(&mut world, e.x, e.y, w, h, e.vx * TICK_DT);
+        if hit_x {
+            e.vx = -e.vx; // ricochet off the wall
+        }
+        let (ny, hit_y) = move_y(&mut world, nx, e.y, w, h, e.vy * TICK_DT);
+        e.x = nx;
+        e.y = ny;
+        if hit_y {
+            if e.vy > 0.0 {
+                // Landed: spring back up and steer this hop toward the monster.
+                e.vy = SKULL_BOUNCE_VELOCITY;
+                e.vx = match target {
+                    Some((_, tx, _, tw, _)) if tx + tw * 0.5 < scx => -SKULL_SPEED,
+                    Some(_) => SKULL_SPEED,
+                    None if e.vx < 0.0 => -SKULL_SPEED,
+                    None => SKULL_SPEED,
+                };
+            } else {
+                e.vy = 0.0; // bonked a ceiling: kill the upward run
+            }
+        }
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: nx,
+            y: ny,
+            vx: e.vx,
+            vy: e.vy,
+        });
+
+        // Gnash the monster on contact, on its own cadence.
+        if let Some((tid, tx, ty, tw, th)) = target {
+            if e.attack_cd <= 0.0 && aabb_gap(nx, ny, w, h, tx, ty, tw, th) <= SKULL_ATTACK_RANGE {
+                e.attack_cd = SKULL_ATTACK_INTERVAL;
+                let kdir = if tx + tw * 0.5 >= nx + w * 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                creature_hits.push((tid, (kdir * KNOCKBACK_X, -KNOCKBACK_Y), SKULL_DAMAGE));
+            }
+        }
+    }
+    for id in friendly_skull_despawns {
         entities.remove(id);
         broadcasts.push(ServerMessage::EntityDespawn { id });
     }
@@ -7674,6 +8317,75 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         broadcasts.push(ServerMessage::EntitySpawn { entity: skull });
     }
 
+    // Friendly summoner fireballs in flight: a player's summoner spell loosed these.
+    // Like the necromancer's bolt they travel in a straight line, but they strike
+    // *monsters* (dealing a touch of damage) rather than players, and where they
+    // burst — on a wall, on a monster, or when their life runs out — they summon a
+    // *friendly* skull that fights for the caster.
+    let mut friendly_fireball_despawns: Vec<EntityId> = Vec::new();
+    // Friendly skulls conjured this tick, as `(x, y, vx_sign)`, spawned after the
+    // loop so we aren't holding a mutable borrow of the bursting fireball.
+    let mut friendly_skull_summons: Vec<(f32, f32, f32)> = Vec::new();
+    for id in friendly_fireball_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+
+        let (nx, hit_x) = move_x(&mut world, e.x, e.y, w, h, e.vx * TICK_DT);
+        let (ny, hit_y) = move_y(&mut world, nx, e.y, w, h, e.vy * TICK_DT);
+        e.x = nx;
+        e.y = ny;
+
+        // Did it directly strike a monster this tick? Deal a little damage and knock.
+        let kx = if e.vx >= 0.0 {
+            KNOCKBACK_X
+        } else {
+            -KNOCKBACK_X
+        };
+        let mut struck = false;
+        for &(tid, tx, ty, tw, th) in &hostiles {
+            if aabb_gap(nx, ny, w, h, tx, ty, tw, th) <= SUMMONER_FIREBALL_HIT_RANGE {
+                creature_hits.push((tid, (kx, -KNOCKBACK_Y), SUMMONER_FIREBALL_DAMAGE));
+                struck = true;
+                break;
+            }
+        }
+
+        // Burst on a wall, on a monster, or when its life runs out: summon a friendly
+        // skull where it died (popping up in its flight direction), then despawn.
+        if hit_x || hit_y || struck || e.attack_cd <= 0.0 {
+            let sign = if e.vx >= 0.0 { 1.0 } else { -1.0 };
+            friendly_skull_summons.push((nx, ny, sign));
+            friendly_fireball_despawns.push(id);
+            continue;
+        }
+
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: nx,
+            y: ny,
+            vx: e.vx,
+            vy: e.vy,
+        });
+    }
+    for id in friendly_fireball_despawns {
+        entities.remove(id);
+        broadcasts.push(ServerMessage::EntityDespawn { id });
+    }
+    // Conjure the friendly skulls summoned this tick, springing up in the bolt's
+    // direction, set to hunt monsters until their short life runs out.
+    for (x, y, sign) in friendly_skull_summons {
+        let sid = shared.alloc_id();
+        let mut skull = Entity::new(sid, EntityKind::FriendlySkull, x, y);
+        skull.vx = sign * SKULL_SPEED;
+        skull.vy = SKULL_BOUNCE_VELOCITY;
+        skull.flee = SKULL_LIFETIME; // `flee` repurposed as the skull's life timer
+        entities.insert(skull.clone());
+        broadcasts.push(ServerMessage::EntitySpawn { entity: skull });
+    }
+
     // Dropped items: fall under gravity, then get collected by any player that
     // is touching them once their pickup delay has elapsed.
     'items: for id in item_ids {
@@ -8073,6 +8785,86 @@ fn is_hostile(kind: &EntityKind) -> bool {
             | EntityKind::DarkKnight
             | EntityKind::Dragon
     )
+}
+
+/// Whether `kind` is a creature that **burns up in daylight** — the night undead
+/// that crumble or wink out at daybreak in the overworld (and roam the always-dark
+/// underworld around the clock). This is exactly the set the [sunburst
+/// spell](crate::block::SUNBURST_SPELL) annihilates. The player's own friendly
+/// summons are *not* included — they are the caster's magic, not creatures of the
+/// night — so a sunburst never wipes your own skulls.
+fn burns_in_daylight(kind: &EntityKind) -> bool {
+    matches!(
+        kind,
+        EntityKind::Zombie
+            | EntityKind::Skeleton
+            | EntityKind::DarkKnight
+            | EntityKind::Necromancer
+            | EntityKind::Skull
+    )
+}
+
+/// What a creature `kind` is **restored** into by the [restore
+/// spell](crate::block::RESTORE_SPELL), or `None` if it cannot be restored. An orc
+/// or a dark knight is turned to a [`EntityKind::Knight`]; an orc mage to a
+/// [`EntityKind::Mage`]; an enchanted demon is calmed back into an ordinary
+/// [`EntityKind::Demon`]. `owner` is stamped onto the resulting knight/mage — the
+/// caster's name (recruiting it) or `None` (leaving it wild); it is ignored for the
+/// ownerless demon.
+fn restored_kind(kind: &EntityKind, owner: &Option<String>) -> Option<EntityKind> {
+    match kind {
+        EntityKind::Orc | EntityKind::DarkKnight => Some(EntityKind::Knight {
+            owner: owner.clone(),
+        }),
+        EntityKind::OrcMage => Some(EntityKind::Mage {
+            owner: owner.clone(),
+        }),
+        EntityKind::EnchantedDemon => Some(EntityKind::Demon),
+        _ => None,
+    }
+}
+
+/// Whether `kind` can be turned by the restore spell (see [`restored_kind`]).
+fn is_restorable(kind: &EntityKind) -> bool {
+    restored_kind(kind, &None).is_some()
+}
+
+/// Transform an existing entity in place into `new_kind`: swap its kind, heal it to
+/// the new kind's full health, and clear the transient combat/mount/animation state
+/// the old kind may have set (a flying enchanted demon becomes a ground-walking
+/// demon; a mounted dark knight becomes an unmounted knight). Returns the messages to
+/// broadcast so every client adopts the new form (a full [`ServerMessage::EntitySpawn`]
+/// resend, plus its fresh health). No-op (empty) if `id` is gone.
+fn transform_entity(
+    entities: &mut Entities,
+    id: EntityId,
+    new_kind: EntityKind,
+) -> Vec<ServerMessage> {
+    let Some(e) = entities.get_mut(id) else {
+        return Vec::new();
+    };
+    let max = new_kind.max_health();
+    e.kind = new_kind;
+    e.health = max;
+    e.max_health = max;
+    e.vx = 0.0;
+    e.vy = 0.0;
+    e.attack_cd = 0.0;
+    e.lunge = 0.0;
+    e.lunge_dir = 0.0;
+    e.dying = 0.0;
+    e.flee = 0.0;
+    e.home_x = None;
+    e.riding = None;
+    e.mount_health = 0;
+    vec![
+        ServerMessage::EntitySpawn { entity: e.clone() },
+        ServerMessage::EntityHealth {
+            id,
+            health: e.health,
+            max_health: e.max_health,
+        },
+    ]
 }
 
 /// Smallest gap (px) between two AABBs; `0.0` when they overlap.
@@ -8670,10 +9462,12 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
         id,
         ServerMessage::EntitySpawn { entity: player },
     );
-    // Start with an empty inventory; a returning player gets theirs restored
-    // below. Either way the owner is told its contents.
+    // Start with an empty inventory and no mana; a returning player gets theirs
+    // restored below. Either way the owner is told its contents.
     shared.inventories.lock().insert(id, Inventory::new());
     shared.send_inventory(id);
+    shared.mana.lock().insert(id, 0);
+    shared.send_mana(id);
     log::info!("player {id} ('{name}') connected");
 
     // Restore any saved state for this name: position, health, inventory, last
@@ -8694,6 +9488,8 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
             }
             shared.inventories.lock().insert(id, sp.inventory.clone());
             shared.send_inventory(id);
+            shared.mana.lock().insert(id, sp.mana.clamp(0, MANA_MAX));
+            shared.send_mana(id);
             shared.waypoints.lock().insert(id, sp.waypoints.clone());
             if sp.dim == Dimension::Overworld {
                 // Teleport the owner's avatar and resync its health. This is a
@@ -8782,7 +9578,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                 maybe_spawn_puppies(&shared, cx, cy);
                                 maybe_spawn_horses(&shared, cx, cy);
                                 maybe_spawn_knights(&shared, cx, cy);
-                                maybe_spawn_structure_entities(&shared, cx, cy);
+                                maybe_realize_structures(&shared, cx, cy);
                             }
                             Dimension::Underworld => {
                                 maybe_spawn_charred_skeletons(&shared, cx, cy);
@@ -9221,6 +10017,9 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 ClientMessage::UseArenaKey { slot } => {
                     shared.use_arena_key(id, slot as usize);
                 }
+                ClientMessage::CastSpell { slot, tx, ty } => {
+                    shared.cast_spell(id, slot as usize, tx, ty);
+                }
                 ClientMessage::ToggleDoor { x, y } => {
                     let dim = shared.dim_of(id);
                     // Gated by the player's melee reach, the same limit governing
@@ -9491,6 +10290,17 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         }
                         continue;
                     }
+                    // Mages are sacrosanct too: nothing harms a mage — it can't be
+                    // recruited by hand (only the restore spell makes one), so a swing
+                    // at one simply does nothing.
+                    let is_mage = shared
+                        .entities(dim)
+                        .lock()
+                        .get(target)
+                        .is_some_and(|e| e.kind.is_mage());
+                    if is_mage {
+                        continue;
+                    }
                     // Validate reach and, if good, compute the knockback shoving
                     // the target away from the attacker.
                     let knockback = {
@@ -9552,6 +10362,12 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         if let Some((kind, vx, vy)) = victim
                             && shared.entities(dim).lock().get(target).is_none()
                         {
+                            // Slaying a monster banks mana for the killer (tougher
+                            // foes are worth more; animals and companions nothing).
+                            let reward = creature_mana(&kind);
+                            if reward > 0 {
+                                shared.add_mana(id, reward);
+                            }
                             if matches!(kind, EntityKind::DemonKing) {
                                 spawn_boss_chest(&shared, dim, vx);
                                 shared.demon_king_alive.store(false, Ordering::SeqCst);
@@ -9559,8 +10375,13 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             } else {
                                 let cx = (vx / TILE_SIZE) as i32;
                                 let cy = (vy / TILE_SIZE) as i32;
+                                // A dark knight spills a tungsten haul; a necromancer
+                                // rarely yields its summoner spellbook; everything else
+                                // drops whatever its kind carries (animals: raw meat).
                                 let loot = if matches!(kind, EntityKind::DarkKnight) {
                                     dark_knight_loot(target)
+                                } else if matches!(kind, EntityKind::Necromancer) {
+                                    necromancer_loot(target)
                                 } else {
                                     creature_loot(&kind).to_vec()
                                 };
@@ -9645,9 +10466,10 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         let dim = shared.dim_of(id);
                         let eid = shared.alloc_id();
                         let mut entity = Entity::new(eid, kind, x, y);
-                        // A skull rides its life on the `flee` timer; a creator-spawned
-                        // one needs it primed or it would wink out on its first tick.
-                        if matches!(entity.kind, EntityKind::Skull) {
+                        // A skull (hostile or friendly) rides its life on the `flee`
+                        // timer; a creator-spawned one needs it primed or it would
+                        // wink out on its first tick.
+                        if matches!(entity.kind, EntityKind::Skull | EntityKind::FriendlySkull) {
                             entity.flee = SKULL_LIFETIME;
                         }
                         shared.entities(dim).lock().insert(entity.clone());
@@ -9728,6 +10550,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
     shared.chest_auth.lock().remove(&id);
     let removed = shared.entities(dim).lock().remove(id);
     let inventory = shared.inventories.lock().remove(&id).unwrap_or_default();
+    let mana = shared.mana.lock().remove(&id).unwrap_or(0);
     let respawn = shared.respawn_points.lock().remove(&id);
     let waypoints = shared.waypoints.lock().remove(&id).unwrap_or_default();
     if let Some(Entity {
@@ -9750,6 +10573,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 dim,
                 respawn,
                 waypoints,
+                mana,
             },
         );
     }
@@ -9788,4 +10612,72 @@ pub fn host_bind(port: u16) -> SocketAddr {
 /// Loopback bind with an ephemeral port, for the embedded singleplayer server.
 pub fn local_bind() -> SocketAddr {
     SocketAddr::from((Ipv4Addr::LOCALHOST, 0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_turns_foes_into_allies() {
+        // An orc and a dark knight both become a knight recruited to the caster.
+        let me = Some("ada".to_string());
+        assert_eq!(
+            restored_kind(&EntityKind::Orc, &me),
+            Some(EntityKind::Knight { owner: me.clone() })
+        );
+        assert_eq!(
+            restored_kind(&EntityKind::DarkKnight, &me),
+            Some(EntityKind::Knight { owner: me.clone() })
+        );
+        // An orc mage becomes a mage recruited to the caster.
+        assert_eq!(
+            restored_kind(&EntityKind::OrcMage, &me),
+            Some(EntityKind::Mage { owner: me.clone() })
+        );
+        // An enchanted demon is calmed back into an ordinary, ownerless demon.
+        assert_eq!(
+            restored_kind(&EntityKind::EnchantedDemon, &me),
+            Some(EntityKind::Demon)
+        );
+        // A wild caster (None owner) leaves the restored knight/mage wild.
+        assert_eq!(
+            restored_kind(&EntityKind::Orc, &None),
+            Some(EntityKind::Knight { owner: None })
+        );
+        // Everything else is beyond the spell's reach.
+        for kind in [EntityKind::Zombie, EntityKind::Demon, EntityKind::Slime] {
+            assert_eq!(restored_kind(&kind, &me), None);
+            assert!(!is_restorable(&kind));
+        }
+        // The restorable set is exactly what `restored_kind` accepts.
+        for kind in [
+            EntityKind::Orc,
+            EntityKind::DarkKnight,
+            EntityKind::OrcMage,
+            EntityKind::EnchantedDemon,
+        ] {
+            assert!(is_restorable(&kind));
+        }
+    }
+
+    #[test]
+    fn transform_swaps_kind_and_heals_to_new_full() {
+        let mut entities = Entities::new();
+        // An enchanted demon (flying, mounted-state irrelevant) restored to a demon.
+        let mut ed = Entity::new(1, EntityKind::EnchantedDemon, 0.0, 0.0);
+        ed.health = 3;
+        ed.lunge = 0.5;
+        entities.insert(ed);
+        let msgs = transform_entity(&mut entities, 1, EntityKind::Demon);
+        let e = entities.get(1).unwrap();
+        assert!(matches!(e.kind, EntityKind::Demon));
+        assert_eq!(e.health, EntityKind::Demon.max_health());
+        assert_eq!(e.max_health, EntityKind::Demon.max_health());
+        assert_eq!(e.lunge, 0.0);
+        // It broadcasts a full respawn plus its fresh health.
+        assert_eq!(msgs.len(), 2);
+        // A missing id is a no-op.
+        assert!(transform_entity(&mut entities, 999, EntityKind::Demon).is_empty());
+    }
 }

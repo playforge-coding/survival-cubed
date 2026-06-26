@@ -165,12 +165,81 @@ impl Structure {
             })
         })
     }
+
+    /// A sensible cell to rest a loot chest in, as a `(dx, dy)` offset from the
+    /// structure's top-left: an interior **air** cell sitting directly on a solid
+    /// block (a floor to stand the chest on), preferring the lowest such cell and,
+    /// among ties, the one nearest the horizontal center. `None` if the structure
+    /// has no floored interior cell (e.g. a solid blob with no room inside). Used by
+    /// the server to drop a ruin's loot chest onto its floor when it's realized.
+    pub fn chest_offset(&self) -> Option<(i32, i32)> {
+        let center = (self.width as f32 - 1.0) / 2.0;
+        let mut best: Option<(i32, i32, f32)> = None; // (dx, dy, score); lower score wins
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if self.get(x, y) != AIR {
+                    continue;
+                }
+                // Needs a solid block directly below to rest on (a floor).
+                if y + 1 >= self.height || self.get(x, y + 1) == AIR {
+                    continue;
+                }
+                // Prefer lower rows (larger y), then nearer the center.
+                let score = -(y as f32) * 100.0 + (x as f32 - center).abs();
+                if best.is_none_or(|(_, _, b)| score < b) {
+                    best = Some((x as i32, y as i32, score));
+                }
+            }
+        }
+        best.map(|(dx, dy, _)| (dx, dy))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::block::{AIR, STONE};
+
+    #[test]
+    fn chest_offset_picks_a_floored_interior_cell() {
+        // A little 5x5 hut like the embedded ruin: walls of stone, a 3x3 air
+        // interior, and a doorway gap in the bottom row.
+        //   .###.
+        //   #...#
+        //   #...#
+        //   #...#
+        //   ##.##
+        let s = Structure {
+            width: 5,
+            height: 5,
+            #[rustfmt::skip]
+            blocks: vec![
+                AIR,   STONE, STONE, STONE, AIR,
+                STONE, AIR,   AIR,   AIR,   STONE,
+                STONE, AIR,   AIR,   AIR,   STONE,
+                STONE, AIR,   AIR,   AIR,   STONE,
+                STONE, STONE, AIR,   STONE, STONE,
+            ],
+            entities: vec![],
+        };
+        // The chosen cell is an interior air cell resting on a solid floor: row 3
+        // (the lowest interior row), at a corner column over stone (the center
+        // column sits over the doorway gap, so it isn't floored).
+        let (dx, dy) = s.chest_offset().expect("hut has a floored interior cell");
+        assert_eq!(s.get(dx as u16, dy as u16), AIR);
+        assert_ne!(s.get(dx as u16, dy as u16 + 1), AIR, "must rest on a floor");
+        assert_eq!(dy, 3);
+        assert!(dx == 1 || dx == 3);
+
+        // A solid blob with no room inside has nowhere to stand a chest.
+        let solid = Structure {
+            width: 2,
+            height: 2,
+            blocks: vec![STONE, STONE, STONE, STONE],
+            entities: vec![],
+        };
+        assert_eq!(solid.chest_offset(), None);
+    }
 
     #[test]
     fn round_trips_blocks_and_entities() {

@@ -130,6 +130,9 @@ blocks!(
     "iron_armor",
     "tungsten_armor",
     "dragon_scale",
+    "summoner_spell",
+    "sunburst_spell",
+    "restore_spell",
 );
 
 sprites!(
@@ -168,6 +171,9 @@ sprites!(
     "enchanted_demon" => [0, 1, 2, 3, 4],
     "magic_fireball" => [0],
     "necromancer" => [0, 1, 2, 3],
+    // The mage the restore spell conjures: a walk cycle plus a one-shot cast pose.
+    "mage" => [0, 1, 2, 3],
+    "mage/cast" => [0],
     "skull" => [0],
     "summoner_fireball" => [0],
     "knight" => [0, 1, 2, 3, 4],

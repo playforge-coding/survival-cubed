@@ -125,7 +125,7 @@ pub enum SlotRef {
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 19;
+pub const PROTOCOL_VERSION: u32 = 21;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -328,6 +328,14 @@ pub enum ClientMessage {
     /// holds enough [`gold`](crate::block::GOLD_INGOT), then consumes the gold,
     /// converts the block, and records the password. The chest keeps its contents.
     ReinforceChest { x: i32, y: i32, password: String },
+    /// Cast the spellbook held in hotbar `slot` toward world pixel `(tx, ty)` (the
+    /// player's cursor). The server checks the slot really holds a
+    /// [`spellbook`](crate::block::is_spellbook) and that the player has at least its
+    /// [`mana cost`](crate::block::spell_mana_cost); on success it spends that mana
+    /// and looses the spell's effect (for the summoner spell, a friendly summoner
+    /// fireball aimed at the cursor). The book is reusable and is never consumed. A
+    /// no-op (with a mana resync) if the slot doesn't hold a spellbook or mana is short.
+    CastSpell { slot: u8, tx: f32, ty: f32 },
 }
 
 /// Sent from server to client over the single bidirectional stream.
@@ -446,6 +454,11 @@ pub enum ServerMessage {
     /// first, then storage). Sent on join and after any change (pickup,
     /// placement, slot move). Only ever sent to the inventory's owner.
     Inventory { slots: Vec<Slot> },
+    /// The owning player's current `mana` and its `max`. Mana is the magic resource
+    /// won by slaying monsters and spent casting spellbooks (see
+    /// [`crate::block::SUMMONER_SPELL`]). Sent on join and after any change (a kill
+    /// reward or a cast). Only ever sent to the player it belongs to.
+    Mana { mana: i32, max: i32 },
     /// A chat line to display, attributed to player `from`. Broadcast to every
     /// client (including the original sender, so they see their own message).
     /// Admin command feedback and ban announcements arrive on this same channel,

@@ -81,6 +81,12 @@ pub struct SavedPlayer {
     /// at runtime and not stored here.
     #[serde(default)]
     pub waypoints: Vec<Waypoint>,
+    /// The player's banked mana — the magic resource won by slaying monsters and
+    /// spent casting spellbooks (see [`crate::block::SUMMONER_SPELL`]). Persisted so
+    /// a hoard of mana survives a disconnect or restart. Defaults to `0` for saves
+    /// (and brand-new players) that predate the magic system.
+    #[serde(default)]
+    pub mana: i32,
 }
 
 /// Top-level world metadata stored in `world.dat`.
@@ -451,6 +457,7 @@ mod tests {
                     y: 200.0,
                     color: [0.5, 0.25, 0.75],
                 }],
+                mana: 40,
             }],
             campfires: vec![
                 (Dimension::Overworld, 3, -5, 12.5),
