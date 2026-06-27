@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use parking_lot::Mutex;
 use quinn::Endpoint;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
@@ -3663,20 +3663,31 @@ async fn setup(
     }
 }
 
-/// File names for the persisted TLS identity, stored alongside the world.
+/// File names for the persisted TLS identity, stored per-machine.
 const CERT_FILE: &str = "cert.der";
 const KEY_FILE: &str = "key.der";
 
-/// Load the server's certificate and private key from `save_dir`, generating
-/// and persisting a fresh self-signed pair on first run (or if the saved pair
-/// is missing/unreadable). Persisting the pair keeps the certificate
-/// fingerprint stable across restarts, so clients that pinned it via TOFU don't
-/// see a (false) "certificate changed" alarm.
-fn load_or_create_identity(
-    save_dir: &Path,
-) -> Result<(CertificateDer<'static>, PrivatePkcs8KeyDer<'static>)> {
-    let cert_path = save_dir.join(CERT_FILE);
-    let key_path = save_dir.join(KEY_FILE);
+/// Directory holding the per-machine TLS identity, under the user config dir
+/// (alongside `known_hosts`/`credentials`). Keeping the identity per-machine
+/// rather than per-world means the certificate fingerprint stays stable across
+/// every world this machine hosts, so inviting someone into a freshly created
+/// world doesn't trip a (false) "certificate changed" rejection on clients that
+/// pinned the fingerprint via TOFU.
+fn identity_dir() -> Result<PathBuf> {
+    let mut p = dirs::config_dir().ok_or_else(|| anyhow!("no config dir"))?;
+    p.push("survival-cubed");
+    Ok(p)
+}
+
+/// Load the server's certificate and private key, generating and persisting a
+/// fresh self-signed pair on first run (or if the saved pair is
+/// missing/unreadable). The pair is stored per-machine so the certificate
+/// fingerprint is stable across restarts and across worlds, so clients that
+/// pinned it via TOFU don't see a (false) "certificate changed" alarm.
+fn load_or_create_identity() -> Result<(CertificateDer<'static>, PrivatePkcs8KeyDer<'static>)> {
+    let dir = identity_dir()?;
+    let cert_path = dir.join(CERT_FILE);
+    let key_path = dir.join(KEY_FILE);
 
     // Reuse the saved pair when both files are present and readable.
     if let (Ok(cert), Ok(key)) = (std::fs::read(&cert_path), std::fs::read(&key_path)) {
@@ -3689,8 +3700,7 @@ fn load_or_create_identity(
     let cert_der = cert.cert.der().to_vec();
     let key_der = cert.signing_key.serialize_der();
 
-    std::fs::create_dir_all(save_dir)
-        .with_context(|| format!("creating {}", save_dir.display()))?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     write_private_key(&key_path, &key_der)?;
     std::fs::write(&cert_path, &cert_der)
         .with_context(|| format!("writing {}", cert_path.display()))?;
@@ -3718,9 +3728,9 @@ fn build_endpoint(
     save_dir: PathBuf,
     creator_world: bool,
 ) -> Result<(Endpoint, [u8; 32], Arc<Shared>)> {
-    // Self-signed certificate for "localhost", persisted so the fingerprint is
-    // stable across restarts.
-    let (cert_der, key_der) = load_or_create_identity(&save_dir)?;
+    // Self-signed certificate for "localhost", persisted per-machine so the
+    // fingerprint is stable across restarts and across worlds.
+    let (cert_der, key_der) = load_or_create_identity()?;
     let fp = fingerprint(cert_der.as_ref());
 
     let mut crypto = rustls::ServerConfig::builder()

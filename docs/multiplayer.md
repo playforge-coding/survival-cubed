@@ -40,7 +40,8 @@ your router/firewall and share your public address as `host:port`.
 
 The first time you connect to a server, your client trusts and remembers its
 self-signed certificate (trust-on-first-use); the fingerprint stays stable
-across server restarts, so you'll be warned if it ever changes.
+across server restarts — and across every world you host — so you'll be warned
+if it ever changes.
 
 ## Accounts
 
@@ -91,8 +92,9 @@ line), read on startup and rewritten whenever you ban or unban.
 
 - **Transport:** QUIC over UDP, encrypted with TLS 1.3 — lower latency than TCP
   and secure by default.
-- **Certificates:** each server has a stable self-signed certificate; clients
-  pin it on first connection or auto-trust it via LAN discovery.
+- **Certificates:** each machine has a single stable self-signed certificate,
+  stored in the user config dir and shared by every world it hosts; clients pin
+  it on first connection or auto-trust it via LAN discovery.
 - **Authority:** the server simulates the world, creatures, health, damage, and
   crafting, so results stay consistent for everyone. Your own movement is driven
   by your client and synced out to others.
