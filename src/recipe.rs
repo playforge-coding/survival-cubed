@@ -10,11 +10,11 @@
 
 use crate::block::{
     ARENA_KEY, BARK, BOAT, BUCKET, CAMPFIRE, CHARRED_ROCK, CHEST, COOKED_MEAT, DOOR, DRAGON_SCALE,
-    FIRE_KEY, FORGE, GOLD_INGOT, IRON_ARMOR, IRON_AXE, IRON_INGOT, IRON_PICKAXE, IRON_SWORD,
-    LADDER, LOG, PICKAXE, QUEST_BOARD, RAW_GOLD, RAW_IRON, RAW_MEAT, RAW_TUNGSTEN, ROPE,
-    ROPE_LADDER, SIGN, STICK, STONE, STONE_AXE, STONE_BRICKS, STONE_PICKAXE, STONE_SWORD,
-    TUNGSTEN_ARMOR, TUNGSTEN_AXE, TUNGSTEN_INGOT, TUNGSTEN_PICKAXE, TUNGSTEN_SWORD, WOOD, WOOD_AXE,
-    WOOD_SWORD,
+    DRAGONIAN_STEED, FIRE_KEY, FORGE, GOLD_INGOT, IRON_ARMOR, IRON_AXE, IRON_INGOT, IRON_PICKAXE,
+    IRON_SWORD, LADDER, LOG, PAPER, PICKAXE, QUEST_BOARD, RAW_GOLD, RAW_IRON, RAW_MEAT,
+    RAW_TUNGSTEN, RESTORE_SPELL, ROPE, ROPE_LADDER, SIGN, STICK, STONE, STONE_AXE, STONE_BRICKS,
+    STONE_PICKAXE, STONE_SWORD, SUMMONER_SPELL, SUNBURST_SPELL, TUNGSTEN_ARMOR, TUNGSTEN_AXE,
+    TUNGSTEN_INGOT, TUNGSTEN_PICKAXE, TUNGSTEN_SWORD, WOOD, WOOD_AXE, WOOD_SWORD,
 };
 use crate::inventory::Inventory;
 use crate::protocol::BlockId;
@@ -138,6 +138,35 @@ pub const RECIPES: &[Recipe] = &[
         name: "Rope",
         inputs: &[(BARK, 2)],
         outputs: &[(ROPE, 1)],
+    },
+    // Bark is pulped and pressed flat into a sheet of paper.
+    Recipe {
+        name: "Paper",
+        inputs: &[(BARK, 2)],
+        outputs: &[(PAPER, 1)],
+    },
+    // A spellbook bound with a sheaf of paper transcribes itself into a second,
+    // identical tome — the original is preserved, so you end with two. One recipe
+    // per spellbook, since each clones its own kind.
+    Recipe {
+        name: "Clone Summoner Spell",
+        inputs: &[(SUMMONER_SPELL, 1), (PAPER, 12)],
+        outputs: &[(SUMMONER_SPELL, 2)],
+    },
+    Recipe {
+        name: "Clone Sunburst Spell",
+        inputs: &[(SUNBURST_SPELL, 1), (PAPER, 12)],
+        outputs: &[(SUNBURST_SPELL, 2)],
+    },
+    Recipe {
+        name: "Clone Restore Spell",
+        inputs: &[(RESTORE_SPELL, 1), (PAPER, 12)],
+        outputs: &[(RESTORE_SPELL, 2)],
+    },
+    Recipe {
+        name: "Clone Dragonian Steed Spell",
+        inputs: &[(DRAGONIAN_STEED, 1), (PAPER, 12)],
+        outputs: &[(DRAGONIAN_STEED, 2)],
     },
     // Coils of rope knot into a rope ladder for descending caves.
     Recipe {

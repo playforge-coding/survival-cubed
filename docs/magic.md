@@ -147,6 +147,18 @@ one at a time.
     [restore spell](#the-restore-spell) and the dragonian steed — so a single, hard-won
     victory in the arena arms you with the two rarest magics at once.
 
+## Cloning spellbooks
+
+Spellbooks are found, not crafted — but once you hold one you can **transcribe it
+onto paper** to make a second, identical copy. **Paper** is pressed from **bark**
+(2 Bark → 1 Paper), and binding a spellbook together with **12 Paper** yields
+**two** of that spellbook: the original is preserved, so each cloning nets you one
+extra tome. There is a clone recipe for every spellbook, each copying its own kind.
+
+This works on any spellbook, so a single rare drop — even one from the demon
+king's chest — can be shared across a whole party, or kept as a spare. See
+**[Crafting](crafting.md#all-crafting-recipes)** for the recipes.
+
 ## Lore
 
 *To be written.*

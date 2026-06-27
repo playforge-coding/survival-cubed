@@ -37,6 +37,11 @@ server-authoritative, so the result is always consistent in multiplayer.
 | Ladder | 1 Wood + 2 Stick | 3 Ladder |
 | Rope | 2 Bark | 1 Rope |
 | Rope Ladder | 3 Rope | 1 Rope Ladder |
+| Paper | 2 Bark | 1 Paper |
+| Clone Summoner Spell | 1 Summoner Spell + 12 Paper | 2 Summoner Spell |
+| Clone Sunburst Spell | 1 Sunburst Spell + 12 Paper | 2 Sunburst Spell |
+| Clone Restore Spell | 1 Restore Spell + 12 Paper | 2 Restore Spell |
+| Clone Dragonian Steed Spell | 1 Dragonian Steed Spell + 12 Paper | 2 Dragonian Steed Spell |
 | Bucket | 3 Iron Ingot | 1 Bucket |
 | Boat | 5 Wood + 3 Stick | 1 Boat |
 | Door | 6 Wood | 1 Door |
@@ -177,10 +182,11 @@ Eat the food in your selected hotbar slot with <kbd>F</kbd>.
 | Material | Source | Used for |
 |---|---|---|
 | Wood | Splitting logs | Planks, swords, ladders, doors |
-| Bark | Splitting logs | Campfires, rope, fuel |
+| Bark | Splitting logs | Campfires, rope, paper, fuel |
 | Stick | Leaves (70% drop) | Almost every tool and weapon |
 | Coal | Coal ore | Fuel |
 | Raw Iron / Iron Ingot | Iron ore → forge | Iron tools, buckets, armor, repairs |
 | Raw Tungsten / Tungsten Ingot | Tungsten ore → forge | Tungsten gear, armor, fire keys, arena keys |
 | Raw Gold / Gold Ingot | Gold ore → forge | Locking chests, arena keys |
 | Rope | Bark | Rope ladders |
+| Paper | Bark | Cloning spellbooks |

@@ -255,6 +255,10 @@ pub const RESTORE_SPELL: BlockId = 65;
 /// one, if any, vanishes), which is the only way a fallen steed returns. Reusable —
 /// casting never consumes the book, only mana.
 pub const DRAGONIAN_STEED: BlockId = 66;
+/// A sheet of paper, pressed from [`BARK`]. An item (not placeable). Its sole use
+/// is **cloning spellbooks**: a spellbook bound together with a sheaf of paper
+/// transcribes itself into a second identical tome (see [`crate::recipe::RECIPES`]).
+pub const PAPER: BlockId = 67;
 
 /// Gold ingots consumed to reinforce a plain [`CHEST`] into a [`LOCKED_CHEST`].
 /// Shared by the server (which charges it) and the client (which shows the cost).
@@ -418,6 +422,8 @@ impl BlockRegistry {
         // slain dragon. Right-clicking it spends mana to summon a friendly white
         // dragon, rather than placing a block.
         r.register("dragonian_steed_spell", false, true, false, 0.0);
+        // Paper: a non-placeable item pressed from bark, used to clone spellbooks.
+        r.register("paper", false, true, false, 0.0);
         r
     }
 

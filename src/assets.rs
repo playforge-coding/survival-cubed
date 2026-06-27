@@ -134,6 +134,7 @@ blocks!(
     "sunburst_spell",
     "restore_spell",
     "dragonian_steed_spell",
+    "paper",
 );
 
 sprites!(
