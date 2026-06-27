@@ -9756,10 +9756,20 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         shared.wear_tool(pid, armor, ARMOR_WEAR_PER_HIT);
     }
 
-    // Spill the loot of any prey a puppy killed (a chicken leaves raw meat, which
-    // the puppy will trot back and eat). Done after the entities lock is released
-    // since spawn_drop relocks it.
+    // Spill the loot of any creature felled this tick by a companion or a player's
+    // friendly summon (a puppy's bite, a knight's or musketeer's blow, a bullet, a
+    // friendly skull or dragon-fire). A chicken leaves raw meat; the **demon king**
+    // leaves its boss chest and is marked slain, exactly as when a player lands the
+    // killing blow by hand (otherwise a king finished off by an ally or a stray
+    // bullet would drop nothing and the world would think it still reigns). Done
+    // after the entities lock is released, since spawn_drop / spawn_boss_chest relock it.
     for (kind, kx, ky) in puppy_kills {
+        if matches!(kind, EntityKind::DemonKing) {
+            spawn_boss_chest(shared, dim, kx);
+            shared.demon_king_alive.store(false, Ordering::SeqCst);
+            shared.demon_king_slain.store(true, Ordering::SeqCst);
+            continue;
+        }
         let cx = (kx / TILE_SIZE) as i32;
         let cy = (ky / TILE_SIZE) as i32;
         for &(item, n) in creature_loot(&kind) {
