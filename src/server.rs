@@ -9896,9 +9896,13 @@ fn hit_prey(
     }
 }
 
-/// Whether `kind` is a hostile monster — the set a knight will charge (and that a
-/// player can "mark" for its knight by striking one). Passive animals, pets, the
-/// knight itself, projectiles and items are not hostile.
+/// Whether `kind` is a hostile monster — the set a knight or musketeer will fight (and
+/// that a player can "mark" for its warrior by striking one, and that the player's own
+/// friendly summons — bullets, fireballs, skulls, dragon-fire — strike). Passive
+/// animals, pets, companions, projectiles and items are not hostile. The
+/// [`EntityKind::DemonKing`] counts: companions charge it and friendly fire reaches it
+/// like any other foe (its guardian shield still gates the actual damage in
+/// [`apply_damage`]).
 fn is_hostile(kind: &EntityKind) -> bool {
     matches!(
         kind,
@@ -9918,6 +9922,7 @@ fn is_hostile(kind: &EntityKind) -> bool {
             | EntityKind::DarkKnight
             | EntityKind::DarkMusketeer
             | EntityKind::Dragon
+            | EntityKind::DemonKing
     )
 }
 
