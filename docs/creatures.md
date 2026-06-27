@@ -124,7 +124,8 @@ ledge to shorten the drop. It is frail, so a couple of solid hits put it down.
 !!! danger "Skeletons and demons shoot back"
 Skeletons fire bones and demons hurl fireballs in a straight line. The
 projectile flies until it hits you or a wall — strafe behind cover, or close
-the distance fast. A demon's fireball leaves a lick of fire where it bursts,
+the distance fast. A demon's fireball leaves a lick of fire where it bursts
+**on the ground** (one that bursts in open air or against you leaves none),
 so don't linger where it lands. Demons are rarer than charred skeletons, but
 far deadlier at range.
 
@@ -143,7 +144,8 @@ fan you can't simply duck under. A mage heals a demon to full as it empowers
 it, so a worn-down demon suddenly comes back stronger. If you see a mage, run
 it down before it builds an air force — but watch its enchanted demons, which can
 dive on you from any angle. Their magic fireballs still leave only ordinary fire
-where they burst.
+where they burst — and, like an ordinary fireball, only when they burst on the
+ground, never midair.
 
 !!! danger "Necromancers raise a tide of skulls"
 A **necromancer** never closes in — it kites you and lobs **summoner fireballs**,
@@ -200,10 +202,11 @@ a deep health pool — bring the best
 - **Axe** — the projectile a dark knight throws (at players and knights alike); it
   tumbles end over end and disappears on impact or after a short flight.
 - **Fireball** — the projectile a demon hurls; it disappears on impact or after a
-  short flight, leaving a tongue of fire where it bursts.
+  short flight, leaving a tongue of fire where it bursts **on the ground** (a burst
+  in open air or against a target leaves no fire).
 - **Magic fireball** — the purple bolt an enchanted demon hurls; it flies farther
-  and hits harder than an ordinary fireball, but likewise bursts into a tongue of
-  fire where it lands.
+  and hits harder than an ordinary fireball, but likewise leaves a tongue of fire
+  only when it bursts on the ground, never midair.
 - **Summoner fireball** — the bolt a necromancer hurls; it deals light damage on a
   direct hit but, instead of fire, **bursts into a bouncing skull** wherever it lands.
 - **Dropped items** — block and tool stacks lying on the ground (from mining,

@@ -8606,11 +8606,17 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         }
 
         // Burst on a wall, on a player or knight, or when its life runs out: leave a
-        // tongue of fire in the (empty) cell where it died, then despawn.
+        // tongue of fire in the (empty) cell where it died, then despawn. Only when
+        // that cell rests on solid ground, though — a fireball that bursts in open air
+        // no longer hangs a flame in the void (its summoner counterpart still bursts
+        // into a skull, untouched by this).
         if hit_x || hit_y || struck || e.attack_cd <= 0.0 {
             let fx = ((nx + w * 0.5) / TILE_SIZE).floor() as i32;
             let fy = ((ny + h * 0.5) / TILE_SIZE).floor() as i32;
-            if world.get(fx, fy) == crate::block::AIR && world.set(fx, fy, crate::block::FIRE) {
+            if world.solid(fx, fy + 1)
+                && world.get(fx, fy) == crate::block::AIR
+                && world.set(fx, fy, crate::block::FIRE)
+            {
                 new_trail_fires.push((fx, fy));
                 broadcasts.push(ServerMessage::BlockUpdate {
                     dim,
