@@ -70,9 +70,11 @@ A slain Demon King doesn't scatter loose items — it leaves a **[chest](../bloc
 on the arena floor where it fell, stocked with a king's ransom: the full **tungsten
 arsenal** (sword, pickaxe, and axe at full durability), a suit of **[tungsten
 armor](../crafting.md#armor)**, a hoard of **tungsten ingots** and **gold ingots**,
-a stack of **cooked meat** for the road, and — its deepest secret — the
-**[restore spell](../magic.md)**, the only one in the world. Walk up and right-click
-it to claim the spoils.
+a stack of **cooked meat** for the road, and — its deepest secrets — **both** of the
+world's greatest spellbooks: the **[restore spell](../magic.md#the-restore-spell)** and
+the **[dragonian steed spell](../magic.md#the-dragonian-steed-spell)** (the magic to
+raise a friendly white [dragon](dragon.md), of the same brood the king once kept as
+pets). Walk up and right-click it to claim the spoils.
 
 Because there is **one king per world**, this is a one-time prize. Slay it, loot the
 chest, and the arena falls silent for good.
@@ -94,3 +96,13 @@ no night falls. The **Demon King** holds that court still, the last and highest 
 the depths' fiends. To reach it you must forge the key from the underworld's own
 tungsten and the gold that locks a king's treasure: the artifacts of its dominion,
 turned at last into the way in.
+
+In its early reign the king was a keeper of beasts as much as a tyrant. It kept a
+brood of white **[dragons](dragon.md)** as steeds, loyal as hounds, and bred them to
+its hall — and it set down the magic that tamed them in the spellbook that now lies in
+its chest. But the king **went mad** in its lightless court, and the madness drove its
+dragons feral: their white scales darkened, the bond broke, and they scattered into
+the charred expanse as the wild minibosses a wanderer fights today. Claim the dragonian
+steed spell from its hoard and you wield the tamer's art the king lost — calling a
+dragon back to a master's side, white and gentle, as they were before the throne went
+dark.

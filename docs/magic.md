@@ -118,13 +118,14 @@ you only ever pay for a restore that lands.
 
 | Stat | Value |
 |---|---|
-| **Source** | Dropped by a slain **[dragon](entities/dragon.md)** |
+| **Source** | The loot **chest** the **[demon king](entities/demon-king.md)** leaves |
 | **Mana cost** | 80 per cast |
 | **Effect** | Summons a friendly white dragon that fights for you and can be ridden |
 
-The grandest magic in the world, won by felling the underworld's flying miniboss.
-Casting summons a friendly **white dragon** at your side — a peaceable twin of the
-[dragon](entities/dragon.md) that slew to teach you the spell. The steed:
+The grandest magic in the world, won only by felling the boss — far too potent to
+leave to a mere miniboss's spoils. Casting summons a friendly **white dragon** at
+your side — a peaceable twin of the [dragon](entities/dragon.md), of the same stock
+the demon king once kept as steeds. The summoned steed:
 
 - **Never despawns.** Like a pet it stays with you forever, teleporting to your side
   if you stray too far and crossing **dimensions** with you.
@@ -141,10 +142,10 @@ spell** raises a new one. Casting again also replaces a steed you already have, 
 lost or distant dragon is always one cast away — and you never accumulate more than
 one at a time.
 
-!!! tip "Win the spell, then make it your own"
-    The dragonian steed is the **only** source of its own spellbook: you must brave
-    the depths and slay a wild dragon to earn the right to raise a friendly one. A
-    slain dragon drops its **scale** and the spellbook together.
+!!! tip "The king's deepest secrets, side by side"
+    The demon king's chest holds **both** of the world's greatest spellbooks — the
+    [restore spell](#the-restore-spell) and the dragonian steed — so a single, hard-won
+    victory in the arena arms you with the two rarest magics at once.
 
 ## Lore
 

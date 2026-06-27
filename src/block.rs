@@ -241,9 +241,13 @@ pub const SUNBURST_SPELL: BlockId = 64;
 /// demon is calmed back into an ordinary one. A knight or mage you restore is
 /// **recruited** to you. Reusable — casting never consumes the book, only mana.
 pub const RESTORE_SPELL: BlockId = 65;
-/// The dragonian steed spellbook: a spellbook spilled by a slain
-/// [`dragon`](crate::entity::EntityKind::Dragon). An item (not placeable, stacks to
-/// one). Right-click while holding it to spend [`DRAGONIAN_STEED_MANA_COST`] mana and
+/// The dragonian steed spellbook: a spellbook found in the
+/// [demon king](crate::entity::EntityKind::DemonKing)'s loot chest, alongside the
+/// [`RESTORE_SPELL`] — too potent to leave to the rank-and-file
+/// [`dragon`](crate::entity::EntityKind::Dragon) miniboss it raises a tamed twin of, it
+/// rests with the king who once kept dragons as steeds. An
+/// item (not placeable, stacks to one). Right-click while holding it to spend
+/// [`DRAGONIAN_STEED_MANA_COST`] mana and
 /// summon a friendly white [`dragon`](crate::entity::EntityKind::WhiteDragon) at your
 /// side: it never despawns, soars after you breathing fire at nearby monsters, and can
 /// be **ridden** (right-click it) to fly — loosing fireballs at the cursor on the

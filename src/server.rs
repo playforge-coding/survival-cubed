@@ -3469,13 +3469,7 @@ fn creature_loot(kind: &EntityKind) -> &'static [(BlockId, u32)] {
     match kind {
         EntityKind::Chicken => &[(crate::block::RAW_MEAT, 1)],
         EntityKind::Goat => &[(crate::block::RAW_MEAT, 2)],
-        // A slain dragon yields its scale and — as the world's only source — the
-        // dragonian steed spellbook, so felling the wild miniboss is what lets a player
-        // raise a friendly one of their own.
-        EntityKind::Dragon => &[
-            (crate::block::DRAGON_SCALE, 1),
-            (crate::block::DRAGONIAN_STEED, 1),
-        ],
+        EntityKind::Dragon => &[(crate::block::DRAGON_SCALE, 1)],
         _ => &[],
     }
 }
@@ -3527,6 +3521,9 @@ fn demon_king_loot() -> Vec<Slot> {
     // The restore spellbook: the king's deepest secret — the magic to turn its own
     // brutes and shades into loyal knights and mages.
     slots[7] = Some((crate::block::RESTORE_SPELL, 1u32, 0u16));
+    // The dragonian steed spellbook: too potent to leave to a miniboss's spoils, the
+    // magic to raise a friendly dragon rests with the king who once kept them as pets.
+    slots[8] = Some((crate::block::DRAGONIAN_STEED, 1u32, 0u16));
     slots
 }
 

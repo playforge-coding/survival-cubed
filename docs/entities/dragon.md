@@ -15,7 +15,7 @@ anything else in the depths — felling one is a real fight, announced by its ow
 | **Damage** | 7 HP per fireball (leaves fire where it bursts) |
 | **Found in** | Underworld **charred** expanse — **rare** |
 | **Activity** | All hours |
-| **Drops** | 1 **Dragon Scale** + the **[Dragonian Steed](../magic.md#the-dragonian-steed-spell)** spellbook |
+| **Drops** | 1 **Dragon Scale** |
 
 A dragon **flies**, kiting you through the air like an [enchanted
 demon](demons.md#enchanted-demon) but swifter and far hardier: it closes when
@@ -32,10 +32,13 @@ pick your moment, use cover, and don't get cornered while it rains fire.
 
 Felling a dragon spills a single **Dragon Scale** — a shimmering plate that is the
 only source of the scales needed to craft an [Arena Key](../crafting.md), so reaching
-the boss arena means hunting down dragons first — and the **[Dragonian Steed
-spellbook](../magic.md#the-dragonian-steed-spell)**, which lets you summon a friendly
-**white dragon** of your own to fight for you and carry you aloft. A wild dragon is
-the only source of the spell, so you must slay one to ride one.
+the boss arena means hunting down dragons first.
+
+You can also raise a **friendly** white dragon of your own — a peaceable twin of this
+one that fights for you and carries you aloft — with the **[Dragonian Steed
+spell](../magic.md#the-dragonian-steed-spell)**, but its spellbook isn't won here: it
+rests in the **[demon king](demon-king.md)'s** own chest, with the magic of the master
+who once kept these beasts.
 
 ### Fireball
 
@@ -52,4 +55,15 @@ dimension**.
 
 ## Lore
 
-*To be written.*
+The dragons were not always the depths' wild terrors. In the long age before his
+madness, the **[demon king](demon-king.md)** kept them as **pets** — a brood of
+white-scaled steeds raised at his throne, loyal as hounds, who bore him over his
+charred dominion and breathed fire at his command.
+
+When madness took the king, it took his menagerie with it. The bond soured, the
+white scales darkened, and the once-tame steeds scattered into the charred expanse to
+roam feral and alone — the rare, hostile minibosses a wanderer meets today. Only the
+king's deepest magic, sealed away in his hoard, still remembers how they were tamed:
+cast the **[dragonian steed spell](../magic.md#the-dragonian-steed-spell)** and a
+dragon answers to a master once more, white-scaled and gentle, as in the days before
+the throne went dark.
