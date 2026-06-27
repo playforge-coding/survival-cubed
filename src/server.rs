@@ -3436,29 +3436,29 @@ fn leaf_supported(world: &mut ServerWorld, x: i32, y: i32) -> bool {
 /// The most mana a player can bank at once. Mana over this is wasted (a kill never
 /// pushes it past the cap). Shared with the client only as the `max` in a
 /// [`ServerMessage::Mana`] so its bar knows its denominator.
-const MANA_MAX: i32 = 100;
+const MANA_MAX: i32 = 1000;
 
 /// How much mana slaying a creature of `kind` rewards the killer. Tougher and rarer
 /// monsters give more; peaceable animals and companions give none (mana is won by
 /// fighting *monsters*). A non-hostile kind always returns `0`.
 fn creature_mana(kind: &EntityKind) -> i32 {
     match kind {
-        EntityKind::Slime => 2,
-        EntityKind::Spider => 3,
-        EntityKind::Snake => 4,
-        EntityKind::Skeleton => 5,
-        EntityKind::Zombie => 7,
-        EntityKind::AshTwister => 6,
-        EntityKind::CharredSkeleton => 9,
-        EntityKind::Demon => 9,
-        EntityKind::EnchantedDemon => 12,
-        EntityKind::Necromancer => 11,
-        EntityKind::OrcMage => 11,
-        EntityKind::Orc => 13,
-        EntityKind::Skull => 1,
-        EntityKind::DarkKnight => 16,
-        EntityKind::Dragon => 60,
-        EntityKind::DemonKing => 100,
+        EntityKind::Slime => 20,
+        EntityKind::Spider => 30,
+        EntityKind::Snake => 40,
+        EntityKind::Skeleton => 50,
+        EntityKind::Zombie => 70,
+        EntityKind::AshTwister => 60,
+        EntityKind::CharredSkeleton => 90,
+        EntityKind::Demon => 90,
+        EntityKind::EnchantedDemon => 120,
+        EntityKind::Necromancer => 110,
+        EntityKind::OrcMage => 110,
+        EntityKind::Orc => 130,
+        EntityKind::Skull => 10,
+        EntityKind::DarkKnight => 160,
+        EntityKind::Dragon => 600,
+        EntityKind::DemonKing => 1000,
         // Animals, companions, projectiles, items, players: no mana.
         _ => 0,
     }

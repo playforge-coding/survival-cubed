@@ -8,19 +8,19 @@ spending **mana** you bank from slaying monsters. The first spellbook is the
 
 Mana is your magic resource, shown as a blue **✦** bar beside your health on the
 HUD. You bank it by **killing monsters** — tougher, rarer foes are worth more —
-up to a cap of **100**. It is spent casting spellbooks and persists across
+up to a cap of **1000**. It is spent casting spellbooks and persists across
 disconnects and restarts.
 
 | Monster | Mana | Monster | Mana |
 |---|---:|---|---:|
-| Skull | 1 | Demon | 9 |
-| Slime | 2 | Necromancer | 11 |
-| Spider | 3 | Orc mage | 11 |
-| Snake | 4 | Enchanted demon | 12 |
-| Skeleton | 5 | Orc | 13 |
-| Ash twister | 6 | Dark knight | 16 |
-| Zombie | 7 | Dragon | 60 |
-| Charred skeleton | 9 | Demon king | 100 |
+| Skull | 10 | Demon | 90 |
+| Slime | 20 | Necromancer | 110 |
+| Spider | 30 | Orc mage | 110 |
+| Snake | 40 | Enchanted demon | 120 |
+| Skeleton | 50 | Orc | 130 |
+| Ash twister | 60 | Dark knight | 160 |
+| Zombie | 70 | Dragon | 600 |
+| Charred skeleton | 90 | Demon king | 1000 |
 
 Peaceable animals (chickens, goats), companions (cats, puppies, horses, knights)
 and your own summons give **no** mana — only the slaying of *monsters* does.

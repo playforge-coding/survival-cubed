@@ -443,7 +443,7 @@ impl GameState {
             health: PLAYER_MAX_HEALTH,
             max_health: PLAYER_MAX_HEALTH,
             mana: 0,
-            max_mana: 100,
+            max_mana: 1000,
             time_of_day: 0.0,
             break_target: None,
             break_progress: 0.0,
