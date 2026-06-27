@@ -55,6 +55,13 @@ A horse can't be ridden between dimensions: stepping through a fire key (or
 falling to the underworld) drops you back on foot and leaves the horse behind in
 the world you left.
 
+The other mount is the **dragonian steed** — a friendly white dragon summoned by a
+[spell](magic.md#the-dragonian-steed-spell) won from a slain
+[dragon](entities/dragon.md). Right-click it to mount and **fly** (rise on jump,
+descend on down), and hold **B** to breathe a fireball at your cursor. Unlike the
+horse it **crosses dimensions** with you and never despawns. See
+**[Magic & Spellbooks](magic.md#the-dragonian-steed-spell)** for the full rundown.
+
 ## The knight
 
 A lone **knight** wanders the **plains** — a rare sight, far scarcer than the

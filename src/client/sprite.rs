@@ -241,6 +241,51 @@ pub static DRAGON_ATTACK_SPRITE: SpriteDef = SpriteDef {
     fps: 6.0,
 };
 
+/// White dragon (riderless): the friendly steed the dragonian steed spell summons, a
+/// peaceable twin of the hostile dragon drawn on the same four-frame wing-beat cycle.
+/// Drawn while it soars on its own; a ridden one shows [`PLAYER_DRAGON_SPRITE`].
+pub static WHITE_DRAGON_SPRITE: SpriteDef = SpriteDef {
+    name: "white_dragon",
+    frame_w: 31,
+    frame_h: 17,
+    frames: 4,
+    fps: 8.0,
+};
+
+/// White dragon breathing fire: the one-shot pose the steed plays each time it looses
+/// a friendly fireball, stepped by its attack (lunge) timer like the hostile dragon's.
+/// Lives in the `white_dragon/attack` subdirectory (its `name` doubles as that path).
+pub static WHITE_DRAGON_ATTACK_SPRITE: SpriteDef = SpriteDef {
+    name: "white_dragon/attack",
+    frame_w: 31,
+    frame_h: 17,
+    frames: 2,
+    fps: 6.0,
+};
+
+/// White dragon (with rider): the player seated on the steed, drawn in place of the
+/// plain player sprite while mounted — a four-frame flight whose art already includes
+/// the dragon, just as [`PLAYER_HORSE_SPRITE`] already includes the horse. Lives in
+/// the `player/dragon` subdirectory (its `name` is that path).
+pub static PLAYER_DRAGON_SPRITE: SpriteDef = SpriteDef {
+    name: "player/dragon",
+    frame_w: 31,
+    frame_h: 20,
+    frames: 4,
+    fps: 8.0,
+};
+
+/// White dragon breathing fire (with rider): the one-shot mounted breath pose, played
+/// off the rider's attack (lunge) timer. Lives in the `player/dragon/attack`
+/// subdirectory (its `name` doubles as that path).
+pub static PLAYER_DRAGON_ATTACK_SPRITE: SpriteDef = SpriteDef {
+    name: "player/dragon/attack",
+    frame_w: 31,
+    frame_h: 20,
+    frames: 2,
+    fps: 6.0,
+};
+
 /// Demon king: the towering arena boss, drawn on the demon's hunched build but far
 /// larger. Its walk cycle plays as it flies after the player.
 pub static DEMON_KING_SPRITE: SpriteDef = SpriteDef {
@@ -464,7 +509,7 @@ pub static SUMMONER_FIREBALL_SPRITE: SpriteDef = SpriteDef {
 };
 
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 44] {
+pub fn all() -> [&'static SpriteDef; 48] {
     [
         &PLAYER_SPRITE,
         &BOAT_SPRITE,
@@ -488,6 +533,10 @@ pub fn all() -> [&'static SpriteDef; 44] {
         &DEMON_SPRITE,
         &DRAGON_SPRITE,
         &DRAGON_ATTACK_SPRITE,
+        &WHITE_DRAGON_SPRITE,
+        &WHITE_DRAGON_ATTACK_SPRITE,
+        &PLAYER_DRAGON_SPRITE,
+        &PLAYER_DRAGON_ATTACK_SPRITE,
         &DEMON_KING_SPRITE,
         &DEMON_KING_ATTACK_SPRITE,
         &ORC_SPRITE,
@@ -543,6 +592,13 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         // A dragon's fire-breathing pose is handled by the scene builder off its
         // lunge timer; this walk sheet is its wing-beat flight cycle.
         EntityKind::Dragon => &DRAGON_SPRITE,
+        // A ridden white dragon is drawn as the combined player/dragon sprite by the
+        // scene builder, and its fire-breathing pose off its lunge timer; this
+        // riderless sheet is its base wing-beat flight cycle.
+        EntityKind::WhiteDragon { .. } => &WHITE_DRAGON_SPRITE,
+        // A friendly dragon fireball reuses the ordinary fireball art (the scene
+        // builder tints friendly summons so they read as the caster's own).
+        EntityKind::FriendlyDragonFireball => &FIREBALL_SPRITE,
         // An orc's slam pose is handled by the scene builder off its lunge timer;
         // this walk sheet is its plodding stride.
         EntityKind::Orc => &ORC_SPRITE,

@@ -363,6 +363,35 @@ const DRAGON_SPAWN_CLEARANCE: i32 = 10;
 /// begins aloft in the open rather than perched on the rock.
 const DRAGON_SPAWN_HOVER: f32 = 6.0 * TILE_SIZE;
 
+// --- White dragon (the dragonian steed companion) ------------------------------
+/// How far (px) a riderless white dragon notices a monster and wheels in to breathe
+/// fire at it. Generous like the hostile dragon's aggro, so the steed actively keeps
+/// the area around its owner clear.
+const WHITE_DRAGON_AGGRO: f32 = 360.0;
+/// Maximum gap (px between AABBs) at which a riderless white dragon breathes a friendly
+/// fireball at the monster it is hunting.
+const WHITE_DRAGON_SHOOT_RANGE: f32 = 280.0;
+/// Seconds a riderless white dragon waits between friendly fireballs.
+const WHITE_DRAGON_SHOOT_INTERVAL: f32 = 1.2;
+/// Gap (px between AABBs) within which a riderless white dragon, with no monster to
+/// hunt, settles into a gentle hover beside its owner rather than pressing closer.
+const WHITE_DRAGON_FOLLOW_GAP: f32 = 40.0;
+/// How far (px) an owner may stray before their white dragon teleports to their side
+/// (it never despawns for distance, like a pet — it snaps to its owner instead).
+const WHITE_DRAGON_TELEPORT_DIST: f32 = 640.0;
+/// Seconds a ridden white dragon waits between fireballs its rider breathes on the
+/// breath key — a brisk cadence, but capped so the steed can't loose a wall of fire.
+const WHITE_DRAGON_BREATH_INTERVAL: f32 = 0.45;
+/// Damage a friendly dragon fireball deals to a monster it strikes — the same wallop
+/// the hostile dragon's fireball lands on a player.
+const FRIENDLY_DRAGON_FIREBALL_DAMAGE: i32 = 10;
+/// Gap (px between AABBs) within which a friendly dragon fireball counts as striking
+/// the monster it flies into.
+const FRIENDLY_DRAGON_FIREBALL_HIT_RANGE: f32 = 2.0;
+/// Seconds a friendly dragon fireball stays airborne before it burns out (reusing the
+/// `attack_cd` field as its life timer, like the other fireballs).
+const FRIENDLY_DRAGON_FIREBALL_LIFETIME: f32 = 2.4;
+
 // --- Demon king (arena boss) ---------------------------------------------------
 /// How far (px) the demon king notices a player and gives chase. Generous — it
 /// commands the whole arena, so a fighter is never out of its sight for long.
@@ -2819,11 +2848,12 @@ impl Shared {
         self.transfer_knights(player_name.as_deref(), from, to, x, y);
     }
 
-    /// Carry player `owner`'s recruited companions — [knights](EntityKind::Knight) and
-    /// [mages](EntityKind::Mage) — from dimension `from` to `to`, landing them next to
-    /// the player at `(x, y)` on foot (any mount is left behind, like the player's own
-    /// horse). Broadcasts the despawn/spawn so both dimensions' onlookers see them leave
-    /// and arrive. A no-op if `owner` is `None` (an unnamed player owns nothing).
+    /// Carry player `owner`'s recruited companions — [knights](EntityKind::Knight),
+    /// [mages](EntityKind::Mage) and a [white-dragon steed](EntityKind::WhiteDragon) —
+    /// from dimension `from` to `to`, landing them next to the player at `(x, y)` on foot
+    /// (any mount is left behind, like the player's own horse — a ridden steed crosses
+    /// over unridden). Broadcasts the despawn/spawn so both dimensions' onlookers see
+    /// them leave and arrive. A no-op if `owner` is `None` (an unnamed player owns nothing).
     fn transfer_knights(
         &self,
         owner: Option<&str>,
@@ -2842,6 +2872,7 @@ impl Shared {
                 .filter(|e| {
                     matches!(&e.kind, EntityKind::Knight { owner: Some(o) } if o == owner)
                         || matches!(&e.kind, EntityKind::Mage { owner: Some(o) } if o == owner)
+                        || matches!(&e.kind, EntityKind::WhiteDragon { owner: Some(o) } if o == owner)
                 })
                 .map(|e| e.id)
                 .collect();
@@ -3027,6 +3058,10 @@ impl Shared {
                 true
             }
             crate::block::RESTORE_SPELL => self.cast_restore(dim, tx, ty, caster),
+            crate::block::DRAGONIAN_STEED => {
+                self.cast_dragonian_steed(id, dim, caster);
+                true
+            }
             _ => false,
         };
         // The restore spell does nothing if the cursor isn't on a restorable creature;
@@ -3113,6 +3148,107 @@ impl Shared {
             bolt
         };
         self.entities(dim).lock().insert(bolt.clone());
+        self.broadcast_dim(dim, ServerMessage::EntitySpawn { entity: bolt });
+    }
+
+    /// Summon the dragonian steed: a friendly white [`EntityKind::WhiteDragon`] at the
+    /// caster's side, owned by `owner` (the caster's name, so it follows them and
+    /// survives a restart). Any white dragon this player already owns — anywhere in the
+    /// world — is dismissed first, so the spell never accumulates steeds: a second cast
+    /// raises a fresh one beside the caster (the only way a fallen steed returns). Mana
+    /// is already charged; an unnamed caster (no name) can't be bonded to, so this is a
+    /// no-op for them (their mana is refunded by the caller, since `did` stays false —
+    /// but in practice every connected player is named).
+    fn cast_dragonian_steed(&self, id: EntityId, dim: Dimension, owner: Option<String>) {
+        let Some(owner) = owner else { return };
+        // Dismiss any existing steed this caster owns, in every dimension, so a recast
+        // replaces rather than stacks. Broadcast each despawn to its dimension's
+        // onlookers.
+        for d in Dimension::ALL {
+            let stale: Vec<EntityId> = {
+                let entities = self.entities(d).lock();
+                entities
+                    .values()
+                    .filter(|e| {
+                        matches!(&e.kind, EntityKind::WhiteDragon { owner: Some(o) } if *o == owner)
+                    })
+                    .map(|e| e.id)
+                    .collect()
+            };
+            for sid in stale {
+                self.entities(d).lock().remove(sid);
+                self.broadcast_dim(d, ServerMessage::EntityDespawn { id: sid });
+            }
+        }
+        // Raise the new steed beside the caster, hovering just above them.
+        let steed = {
+            let entities = self.entities(dim).lock();
+            let Some(p) = entities.get(id) else {
+                return;
+            };
+            let (pw, _) = p.size();
+            let (dw, dh) = crate::entity::WHITE_DRAGON_SIZE;
+            let sx = p.x + pw * 0.5 - dw * 0.5;
+            let sy = p.y - dh - 4.0;
+            let mut steed = Entity::new(
+                self.alloc_id(),
+                EntityKind::WhiteDragon { owner: Some(owner) },
+                sx,
+                sy,
+            );
+            steed.home_x = Some(sx);
+            steed
+        };
+        self.entities(dim).lock().insert(steed.clone());
+        self.broadcast_dim(dim, ServerMessage::EntitySpawn { entity: steed });
+    }
+
+    /// Breathe a fireball from player `id`'s ridden white-dragon steed toward world
+    /// pixel `(tx, ty)` (the rider's cursor). A no-op unless the player really is riding
+    /// one of their own [white dragons](EntityKind::WhiteDragon) whose breath is off
+    /// cooldown. On success it looses a friendly dragon fireball from the steed's maw,
+    /// resets the steed's breath cadence, and kicks off its fire-breathing animation —
+    /// costing no mana, only the steed's own cooldown.
+    fn dragon_breath(&self, id: EntityId, tx: f32, ty: f32) {
+        let dim = self.dim_of(id);
+        // Resolve which steed the player rides (their `riding`), confirm it is their own
+        // white dragon, and that its breath (its `attack_cd`) is ready. Stamp the
+        // cooldown and the breath pose while we hold the lock, and read its maw.
+        let result = {
+            let mut entities = self.entities(dim).lock();
+            let Some((steed_id, name)) = entities.get(id).and_then(|p| match &p.kind {
+                EntityKind::Player { name } => p.riding.map(|r| (r, name.clone())),
+                _ => None,
+            }) else {
+                return;
+            };
+            let Some(steed) = entities.get_mut(steed_id) else {
+                return;
+            };
+            if !matches!(&steed.kind, EntityKind::WhiteDragon { owner: Some(o) } if *o == name)
+                || steed.attack_cd > 0.0
+            {
+                return;
+            }
+            steed.attack_cd = WHITE_DRAGON_BREATH_INTERVAL;
+            steed.lunge = crate::entity::DRAGON_ATTACK_TIME;
+            let (w, h) = steed.size();
+            let (fw, fh) = crate::entity::FRIENDLY_DRAGON_FIREBALL_SIZE;
+            let sx = steed.x + w * 0.5 - fw * 0.5;
+            let sy = steed.y + h * 0.3 - fh * 0.5;
+            let dx = tx - (sx + fw * 0.5);
+            let dy = ty - (sy + fh * 0.5);
+            let len = (dx * dx + dy * dy).sqrt().max(1.0);
+            let mut bolt = Entity::new(self.alloc_id(), EntityKind::FriendlyDragonFireball, sx, sy);
+            bolt.vx = dx / len * FIREBALL_SPEED;
+            bolt.vy = dy / len * FIREBALL_SPEED;
+            bolt.attack_cd = FRIENDLY_DRAGON_FIREBALL_LIFETIME; // reused as the airborne timer
+            entities.insert(bolt.clone());
+            (steed_id, bolt)
+        };
+        let (steed_id, bolt) = result;
+        // Announce the steed's breath pose and the new bolt to every onlooker.
+        self.broadcast_dim(dim, ServerMessage::EntityLunging { id: steed_id });
         self.broadcast_dim(dim, ServerMessage::EntitySpawn { entity: bolt });
     }
 
@@ -3333,7 +3469,13 @@ fn creature_loot(kind: &EntityKind) -> &'static [(BlockId, u32)] {
     match kind {
         EntityKind::Chicken => &[(crate::block::RAW_MEAT, 1)],
         EntityKind::Goat => &[(crate::block::RAW_MEAT, 2)],
-        EntityKind::Dragon => &[(crate::block::DRAGON_SCALE, 1)],
+        // A slain dragon yields its scale and — as the world's only source — the
+        // dragonian steed spellbook, so felling the wild miniboss is what lets a player
+        // raise a friendly one of their own.
+        EntityKind::Dragon => &[
+            (crate::block::DRAGON_SCALE, 1),
+            (crate::block::DRAGONIAN_STEED, 1),
+        ],
         _ => &[],
     }
 }
@@ -5116,6 +5258,7 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
                     && !e.kind.is_pet()
                     && !e.kind.is_knight()
                     && !e.kind.is_mage()
+                    && !e.kind.is_white_dragon()
                     && !matches!(e.kind, EntityKind::DemonKing)
                     && !(dim == Dimension::Arena && matches!(e.kind, EntityKind::OrcMage))
             })
@@ -5213,6 +5356,19 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     let dragon_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::Dragon))
+        .map(|e| e.id)
+        .collect();
+    // Friendly steeds and the friendly fireballs they breathe — the player-summoned
+    // twins of the hostile dragon and its fireball (they help the caster, hunting
+    // monsters rather than players).
+    let white_dragon_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::WhiteDragon { .. }))
+        .map(|e| e.id)
+        .collect();
+    let friendly_dragon_fireball_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::FriendlyDragonFireball))
         .map(|e| e.id)
         .collect();
     let orc_mage_ids: Vec<EntityId> = entities
@@ -7408,6 +7564,180 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         broadcasts.push(ServerMessage::EntitySpawn { entity: fireball });
     }
 
+    // White dragons: the friendly steeds the dragonian steed spell summons. They FLY
+    // like the hostile dragon, but they serve their owner: a *ridden* one snaps beneath
+    // its rider each tick (the rider drives the flight client-side and breathes fire on
+    // the breath key — handled in the message loop); a free one hunts the nearest
+    // monster, breathing friendly fireballs at it, and otherwise soars to its owner's
+    // side, teleporting over if they stray too far. Like a pet it never despawns.
+    let mut white_dragon_fireball_throws: Vec<(f32, f32, f32, f32)> = Vec::new();
+    for id in white_dragon_ids {
+        // A ridden steed: glue it centred beneath its rider and skip its own AI, just
+        // like a ridden horse (it is hidden and drawn as the combined player/dragon
+        // sprite, so its exact spot only matters at dismount).
+        if let Some(&(_, rx, ry)) = ridden_horses.iter().find(|(hid, ..)| *hid == id) {
+            let Some(e) = entities.get_mut(id) else {
+                continue;
+            };
+            let (w, h) = e.size();
+            e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+            e.lunge = (e.lunge - TICK_DT).max(0.0);
+            e.x = rx + (PLAYER_SIZE.0 - w) * 0.5;
+            e.y = ry + (PLAYER_SIZE.1 - h) * 0.5;
+            e.vx = 0.0;
+            e.vy = 0.0;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: e.x,
+                y: e.y,
+                vx: 0.0,
+                vy: 0.0,
+            });
+            continue;
+        }
+
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        e.lunge = (e.lunge - TICK_DT).max(0.0);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+
+        // Resolve the owner's live position (by name) in this dimension, if they're here.
+        let owner_pos: Option<(f32, f32)> = e.kind.owner().and_then(|name| {
+            named_players
+                .iter()
+                .find(|(n, ..)| n == name)
+                .map(|&(_, _, ox, oy)| (ox, oy))
+        });
+
+        // Owner strayed too far: snap to their side rather than despawning.
+        if let Some((ox, oy)) = owner_pos {
+            let ocx = ox + PLAYER_SIZE.0 * 0.5;
+            let ocy = oy + PLAYER_SIZE.1 * 0.5;
+            if (ocx - scx).powi(2) + (ocy - scy).powi(2)
+                > WHITE_DRAGON_TELEPORT_DIST * WHITE_DRAGON_TELEPORT_DIST
+            {
+                e.x = ox + (PLAYER_SIZE.0 - w) * 0.5;
+                e.y = oy - h - 4.0;
+                e.vx = 0.0;
+                e.vy = 0.0;
+                e.home_x = Some(e.x);
+                broadcasts.push(ServerMessage::EntityMoved {
+                    id,
+                    x: e.x,
+                    y: e.y,
+                    vx: 0.0,
+                    vy: 0.0,
+                });
+                continue;
+            }
+        }
+
+        // Hunt the nearest monster within aggro; failing that, soar to the owner's side.
+        let target = nearest_of(&hostiles, scx, scy, WHITE_DRAGON_AGGRO);
+        let (vx, vy, aim) = match target {
+            // A monster to burn: kite it like the hostile dragon — close when far, back
+            // off when crowded, hold and match altitude when in range.
+            Some((_, tx, ty, tw, th)) => {
+                let gap = aabb_gap(e.x, e.y, w, h, tx, ty, tw, th);
+                let dx = (tx + tw * 0.5) - scx;
+                let dy = (ty + th * 0.5) - scy;
+                let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                let (ux, uy) = (dx / len, dy / len);
+                let (vx, vy) = if gap < DRAGON_KEEP_DIST {
+                    (-ux * DRAGON_SPEED, -uy * DRAGON_SPEED)
+                } else if gap > WHITE_DRAGON_SHOOT_RANGE {
+                    (ux * DRAGON_SPEED, uy * DRAGON_SPEED)
+                } else {
+                    (0.0, uy * DRAGON_SPEED)
+                };
+                (vx, vy, Some((tx, ty, tw, th, gap)))
+            }
+            // No monster near: glide to the owner, easing to a hover at their side. With
+            // no owner here (offline or another dimension), drift on its home patch.
+            None => match owner_pos {
+                Some((ox, oy)) => {
+                    // Aim for a spot just above and beside the owner.
+                    let tx = ox + PLAYER_SIZE.0 * 0.5;
+                    let ty = oy - h * 0.5;
+                    let dx = tx - scx;
+                    let dy = ty - scy;
+                    let len = (dx * dx + dy * dy).sqrt();
+                    if len <= WHITE_DRAGON_FOLLOW_GAP {
+                        (0.0, 0.0, None)
+                    } else {
+                        (dx / len * DRAGON_SPEED, dy / len * DRAGON_SPEED, None)
+                    }
+                }
+                None => {
+                    let home = *e.home_x.get_or_insert(e.x);
+                    (wander_dir(scx, e.vx, home) * DRAGON_SPEED, 0.0, None)
+                }
+            },
+        };
+
+        // Fly freely (no gravity), each axis stopped independently by walls.
+        let (nx, _) = move_x(&mut world, e.x, e.y, w, h, vx * TICK_DT);
+        let (ny, _) = move_y(&mut world, nx, e.y, w, h, vy * TICK_DT);
+        e.x = nx;
+        e.y = ny;
+        e.vx = vx;
+        e.vy = vy;
+        // Face the monster it is fighting even while backing away (else its travel dir).
+        let bcast_vx = match aim {
+            Some((tx, _, tw, _, _)) => {
+                let cx = nx + w * 0.5;
+                let toward = if tx + tw * 0.5 >= cx { 1.0 } else { -1.0 };
+                toward * vx.abs()
+            }
+            None => vx,
+        };
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: nx,
+            y: ny,
+            vx: bcast_vx,
+            vy,
+        });
+
+        // Breathe a friendly fireball at the monster when in range and off cooldown,
+        // kicking off the fire-breathing animation.
+        if let Some((tx, ty, tw, th, gap)) = aim
+            && e.attack_cd <= 0.0
+            && gap <= WHITE_DRAGON_SHOOT_RANGE
+        {
+            e.attack_cd = WHITE_DRAGON_SHOOT_INTERVAL;
+            e.lunge = crate::entity::DRAGON_ATTACK_TIME;
+            broadcasts.push(ServerMessage::EntityLunging { id });
+            let (fw, fh) = crate::entity::FRIENDLY_DRAGON_FIREBALL_SIZE;
+            let sx = nx + w * 0.5 - fw * 0.5;
+            let sy = ny + h * 0.3 - fh * 0.5;
+            let dx = (tx + tw * 0.5) - (sx + fw * 0.5);
+            let dy = (ty + th * 0.5) - (sy + fh * 0.5);
+            let len = (dx * dx + dy * dy).sqrt().max(1.0);
+            white_dragon_fireball_throws.push((
+                sx,
+                sy,
+                dx / len * FIREBALL_SPEED,
+                dy / len * FIREBALL_SPEED,
+            ));
+        }
+    }
+    // Spawn the friendly fireballs the steeds breathed this tick (not in
+    // `friendly_dragon_fireball_ids`, so they begin flying next tick).
+    for (x, y, vx, vy) in white_dragon_fireball_throws {
+        let fid = shared.alloc_id();
+        let mut fireball = Entity::new(fid, EntityKind::FriendlyDragonFireball, x, y);
+        fireball.vx = vx;
+        fireball.vy = vy;
+        fireball.attack_cd = FRIENDLY_DRAGON_FIREBALL_LIFETIME; // reused as the airborne timer
+        entities.insert(fireball.clone());
+        broadcasts.push(ServerMessage::EntitySpawn { entity: fireball });
+    }
+
     // Orcs: the underworld's hulking brutes. They lumber after players at all hours
     // (slower than anything else afoot), then plant their feet and commit to a
     // telegraphed slam — heaving their arms up and crashing them down for heavy
@@ -8236,6 +8566,70 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         });
     }
     for id in fireball_despawns {
+        entities.remove(id);
+        broadcasts.push(ServerMessage::EntityDespawn { id });
+    }
+
+    // Friendly dragon fireballs in flight: the bolts a player's white-dragon steed
+    // breathes. Like the hostile fireball they fly straight (no gravity) and leave a
+    // tongue of fire where they burst — but they help the caster, damaging the
+    // *monster* they strike rather than players, and knights and monsters pay them no
+    // mind.
+    let mut friendly_dragon_fireball_despawns: Vec<EntityId> = Vec::new();
+    for id in friendly_dragon_fireball_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+
+        let (nx, hit_x) = move_x(&mut world, e.x, e.y, w, h, e.vx * TICK_DT);
+        let (ny, hit_y) = move_y(&mut world, nx, e.y, w, h, e.vy * TICK_DT);
+        e.x = nx;
+        e.y = ny;
+
+        // Did it strike a monster this tick? Damage and knock it along the flight.
+        let kx = if e.vx >= 0.0 {
+            KNOCKBACK_X
+        } else {
+            -KNOCKBACK_X
+        };
+        let mut struck = false;
+        for &(tid, tx, ty, tw, th) in &hostiles {
+            if aabb_gap(nx, ny, w, h, tx, ty, tw, th) <= FRIENDLY_DRAGON_FIREBALL_HIT_RANGE {
+                creature_hits.push((tid, (kx, -KNOCKBACK_Y), FRIENDLY_DRAGON_FIREBALL_DAMAGE));
+                struck = true;
+                break;
+            }
+        }
+
+        // Burst on a wall, on a monster, or when its life runs out: leave a tongue of
+        // fire in the (empty) cell where it died, then despawn.
+        if hit_x || hit_y || struck || e.attack_cd <= 0.0 {
+            let fx = ((nx + w * 0.5) / TILE_SIZE).floor() as i32;
+            let fy = ((ny + h * 0.5) / TILE_SIZE).floor() as i32;
+            if world.get(fx, fy) == crate::block::AIR && world.set(fx, fy, crate::block::FIRE) {
+                new_trail_fires.push((fx, fy));
+                broadcasts.push(ServerMessage::BlockUpdate {
+                    dim,
+                    x: fx,
+                    y: fy,
+                    block: crate::block::FIRE,
+                });
+            }
+            friendly_dragon_fireball_despawns.push(id);
+            continue;
+        }
+
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: nx,
+            y: ny,
+            vx: e.vx,
+            vy: e.vy,
+        });
+    }
+    for id in friendly_dragon_fireball_despawns {
         entities.remove(id);
         broadcasts.push(ServerMessage::EntityDespawn { id });
     }
@@ -10020,6 +10414,9 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 ClientMessage::CastSpell { slot, tx, ty } => {
                     shared.cast_spell(id, slot as usize, tx, ty);
                 }
+                ClientMessage::DragonBreath { tx, ty } => {
+                    shared.dragon_breath(id, tx, ty);
+                }
                 ClientMessage::ToggleDoor { x, y } => {
                     let dim = shared.dim_of(id);
                     // Gated by the player's melee reach, the same limit governing
@@ -10207,8 +10604,11 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                     _ => None,
                                 };
                                 match (rider, entities.get(hid)) {
+                                    // A tamed horse or a summoned white-dragon steed the
+                                    // player owns, within reach, can be mounted.
                                     (Some((name, ax, ay, aw, ah)), Some(b))
-                                        if matches!(&b.kind, EntityKind::Horse { owner: Some(o) } if *o == name)
+                                        if (matches!(&b.kind, EntityKind::Horse { owner: Some(o) } if *o == name)
+                                            || matches!(&b.kind, EntityKind::WhiteDragon { owner: Some(o) } if *o == name))
                                             && aabb_gap(
                                                 ax, ay, aw, ah, b.x, b.y, b.size().0, b.size().1,
                                             ) <= PLAYER_ATTACK_REACH =>
@@ -10299,6 +10699,16 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         .get(target)
                         .is_some_and(|e| e.kind.is_mage());
                     if is_mage {
+                        continue;
+                    }
+                    // A white-dragon steed is sacrosanct too: a swing never harms one
+                    // (it is mounted by right-click, like a horse), so it just bounces.
+                    let is_white_dragon = shared
+                        .entities(dim)
+                        .lock()
+                        .get(target)
+                        .is_some_and(|e| e.kind.is_white_dragon());
+                    if is_white_dragon {
                         continue;
                     }
                     // Validate reach and, if good, compute the knockback shoving

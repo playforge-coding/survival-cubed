@@ -23,6 +23,7 @@ Projectiles (bones, fireballs) are the exception, flying at 130–170 px/s.
 | [Horse](horse.md)              | 30     | Tameable mount                    |
 | [Knight](knight.md)            | 40     | Recruitable man-at-arms           |
 | [Mage](mage.md)                | 30     | Spellcaster made by the restore spell |
+| [White Dragon](../magic.md#the-dragonian-steed-spell) | 200 | Rideable steed summoned by the dragonian steed spell |
 
 ## Hostile monsters
 

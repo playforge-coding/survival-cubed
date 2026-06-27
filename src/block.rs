@@ -241,6 +241,16 @@ pub const SUNBURST_SPELL: BlockId = 64;
 /// demon is calmed back into an ordinary one. A knight or mage you restore is
 /// **recruited** to you. Reusable — casting never consumes the book, only mana.
 pub const RESTORE_SPELL: BlockId = 65;
+/// The dragonian steed spellbook: a spellbook spilled by a slain
+/// [`dragon`](crate::entity::EntityKind::Dragon). An item (not placeable, stacks to
+/// one). Right-click while holding it to spend [`DRAGONIAN_STEED_MANA_COST`] mana and
+/// summon a friendly white [`dragon`](crate::entity::EntityKind::WhiteDragon) at your
+/// side: it never despawns, soars after you breathing fire at nearby monsters, and can
+/// be **ridden** (right-click it) to fly — loosing fireballs at the cursor on the
+/// breath key while mounted. Casting again resummons a fresh steed beside you (the old
+/// one, if any, vanishes), which is the only way a fallen steed returns. Reusable —
+/// casting never consumes the book, only mana.
+pub const DRAGONIAN_STEED: BlockId = 66;
 
 /// Gold ingots consumed to reinforce a plain [`CHEST`] into a [`LOCKED_CHEST`].
 /// Shared by the server (which charges it) and the client (which shows the cost).
@@ -400,6 +410,10 @@ impl BlockRegistry {
         // The restore spellbook: a non-placeable artifact item from the demon king's
         // chest. Cast (right-click) to restore the creature under the cursor.
         r.register("restore_spell", false, true, false, 0.0);
+        // The dragonian steed spellbook: a non-placeable artifact item, spilled by a
+        // slain dragon. Right-clicking it spends mana to summon a friendly white
+        // dragon, rather than placing a block.
+        r.register("dragonian_steed_spell", false, true, false, 0.0);
         r
     }
 
@@ -467,7 +481,7 @@ pub fn max_stack(id: BlockId) -> u32 {
         // A suit of armor is a single bulky piece, so it never stacks.
         IRON_ARMOR | TUNGSTEN_ARMOR => 1,
         // A spellbook is a single bound tome, so it never stacks.
-        SUMMONER_SPELL | SUNBURST_SPELL | RESTORE_SPELL => 1,
+        SUMMONER_SPELL | SUNBURST_SPELL | RESTORE_SPELL | DRAGONIAN_STEED => 1,
         _ => crate::inventory::STACK_MAX,
     }
 }
@@ -643,10 +657,17 @@ pub const SUNBURST_SPELL_MANA_COST: i32 = 50;
 /// deadly foe into a loyal ally (a knight or mage) at a stroke.
 pub const RESTORE_SPELL_MANA_COST: i32 = 60;
 
+/// Mana spent casting the dragonian steed spell once. The dearest cast in the world —
+/// it summons a whole flying miniboss to fight at your side and carry you aloft.
+pub const DRAGONIAN_STEED_MANA_COST: i32 = 80;
+
 /// Whether `item` is a spellbook — a magic tome cast (by right-clicking) at the
 /// cost of mana rather than placed or consumed.
 pub fn is_spellbook(item: BlockId) -> bool {
-    matches!(item, SUMMONER_SPELL | SUNBURST_SPELL | RESTORE_SPELL)
+    matches!(
+        item,
+        SUMMONER_SPELL | SUNBURST_SPELL | RESTORE_SPELL | DRAGONIAN_STEED
+    )
 }
 
 /// The mana cost of casting the spellbook `item` once, or `None` if `item` is not a
@@ -656,6 +677,7 @@ pub fn spell_mana_cost(item: BlockId) -> Option<i32> {
         SUMMONER_SPELL => Some(SUMMONER_SPELL_MANA_COST),
         SUNBURST_SPELL => Some(SUNBURST_SPELL_MANA_COST),
         RESTORE_SPELL => Some(RESTORE_SPELL_MANA_COST),
+        DRAGONIAN_STEED => Some(DRAGONIAN_STEED_MANA_COST),
         _ => None,
     }
 }
@@ -1038,15 +1060,22 @@ mod tests {
         for (book, cost) in [
             (SUNBURST_SPELL, SUNBURST_SPELL_MANA_COST),
             (RESTORE_SPELL, RESTORE_SPELL_MANA_COST),
+            (DRAGONIAN_STEED, DRAGONIAN_STEED_MANA_COST),
         ] {
             assert!(is_spellbook(book));
             assert_eq!(spell_mana_cost(book), Some(cost));
         }
         assert!(SUNBURST_SPELL_MANA_COST > SUMMONER_SPELL_MANA_COST);
         assert!(RESTORE_SPELL_MANA_COST > SUNBURST_SPELL_MANA_COST);
+        assert!(DRAGONIAN_STEED_MANA_COST > RESTORE_SPELL_MANA_COST);
         // A single bound tome: each never stacks, and is a plain (non-placeable)
         // item with an atlas tile for its inventory/dropped sprite.
-        for book in [SUMMONER_SPELL, SUNBURST_SPELL, RESTORE_SPELL] {
+        for book in [
+            SUMMONER_SPELL,
+            SUNBURST_SPELL,
+            RESTORE_SPELL,
+            DRAGONIAN_STEED,
+        ] {
             assert_eq!(max_stack(book), 1);
             assert!(reg.get(book).visible);
             assert!(!reg.is_placeable(book));

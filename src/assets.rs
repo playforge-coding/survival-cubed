@@ -133,6 +133,7 @@ blocks!(
     "summoner_spell",
     "sunburst_spell",
     "restore_spell",
+    "dragonian_steed_spell",
 );
 
 sprites!(
@@ -161,6 +162,14 @@ sprites!(
     "demon" => [0, 1, 2, 3],
     "dragon" => [0, 1, 2, 3],
     "dragon/attack" => [0, 1],
+    // The friendly white dragon the dragonian steed spell summons: a walk cycle and
+    // a one-shot fire-breathing pose, mirroring the hostile dragon's sheets.
+    "white_dragon" => [0, 1, 2, 3],
+    "white_dragon/attack" => [0, 1],
+    // The riding pose: the player seated on the white dragon, drawn while mounted.
+    // The art already includes the dragon, like the player/horse sprite.
+    "player/dragon" => [0, 1, 2, 3],
+    "player/dragon/attack" => [0, 1],
     "demon_king" => [0, 1, 2, 3, 4],
     "demon_king/attack" => [0, 1, 2, 3, 4, 5],
     "orc" => [0, 1, 2, 3, 4],

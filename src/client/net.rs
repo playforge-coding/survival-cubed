@@ -191,6 +191,13 @@ pub enum NetCommand {
         tx: f32,
         ty: f32,
     },
+    /// While riding a white-dragon steed, breathe a fireball toward world pixel
+    /// `(tx, ty)` (the cursor). The server validates the rider really is on their own
+    /// steed and its breath is ready, then looses a friendly dragon fireball.
+    DragonBreath {
+        tx: f32,
+        ty: f32,
+    },
     /// Swing the door touching cell `(x, y)` open or shut (server flips both
     /// halves and resyncs).
     ToggleDoor {
@@ -511,6 +518,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::UseFireKey { slot } => ClientMessage::UseFireKey { slot },
         NetCommand::UseArenaKey { slot } => ClientMessage::UseArenaKey { slot },
         NetCommand::CastSpell { slot, tx, ty } => ClientMessage::CastSpell { slot, tx, ty },
+        NetCommand::DragonBreath { tx, ty } => ClientMessage::DragonBreath { tx, ty },
         NetCommand::ToggleDoor { x, y } => ClientMessage::ToggleDoor { x, y },
         NetCommand::MoveItem { from, to } => ClientMessage::MoveItem { from, to },
         NetCommand::DropItem { slot, all, dir } => ClientMessage::DropItem { slot, all, dir },

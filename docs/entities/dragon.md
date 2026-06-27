@@ -15,7 +15,7 @@ anything else in the depths — felling one is a real fight, announced by its ow
 | **Damage** | 7 HP per fireball (leaves fire where it bursts) |
 | **Found in** | Underworld **charred** expanse — **rare** |
 | **Activity** | All hours |
-| **Drops** | 1 **Dragon Scale** |
+| **Drops** | 1 **Dragon Scale** + the **[Dragonian Steed](../magic.md#the-dragonian-steed-spell)** spellbook |
 
 A dragon **flies**, kiting you through the air like an [enchanted
 demon](demons.md#enchanted-demon) but swifter and far hardier: it closes when
@@ -32,7 +32,10 @@ pick your moment, use cover, and don't get cornered while it rains fire.
 
 Felling a dragon spills a single **Dragon Scale** — a shimmering plate that is the
 only source of the scales needed to craft an [Arena Key](../crafting.md), so reaching
-the boss arena means hunting down dragons first.
+the boss arena means hunting down dragons first — and the **[Dragonian Steed
+spellbook](../magic.md#the-dragonian-steed-spell)**, which lets you summon a friendly
+**white dragon** of your own to fight for you and carry you aloft. A wild dragon is
+the only source of the spell, so you must slay one to ride one.
 
 ### Fireball
 

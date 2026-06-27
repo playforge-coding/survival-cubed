@@ -6,20 +6,21 @@
 |---|---|
 | <kbd>A</kbd> / <kbd>←</kbd> | Move left |
 | <kbd>D</kbd> / <kbd>→</kbd> | Move right |
-| <kbd>Space</kbd> / <kbd>W</kbd> / <kbd>↑</kbd> | Jump · climb up a ladder · swim up · fly up (creator) |
-| <kbd>S</kbd> / <kbd>↓</kbd> | Climb down a ladder · dive in water · fly down (creator) |
+| <kbd>Space</kbd> / <kbd>W</kbd> / <kbd>↑</kbd> | Jump · climb up a ladder · swim up · fly up (creator · **dragon steed**) |
+| <kbd>S</kbd> / <kbd>↓</kbd> | Climb down a ladder · dive in water · fly down (creator · **dragon steed**) |
 
 You can only jump while standing on the ground. On ladders gravity is suspended
 and you climb at a steady pace; in water you paddle up and dive down. Riding a
 tamed **horse** lets you gallop noticeably faster than you can run (you still jump
-and fall normally) — see **[Creatures](creatures.md#mounts)**.
+and fall normally); riding a **[dragonian steed](magic.md#the-dragonian-steed-spell)**
+lets you **fly** — rise on jump, descend on down — see **[Creatures](creatures.md#mounts)**.
 
 ## Mouse
 
 | Input | Action |
 |---|---|
 | **Left button** (hold) | Mine/break the targeted block, or melee-attack a creature |
-| **Right button** | Place the selected block, or interact (doors, forge, campfire, sign, quest board, chest, bucket, fire key, boat) · mount/dismount a tamed horse · **cast a held [spellbook](magic.md)** toward the cursor |
+| **Right button** | Place the selected block, or interact (doors, forge, campfire, sign, quest board, chest, bucket, fire key, boat) · mount/dismount a tamed horse or **[dragonian steed](magic.md#the-dragonian-steed-spell)** · **cast a held [spellbook](magic.md)** toward the cursor |
 | **Scroll wheel** | In creator flight: adjust fly-speed multiplier (1.0×–8.0×) |
 
 Your reach is about **80 pixels** (five blocks) from your body, and both mining
@@ -34,6 +35,7 @@ targeted block shows mining progress.
 | <kbd>E</kbd> | Open / close the full inventory and crafting screen |
 | <kbd>Q</kbd> | Drop one item from the selected hotbar slot |
 | <kbd>F</kbd> | Eat the food in the selected hotbar slot |
+| <kbd>B</kbd> | While riding a **[dragonian steed](magic.md#the-dragonian-steed-spell)**, breathe a fireball at the cursor |
 
 The selected hotbar slot determines which block you place and which food you eat.
 See **[Crafting & Tools](crafting.md)** for the inventory layout and recipes.

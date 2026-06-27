@@ -336,6 +336,13 @@ pub enum ClientMessage {
     /// fireball aimed at the cursor). The book is reusable and is never consumed. A
     /// no-op (with a mana resync) if the slot doesn't hold a spellbook or mana is short.
     CastSpell { slot: u8, tx: f32, ty: f32 },
+    /// While riding a white-dragon steed, breathe a fireball toward world pixel
+    /// `(tx, ty)` (the player's cursor). The server checks the sender really is riding
+    /// one of their own [white dragons](crate::entity::EntityKind::WhiteDragon) and that
+    /// its breath is off cooldown; on success it looses a friendly dragon fireball from
+    /// the steed's maw at the cursor (damaging monsters where it strikes). A no-op
+    /// otherwise — it costs no mana, only the steed's own breath cadence.
+    DragonBreath { tx: f32, ty: f32 },
 }
 
 /// Sent from server to client over the single bidirectional stream.

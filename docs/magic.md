@@ -114,6 +114,38 @@ you only ever pay for a restore that lands.
     restores a foe, the new knight or mage is recruited **on your behalf**, so a
     single mage can build you a whole retinue.
 
+## The dragonian steed spell
+
+| Stat | Value |
+|---|---|
+| **Source** | Dropped by a slain **[dragon](entities/dragon.md)** |
+| **Mana cost** | 80 per cast |
+| **Effect** | Summons a friendly white dragon that fights for you and can be ridden |
+
+The grandest magic in the world, won by felling the underworld's flying miniboss.
+Casting summons a friendly **white dragon** at your side — a peaceable twin of the
+[dragon](entities/dragon.md) that slew to teach you the spell. The steed:
+
+- **Never despawns.** Like a pet it stays with you forever, teleporting to your side
+  if you stray too far and crossing **dimensions** with you.
+- **Fights for you.** Left to its own wings it soars after you and breathes
+  **friendly fireballs** at nearby monsters, scorching them (and leaving a lick of
+  fire) without ever harming you.
+- **Can be ridden.** Right-click your steed to **mount** it and **fly** — rise on
+  **jump**, descend on **down**, and steer with left/right. While riding, hold **B**
+  to **breathe a fireball at your cursor** on the steed's cadence. Right-click again
+  to dismount.
+
+Unlike a pet, a fallen steed does **not** come back on its own: only **recasting the
+spell** raises a new one. Casting again also replaces a steed you already have, so a
+lost or distant dragon is always one cast away — and you never accumulate more than
+one at a time.
+
+!!! tip "Win the spell, then make it your own"
+    The dragonian steed is the **only** source of its own spellbook: you must brave
+    the depths and slay a wild dragon to earn the right to raise a friendly one. A
+    slain dragon drops its **scale** and the spellbook together.
+
 ## Lore
 
 *To be written.*

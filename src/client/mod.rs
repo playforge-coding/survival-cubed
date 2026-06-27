@@ -97,6 +97,12 @@ const BOAT_FLOAT_MAX_SPEED: f32 = 220.0;
 /// noticeably faster than they can run on foot. Gravity and jumping are otherwise
 /// unchanged — a mounted player still arcs and lands like normal.
 const HORSE_RIDE_SPEED_MULT: f32 = 1.7;
+/// Multiplier on walking speed while flying a white-dragon steed: it carries its rider
+/// briskly through the air, a touch faster even than a horse gallops on the ground.
+const DRAGON_RIDE_SPEED_MULT: f32 = 1.9;
+/// Vertical flight speed (px/s) of a ridden white-dragon steed: the rider rises on the
+/// jump input and descends on the down input, like creator-mode flight.
+const DRAGON_RIDE_FLY_SPEED: f32 = 200.0;
 // The local player is just a (special) entity; reuse its shared size.
 const PLAYER_W: f32 = crate::entity::PLAYER_SIZE.0;
 const PLAYER_H: f32 = crate::entity::PLAYER_SIZE.1;
@@ -201,6 +207,9 @@ struct Input {
     mouse: (f32, f32),
     breaking: bool,
     placing: bool,
+    /// Held while the breath key (B) is down. Only acts while riding a white-dragon
+    /// steed, where it makes the steed spit a fireball at the cursor on its cadence.
+    breath: bool,
 }
 
 struct GameState {
@@ -3550,14 +3559,38 @@ impl App {
                 });
                 continue;
             }
-            // A remote player riding a horse shows the combined player/horse sprite
-            // (the horse is part of the art), animated as it moves, centred on their
-            // body and resting on their feet — just like the boat pose below.
+            // A remote player riding a mount shows the combined sprite (the mount is
+            // part of the art), animated as it moves, centred on their body and resting
+            // on their feet — just like the boat pose below. A white-dragon steed uses
+            // the player/dragon art (its wings always beating, and its one-shot
+            // fire-breath played off the steed's own `lunge` timer); anything else is a
+            // horse gallop.
             if e.riding.is_some() && matches!(e.kind, EntityKind::Player { .. }) {
-                let hdef = &sprite::PLAYER_HORSE_SPRITE;
+                let mount = e.riding.and_then(|rid| g.entities.get(rid));
+                let on_dragon =
+                    mount.is_some_and(|m| matches!(m.kind, EntityKind::WhiteDragon { .. }));
+                let breathing = on_dragon && mount.is_some_and(|m| m.lunge > 0.0);
+                let hdef = if on_dragon {
+                    if breathing {
+                        &sprite::PLAYER_DRAGON_ATTACK_SPRITE
+                    } else {
+                        &sprite::PLAYER_DRAGON_SPRITE
+                    }
+                } else {
+                    &sprite::PLAYER_HORSE_SPRITE
+                };
                 let (hw, hh) = (hdef.frame_w as f32, hdef.frame_h as f32);
                 let facing = g.facing.get(&e.id).copied().unwrap_or(true);
-                let frame = sprite::frame_index(e.vx.abs() > 1.0, self.anim_time, hdef);
+                let frame = if breathing {
+                    let lunge = mount.map(|m| m.lunge).unwrap_or(0.0);
+                    let progress =
+                        1.0 - (lunge / crate::entity::DRAGON_ATTACK_TIME).clamp(0.0, 1.0);
+                    ((progress * hdef.frames as f32) as u32).min(hdef.frames - 1)
+                } else {
+                    // A flying steed beats its wings even while hovering; a horse only
+                    // animates as it moves.
+                    sprite::frame_index(on_dragon || e.vx.abs() > 1.0, self.anim_time, hdef)
+                };
                 tiles.push(entity_instance(
                     self.atlas.sprite_frame(hdef.name, frame),
                     e.x + (w - hw) * 0.5,
@@ -3707,6 +3740,13 @@ impl App {
                 let progress = 1.0 - (e.lunge / crate::entity::DRAGON_ATTACK_TIME).clamp(0.0, 1.0);
                 let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
                 (d, frame)
+            } else if e.lunge > 0.0 && matches!(e.kind, EntityKind::WhiteDragon { .. }) {
+                // A breathing white-dragon steed plays the same one-shot fire-breath as
+                // the hostile dragon, off its own `lunge` (attack) timer.
+                let d = &sprite::WHITE_DRAGON_ATTACK_SPRITE;
+                let progress = 1.0 - (e.lunge / crate::entity::DRAGON_ATTACK_TIME).clamp(0.0, 1.0);
+                let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
+                (d, frame)
             } else if e.lunge > 0.0 && matches!(e.kind, EntityKind::DemonKing) {
                 // An attacking demon king plays its one-shot wind-up-and-release (frame
                 // stepped by the attack timer, which rides on the same `lunge` field) —
@@ -3736,7 +3776,9 @@ impl App {
             let base = flash_tint(tint, e.hit_flash);
             let color = if matches!(
                 e.kind,
-                EntityKind::FriendlySkull | EntityKind::FriendlySummonerFireball
+                EntityKind::FriendlySkull
+                    | EntityKind::FriendlySummonerFireball
+                    | EntityKind::FriendlyDragonFireball
             ) {
                 [base[0] * 0.45, base[1] * 0.8, base[2], base[3]]
             } else {
@@ -3782,12 +3824,31 @@ impl App {
                 flash_tint(tint, g.hit_flash),
             ));
         } else if g.riding.is_some() {
-            // Mounted: the combined player/horse sprite (the horse is part of the
-            // art) replaces the plain avatar, animated as the player gallops, centred
-            // on the player box and resting on their feet — like the boat pose above.
-            let def = &sprite::PLAYER_HORSE_SPRITE;
+            // Mounted: the combined mount sprite (the mount is part of the art) replaces
+            // the plain avatar, centred on the player box and resting on their feet —
+            // like the boat pose above. A white-dragon steed flies the player/dragon
+            // art (wings always beating, with its one-shot fire-breath played off the
+            // steed entity's own `lunge` timer); anything else is a horse gallop.
+            let mount = g.riding.and_then(|rid| g.entities.get(rid));
+            let on_dragon = mount.is_some_and(|m| matches!(m.kind, EntityKind::WhiteDragon { .. }));
+            let breathing = on_dragon && mount.is_some_and(|m| m.lunge > 0.0);
+            let def = if on_dragon {
+                if breathing {
+                    &sprite::PLAYER_DRAGON_ATTACK_SPRITE
+                } else {
+                    &sprite::PLAYER_DRAGON_SPRITE
+                }
+            } else {
+                &sprite::PLAYER_HORSE_SPRITE
+            };
             let (hw, hh) = (def.frame_w as f32, def.frame_h as f32);
-            let frame = sprite::frame_index(g.vel.x.abs() > 1.0, self.anim_time, def);
+            let frame = if breathing {
+                let lunge = mount.map(|m| m.lunge).unwrap_or(0.0);
+                let progress = 1.0 - (lunge / crate::entity::DRAGON_ATTACK_TIME).clamp(0.0, 1.0);
+                ((progress * def.frames as f32) as u32).min(def.frames - 1)
+            } else {
+                sprite::frame_index(on_dragon || g.vel.x.abs() > 1.0, self.anim_time, def)
+            };
             tiles.push(entity_instance(
                 self.atlas.sprite_frame(def.name, frame),
                 g.pos.x + (PLAYER_W - hw) * 0.5,
@@ -4339,6 +4400,24 @@ fn step_physics(game: &mut GameState, reg: &BlockRegistry, input: &Input, dt: f3
         game.vel.x *= BOAT_LAND_DRAG;
     }
 
+    // Flying a white-dragon steed: the rider soars under no gravity, rising and falling
+    // on the jump/down inputs like creator-mode flight (blocks still stop them — fly,
+    // not noclip — and a flight never deals fall damage). The steed is glued beneath
+    // them server-side and drawn as the combined player/dragon sprite.
+    let riding_dragon = game
+        .riding
+        .and_then(|rid| game.entities.get(rid))
+        .is_some_and(|e| matches!(e.kind, EntityKind::WhiteDragon { .. }));
+    if riding_dragon {
+        game.vel.x *= DRAGON_RIDE_SPEED_MULT;
+        game.vel.y = (input.down as i32 - input.jump as i32) as f32 * DRAGON_RIDE_FLY_SPEED;
+        move_x(game, reg, game.vel.x * dt);
+        let landed = move_y(game, reg, game.vel.y * dt);
+        game.on_ground = landed && game.vel.y >= 0.0;
+        game.air_min_y = game.pos.y;
+        return None;
+    }
+
     // Riding a horse: a gallop carries the rider faster than running. Only the
     // horizontal speed changes — the player still jumps and falls on the normal arc
     // below, and the horse is glued beneath them server-side — so we just scale the
@@ -4714,10 +4793,10 @@ fn handle_block_actions(
             return;
         }
         if let Some(target) = creature_at(game, world)
-            && game
-                .entities
-                .get(target)
-                .is_some_and(|e| matches!(e.kind, EntityKind::Horse { owner: Some(_) }))
+            && game.entities.get(target).is_some_and(|e| {
+                matches!(e.kind, EntityKind::Horse { owner: Some(_) })
+                    || matches!(e.kind, EntityKind::WhiteDragon { owner: Some(_) })
+            })
         {
             let _ = net.commands.send(NetCommand::SetRiding {
                 horse: Some(target),
@@ -4725,6 +4804,24 @@ fn handle_block_actions(
             game.action_timer = ACTION_COOLDOWN;
             return;
         }
+    }
+
+    // While riding a white-dragon steed, holding the breath key (B) makes the steed
+    // spit a fireball toward the cursor on the server's cadence (the server gates the
+    // rate, so the throttle here just keeps us from flooding it).
+    if input.breath
+        && game.action_timer <= 0.0
+        && game
+            .riding
+            .and_then(|rid| game.entities.get(rid))
+            .is_some_and(|e| matches!(e.kind, EntityKind::WhiteDragon { .. }))
+    {
+        let _ = net.commands.send(NetCommand::DragonBreath {
+            tx: world.x,
+            ty: world.y,
+        });
+        game.action_timer = ACTION_COOLDOWN;
+        return;
     }
 
     // Right-clicking a forge opens its smelting GUI instead of placing a block.
@@ -5421,6 +5518,9 @@ impl App {
             KeyCode::KeyQ if pressed => self.drop_selected(),
             // F eats the food in the selected hotbar slot, if any.
             KeyCode::KeyF if pressed => self.eat_selected(),
+            // B breathes fire while riding a white-dragon steed: held, it makes the
+            // steed spit a fireball at the cursor on its cadence (no effect otherwise).
+            KeyCode::KeyB => self.input.breath = pressed,
             // M drops a personal waypoint at the player's feet; N removes the one
             // nearest to them.
             KeyCode::KeyM if pressed => self.add_waypoint(),

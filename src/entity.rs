@@ -67,6 +67,10 @@ pub const DEMON_KING_SIZE: (f32, f32) = (22.0, 30.0);
 /// rare flying miniboss. A long, winged serpent drawn far wider than any other
 /// creature, matching its art's low, broad proportions.
 pub const DRAGON_SIZE: (f32, f32) = (31.0, 17.0);
+/// Collision/draw size (width, height) in pixels of a friendly white dragon — the
+/// rideable steed the [`crate::block::DRAGONIAN_STEED`] spell summons. The same long,
+/// broad build as the hostile [`DRAGON_SIZE`] dragon it is a peaceable twin of.
+pub const WHITE_DRAGON_SIZE: (f32, f32) = (31.0, 17.0);
 /// Collision/draw size (width, height) in pixels of an orc mage — a robed
 /// underworld spellcaster, leaner than the hulking brute it shares the depths with.
 pub const ORC_MAGE_SIZE: (f32, f32) = (10.0, 13.0);
@@ -106,6 +110,11 @@ pub const SUMMONER_FIREBALL_SIZE: (f32, f32) = (10.0, 7.0);
 /// the bolt a player's summoner spell looses, the same low, small bolt as the
 /// necromancer's [`SUMMONER_FIREBALL_SIZE`].
 pub const FRIENDLY_SUMMONER_FIREBALL_SIZE: (f32, f32) = (10.0, 7.0);
+/// Collision/draw size (width, height) in pixels of a friendly dragon fireball — the
+/// bolt a player's white-dragon steed breathes (autonomously at nearby monsters, or
+/// at the cursor on the breath key while ridden). The same low, small bolt as the
+/// hostile [`FIREBALL_SIZE`] fireball it is a friendly twin of.
+pub const FRIENDLY_DRAGON_FIREBALL_SIZE: (f32, f32) = (10.0, 7.0);
 /// Collision/draw size (width, height) in pixels of a friendly skull — a player's
 /// summoned helper, the same small bouncing skull as the necromancer's [`SKULL_SIZE`].
 pub const FRIENDLY_SKULL_SIZE: (f32, f32) = (10.0, 11.0);
@@ -256,6 +265,11 @@ pub const DARK_KNIGHT_MAX_HEALTH: i32 = 44;
 /// rank-and-file underworld monsters, so felling one is a genuine fight — its
 /// health drives the miniboss bar the client shows while a dragon is near.
 pub const DRAGON_MAX_HEALTH: i32 = 200;
+/// Maximum health of a friendly white dragon, in hit points. As hardy as the hostile
+/// [`DRAGON_MAX_HEALTH`] dragon it is a twin of — though, as a companion nothing
+/// attacks (players can't strike it and monsters ignore it), its health is mostly
+/// nominal: it lives until its caster resummons or replaces it.
+pub const WHITE_DRAGON_MAX_HEALTH: i32 = 200;
 /// Maximum health of the demon king, in hit points. A boss: vastly tougher than
 /// anything else in the world, so felling it is a real campaign rather than a
 /// brief scrap. Its health drives the boss bar the client shows during the fight.
@@ -512,6 +526,28 @@ pub enum EntityKind {
     /// players cannot strike it). Server-simulated. Appended last so older saves and
     /// the wire format keep their variant indices.
     Mage { owner: Option<String> },
+    /// A friendly white dragon: the rideable steed the [`crate::block::DRAGONIAN_STEED`]
+    /// spell summons. It is a peaceable twin of the hostile [`EntityKind::Dragon`] —
+    /// it **flies** the same way — but it serves its summoner: it never spawns on its
+    /// own, only the spell makes one (`owner` = the caster's name, stored by name so
+    /// the bond survives a restart). Left to its own devices it soars after its owner
+    /// and breathes friendly [`EntityKind::FriendlyDragonFireball`]s at nearby
+    /// *monsters*. Like a pet it **never despawns** for distance (teleporting to its
+    /// owner when they stray too far) and crosses dimensions with them; unlike a pet it
+    /// does **not** respawn when slain — only recasting the spell raises a new one. Its
+    /// party trick is that it can be **ridden**: right-click your steed to mount and
+    /// fly, and on the breath key loose a fireball at the cursor; right-click again to
+    /// dismount. Players can never strike it. Server-simulated. Appended last so older
+    /// saves and the wire format keep their variant indices.
+    WhiteDragon { owner: Option<String> },
+    /// A friendly dragon fireball: the bolt a player's white-dragon steed breathes. It
+    /// flies in a straight line like the hostile [`EntityKind::Fireball`], but it
+    /// **helps the caster** — it damages *monsters* where it strikes (and bursts into a
+    /// lick of [`crate::block::FIRE`]) rather than harming players. Never hostile, so
+    /// knights and monsters ignore it. Its [`Entity::vx`]/[`Entity::vy`] carry its
+    /// flight velocity. Server-simulated. Appended last so older saves and the wire
+    /// format keep their variant indices.
+    FriendlyDragonFireball,
 }
 
 impl EntityKind {
@@ -549,6 +585,8 @@ impl EntityKind {
             EntityKind::FriendlySummonerFireball => FRIENDLY_SUMMONER_FIREBALL_SIZE,
             EntityKind::FriendlySkull => FRIENDLY_SKULL_SIZE,
             EntityKind::Mage { .. } => MAGE_SIZE,
+            EntityKind::WhiteDragon { .. } => WHITE_DRAGON_SIZE,
+            EntityKind::FriendlyDragonFireball => FRIENDLY_DRAGON_FIREBALL_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -597,6 +635,14 @@ impl EntityKind {
         matches!(self, EntityKind::Mage { .. })
     }
 
+    /// Whether this is a friendly white dragon — the [`crate::block::DRAGONIAN_STEED`]
+    /// steed. Like a knight or mage it is not a [pet](Self::is_pet) (it doesn't sit and
+    /// doesn't respawn when slain), but it is a companion: immune to player attacks,
+    /// exempt from distance despawn, following its owner, and rideable.
+    pub fn is_white_dragon(&self) -> bool {
+        matches!(self, EntityKind::WhiteDragon { .. })
+    }
+
     /// Whether this is a tameable companion (a cat, a puppy, or a horse). Pets share
     /// a bundle of special rules: immune to player attacks, exempt from distance
     /// despawn, singed by fire (their one mortal hazard), and — once tamed —
@@ -628,7 +674,8 @@ impl EntityKind {
             | EntityKind::Puppy { owner, .. }
             | EntityKind::Horse { owner }
             | EntityKind::Knight { owner }
-            | EntityKind::Mage { owner } => owner.as_deref(),
+            | EntityKind::Mage { owner }
+            | EntityKind::WhiteDragon { owner } => owner.as_deref(),
             _ => None,
         }
     }
@@ -683,6 +730,10 @@ impl EntityKind {
             // so its health is moot — it simply gives out when its short life ends.
             EntityKind::FriendlySkull => SKULL_MAX_HEALTH,
             EntityKind::Mage { .. } => MAGE_MAX_HEALTH,
+            EntityKind::WhiteDragon { .. } => WHITE_DRAGON_MAX_HEALTH,
+            // A friendly dragon fireball is an inert projectile; 1 keeps health ==
+            // max_health so no health bar shows and a stray swing can't "kill" it.
+            EntityKind::FriendlyDragonFireball => 1,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }
