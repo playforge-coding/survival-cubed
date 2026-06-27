@@ -4974,11 +4974,19 @@ fn ensure_arena_boss(shared: &Shared) {
         let mut entities = shared.entities(dim).lock();
         // A king restored from a save (mid-fight) means none need be raised; just
         // bring the runtime mirror into agreement.
-        if entities
+        if let Some(king) = entities
             .values()
-            .any(|e| matches!(e.kind, EntityKind::DemonKing))
+            .find(|e| matches!(e.kind, EntityKind::DemonKing))
         {
             shared.demon_king_alive.store(true, Ordering::SeqCst);
+            // The "already summoned its host" latch isn't persisted, so re-derive it
+            // from the restored king's health: a king at or below the two-thirds
+            // enrage threshold has already called down its dark knights. Without this
+            // it would re-summon a fresh host of four every reload while enraged.
+            let already_enraged = king.health * 3 <= king.max_health * 2;
+            shared
+                .demon_king_knights_summoned
+                .store(already_enraged, Ordering::SeqCst);
             Vec::new()
         } else {
             let player_pos = entities
