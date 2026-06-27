@@ -382,6 +382,13 @@ const WHITE_DRAGON_TELEPORT_DIST: f32 = 640.0;
 /// Seconds a ridden white dragon waits between fireballs its rider breathes on the
 /// breath key — a brisk cadence, but capped so the steed can't loose a wall of fire.
 const WHITE_DRAGON_BREATH_INTERVAL: f32 = 0.45;
+/// Flight speed (px/s, each axis) of a white dragon being remotely piloted by its
+/// summoner — snappier than the AI's lazy [`DRAGON_SPEED`] so it handles like a body.
+const WHITE_DRAGON_CONTROL_SPEED: f32 = 150.0;
+/// How far (px) a remotely-piloted white dragon may stray from its summoner before it
+/// is held back: the reach of the telepathic bond the steed grants. Eight chunks in any
+/// direction (see [`CHUNK_SIZE`]/[`TILE_SIZE`]) — a wide leash, but not unlimited.
+pub const WHITE_DRAGON_CONTROL_RANGE: f32 = 8.0 * CHUNK_SIZE as f32 * TILE_SIZE;
 /// Damage a friendly dragon fireball deals to a monster it strikes — the same wallop
 /// the hostile dragon's fireball lands on a player.
 const FRIENDLY_DRAGON_FIREBALL_DAMAGE: i32 = 10;
@@ -2797,6 +2804,9 @@ impl Shared {
         // match, and the horse stays behind in the dimension they left).
         player.boating = false;
         player.riding = None;
+        // A steed stays behind in the dimension you left, so any telepathic pilot link
+        // snaps too — the freed dragon resumes its own AI back there.
+        player.controlling = None;
         // Record the new dimension before announcing, so dimension-scoped
         // broadcasts route correctly.
         self.client_dim.lock().insert(id, to);
@@ -3203,21 +3213,26 @@ impl Shared {
         self.broadcast_dim(dim, ServerMessage::EntitySpawn { entity: steed });
     }
 
-    /// Breathe a fireball from player `id`'s ridden white-dragon steed toward world
-    /// pixel `(tx, ty)` (the rider's cursor). A no-op unless the player really is riding
-    /// one of their own [white dragons](EntityKind::WhiteDragon) whose breath is off
+    /// Breathe a fireball from player `id`'s white-dragon steed toward world pixel
+    /// `(tx, ty)` (the player's cursor). Works whether the player is *riding* the steed
+    /// or *remotely piloting* it (see [`ClientMessage::SetControlling`](crate::protocol::ClientMessage::SetControlling))
+    /// — a no-op unless one of those holds, the steed is their own
+    /// [white dragon](EntityKind::WhiteDragon), and its breath (its `attack_cd`) is off
     /// cooldown. On success it looses a friendly dragon fireball from the steed's maw,
     /// resets the steed's breath cadence, and kicks off its fire-breathing animation —
     /// costing no mana, only the steed's own cooldown.
     fn dragon_breath(&self, id: EntityId, tx: f32, ty: f32) {
         let dim = self.dim_of(id);
-        // Resolve which steed the player rides (their `riding`), confirm it is their own
-        // white dragon, and that its breath (its `attack_cd`) is ready. Stamp the
-        // cooldown and the breath pose while we hold the lock, and read its maw.
+        // Resolve which steed the player commands — the one they ride, or failing that the
+        // one they pilot telepathically — confirm it is their own white dragon, and that
+        // its breath (its `attack_cd`) is ready. Stamp the cooldown and the breath pose
+        // while we hold the lock, and read its maw.
         let result = {
             let mut entities = self.entities(dim).lock();
             let Some((steed_id, name)) = entities.get(id).and_then(|p| match &p.kind {
-                EntityKind::Player { name } => p.riding.map(|r| (r, name.clone())),
+                EntityKind::Player { name } => {
+                    p.riding.or(p.controlling).map(|r| (r, name.clone()))
+                }
                 _ => None,
             }) else {
                 return;
@@ -5231,6 +5246,18 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     let ridden_horses: Vec<(EntityId, f32, f32)> = entities
         .values()
         .filter_map(|e| e.riding.map(|hid| (hid, e.x, e.y)))
+        .collect();
+
+    // Snapshot of which white-dragon steed each piloting player is remotely controlling,
+    // with that player's movement intent and position, so the steed AI can fly it from
+    // the player's input and confine it near them without re-borrowing the map mid-loop.
+    // `(steed id, dx, dy, pilot x, pilot y)`.
+    let controlled_dragons: Vec<(EntityId, f32, f32, f32, f32)> = entities
+        .values()
+        .filter_map(|e| {
+            e.controlling
+                .map(|did| (did, e.control_dx, e.control_dy, e.x, e.y))
+        })
         .collect();
 
     // Cull any non-player entity that has drifted beyond DESPAWN_DIST of every
@@ -7593,6 +7620,48 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             continue;
         }
 
+        // A remotely-piloted steed: its summoner is driving it telepathically, so it runs
+        // no AI of its own. Fly it from the pilot's movement intent (each axis stopped by
+        // walls, like the free flight below), but never let it slip beyond the telepathic
+        // leash — clamp it to within WHITE_DRAGON_CONTROL_RANGE of the pilot. Its attacks
+        // are loosed on command (see `dragon_breath`), not chosen here.
+        if let Some(&(_, dx, dy, px, py)) = controlled_dragons.iter().find(|(did, ..)| *did == id) {
+            let Some(e) = entities.get_mut(id) else {
+                continue;
+            };
+            let (w, h) = e.size();
+            e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+            e.lunge = (e.lunge - TICK_DT).max(0.0);
+            let vx = dx * WHITE_DRAGON_CONTROL_SPEED;
+            let vy = dy * WHITE_DRAGON_CONTROL_SPEED;
+            let (nx, _) = move_x(&mut world, e.x, e.y, w, h, vx * TICK_DT);
+            let (ny, _) = move_y(&mut world, nx, e.y, w, h, vy * TICK_DT);
+            // Hold within the telepathic range of the pilot (centre to centre).
+            let pcx = px + PLAYER_SIZE.0 * 0.5;
+            let pcy = py + PLAYER_SIZE.1 * 0.5;
+            let cx = (nx + w * 0.5).clamp(
+                pcx - WHITE_DRAGON_CONTROL_RANGE,
+                pcx + WHITE_DRAGON_CONTROL_RANGE,
+            );
+            let cy = (ny + h * 0.5).clamp(
+                pcy - WHITE_DRAGON_CONTROL_RANGE,
+                pcy + WHITE_DRAGON_CONTROL_RANGE,
+            );
+            e.x = cx - w * 0.5;
+            e.y = cy - h * 0.5;
+            e.vx = vx;
+            e.vy = vy;
+            e.home_x = Some(e.x);
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: e.x,
+                y: e.y,
+                vx,
+                vy,
+            });
+            continue;
+        }
+
         let Some(e) = entities.get_mut(id) else {
             continue;
         };
@@ -9248,6 +9317,7 @@ fn transform_entity(
     e.home_x = None;
     e.riding = None;
     e.mount_health = 0;
+    e.controlling = None;
     vec![
         ServerMessage::EntitySpawn { entity: e.clone() },
         ServerMessage::EntityHealth {
@@ -10635,6 +10705,76 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         if changed {
                             shared.broadcast_dim(dim, ServerMessage::EntityRiding { id, horse: riding });
                         }
+                    }
+                }
+                ClientMessage::SetControlling { dragon } => {
+                    let dim = shared.dim_of(id);
+                    // Resolve the request. Beginning control (`Some`) must name one of this
+                    // player's own white-dragon steeds, present in their dimension and not
+                    // currently ridden by anyone (you can't pilot a mount someone's aboard).
+                    // Stopping (`None`) always clears. Anything invalid leaves them as they were.
+                    let new_controlling: Option<Option<EntityId>> = {
+                        let entities = shared.entities(dim).lock();
+                        match dragon {
+                            None => Some(None),
+                            Some(did) => {
+                                let owner = match entities.get(id).map(|a| &a.kind) {
+                                    Some(EntityKind::Player { name }) if !name.is_empty() => {
+                                        Some(name.clone())
+                                    }
+                                    _ => None,
+                                };
+                                let ridden = entities.values().any(|e| e.riding == Some(did));
+                                match (owner, entities.get(did)) {
+                                    (Some(name), Some(b))
+                                        if matches!(&b.kind, EntityKind::WhiteDragon { owner: Some(o) } if *o == name)
+                                            && !ridden =>
+                                    {
+                                        Some(Some(did))
+                                    }
+                                    _ => None,
+                                }
+                            }
+                        }
+                    };
+                    if let Some(controlling) = new_controlling {
+                        // Apply the change and report which steed changed hands: the new
+                        // one when starting, the previously-piloted one when stopping
+                        // (read before we overwrite it).
+                        let steed = {
+                            let mut entities = shared.entities(dim).lock();
+                            match entities.get_mut(id) {
+                                Some(e) if e.controlling != controlling => {
+                                    let steed = controlling.or(e.controlling);
+                                    e.controlling = controlling;
+                                    e.control_dx = 0.0;
+                                    e.control_dy = 0.0;
+                                    steed
+                                }
+                                _ => None,
+                            }
+                        };
+                        // Echo the link (or its release) back so the piloting client adopts
+                        // it as the authoritative control state. `id` in the message is the
+                        // steed; a non-`None` controller is the pilot's entity id.
+                        if let Some(steed) = steed {
+                            shared.broadcast_dim(
+                                dim,
+                                ServerMessage::EntityControlled {
+                                    id: steed,
+                                    controller: controlling.map(|_| id),
+                                },
+                            );
+                        }
+                    }
+                }
+                ClientMessage::ControlDragon { dx, dy } => {
+                    // Record the latest movement intent for the tick loop to fly the steed.
+                    // Clamp to the unit range so a misbehaving client can't fling it about.
+                    let dim = shared.dim_of(id);
+                    if let Some(e) = shared.entities(dim).lock().get_mut(id) {
+                        e.control_dx = dx.clamp(-1.0, 1.0);
+                        e.control_dy = dy.clamp(-1.0, 1.0);
                     }
                 }
                 ClientMessage::Attack { target, held } => {

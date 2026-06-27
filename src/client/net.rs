@@ -100,6 +100,12 @@ pub enum NetEvent {
         id: EntityId,
         horse: Option<EntityId>,
     },
+    /// The server confirmed this client began (`Some`) or stopped (`None`) piloting
+    /// its white-dragon steed (`id` is the steed). Only the piloting client cares.
+    EntityControlled {
+        id: EntityId,
+        controller: Option<EntityId>,
+    },
     EntityDying {
         id: EntityId,
     },
@@ -290,6 +296,16 @@ pub enum NetCommand {
     /// glue the horse beneath the rider and share the pose with other clients.
     SetRiding {
         horse: Option<EntityId>,
+    },
+    /// Begin (`Some`) or stop (`None`) remotely piloting one's own white-dragon steed,
+    /// so the server flies it from this player's input instead of running its AI.
+    SetControlling {
+        dragon: Option<EntityId>,
+    },
+    /// Per-frame movement intent (`-1.0`/`0.0`/`1.0` per axis) for the piloted steed.
+    ControlDragon {
+        dx: f32,
+        dy: f32,
     },
     /// Creator mode: toggle this player's creator mode on or off.
     SetCreator {
@@ -555,6 +571,8 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::FallDamage { amount } => ClientMessage::FallDamage { amount },
         NetCommand::SetBoating { on } => ClientMessage::SetBoating { on },
         NetCommand::SetRiding { horse } => ClientMessage::SetRiding { horse },
+        NetCommand::SetControlling { dragon } => ClientMessage::SetControlling { dragon },
+        NetCommand::ControlDragon { dx, dy } => ClientMessage::ControlDragon { dx, dy },
         NetCommand::SetCreator { on } => ClientMessage::SetCreator { on },
         NetCommand::SetTime { t } => ClientMessage::SetTime { t },
         NetCommand::SpawnEntity { kind, x, y } => ClientMessage::SpawnEntity { kind, x, y },
@@ -616,6 +634,9 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
         ServerMessage::EntityDespawn { id } => NetEvent::EntityDespawn { id },
         ServerMessage::EntityBoating { id, on } => NetEvent::EntityBoating { id, on },
         ServerMessage::EntityRiding { id, horse } => NetEvent::EntityRiding { id, horse },
+        ServerMessage::EntityControlled { id, controller } => {
+            NetEvent::EntityControlled { id, controller }
+        }
         ServerMessage::EntityDying { id } => NetEvent::EntityDying { id },
         ServerMessage::EntityLunging { id } => NetEvent::EntityLunging { id },
         ServerMessage::EntityHealth {

@@ -844,6 +844,26 @@ pub struct Entity {
     /// [`crate::protocol::ServerMessage::EntityRiding`]).
     #[serde(skip)]
     pub mount_health: i32,
+    /// Which [`EntityKind::WhiteDragon`] this player is remotely piloting, if any
+    /// (its entity id). Live server runtime state, like [`Self::riding`]: never
+    /// persisted and never piggybacked on the serialized entity. Set when the player
+    /// presses the control key over their own steed (validated server-side) and
+    /// synced to the piloting client via
+    /// [`crate::protocol::ServerMessage::EntityControlled`]. While it is `Some`, the
+    /// named steed runs no AI of its own — the server flies it from
+    /// [`Self::control_dx`]/[`Self::control_dy`] each tick, confined to within
+    /// [`crate::server::WHITE_DRAGON_CONTROL_RANGE`] of this player. `None` for
+    /// creatures and on the client (which tracks its own control state separately).
+    #[serde(skip)]
+    pub controlling: Option<EntityId>,
+    /// Server-only: the latest horizontal/vertical movement intent (`-1.0`/`0.0`/`1.0`)
+    /// for the steed this player is piloting (see [`Self::controlling`]), set from
+    /// [`crate::protocol::ClientMessage::ControlDragon`]. Ignored unless the player is
+    /// controlling a steed. Never sent over the wire.
+    #[serde(skip)]
+    pub control_dx: f32,
+    #[serde(skip)]
+    pub control_dy: f32,
 }
 
 impl Entity {
@@ -869,6 +889,9 @@ impl Entity {
             boating: false,
             riding: None,
             mount_health: 0,
+            controlling: None,
+            control_dx: 0.0,
+            control_dy: 0.0,
         }
     }
 

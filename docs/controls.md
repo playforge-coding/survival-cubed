@@ -35,7 +35,8 @@ targeted block shows mining progress.
 | <kbd>E</kbd> | Open / close the full inventory and crafting screen |
 | <kbd>Q</kbd> | Drop one item from the selected hotbar slot |
 | <kbd>F</kbd> | Eat the food in the selected hotbar slot |
-| <kbd>B</kbd> | While riding a **[dragonian steed](magic.md#the-dragonian-steed-spell)**, breathe a fireball at the cursor |
+| <kbd>B</kbd> | While riding **or piloting** a **[dragonian steed](magic.md#the-dragonian-steed-spell)**, breathe a fireball at the cursor |
+| <kbd>C</kbd> | Telepathically **control your [dragonian steed](magic.md#the-dragonian-steed-spell)** (when not mounted): fly and fight it like a second body; press again to stop |
 
 The selected hotbar slot determines which block you place and which food you eat.
 See **[Crafting & Tools](crafting.md)** for the inventory layout and recipes.

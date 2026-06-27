@@ -264,6 +264,22 @@ pub enum ClientMessage {
     /// pose with every client (via [`ServerMessage::EntityRiding`]) so the rider is
     /// drawn on the combined horse sprite and the horse is glued beneath them.
     SetRiding { horse: Option<EntityId> },
+    /// Begin remotely piloting one's own summoned white-dragon steed (`Some(dragon_id)`)
+    /// or stop (`None`). The white dragon lets its summoner reach into its mind, so a
+    /// player on foot can drive it like a second body — walking, flying, and breathing
+    /// fire on command — while their own avatar stands frozen. The server validates the
+    /// dragon exists in the player's dimension, is their own steed, and is not currently
+    /// being ridden, then records the link on the player entity and echoes it back via
+    /// [`ServerMessage::EntityControlled`]. A controlled steed runs no AI of its own and
+    /// cannot stray more than [`crate::server::WHITE_DRAGON_CONTROL_RANGE`] of its pilot
+    /// (the limit of the telepathic bond).
+    SetControlling { dragon: Option<EntityId> },
+    /// Per-frame movement intent for the white-dragon steed the sender is piloting (see
+    /// [`Self::SetControlling`]): `dx`/`dy` are each `-1.0`, `0.0`, or `1.0` (left/right
+    /// and up/down). The server flies the steed accordingly on its next tick, clamped to
+    /// terrain and to the pilot's telepathic range. A no-op unless the sender is in fact
+    /// controlling one of their own steeds.
+    ControlDragon { dx: f32, dy: f32 },
     /// Melee-attack another entity (e.g. a slime). The server validates range
     /// before applying damage. `held` is the item the player is wielding
     /// ([`crate::block::AIR`] for bare hands); the server uses it to scale the
@@ -414,6 +430,16 @@ pub enum ServerMessage {
     EntityRiding {
         id: EntityId,
         horse: Option<EntityId>,
+    },
+    /// A player began remotely piloting their white-dragon steed (`controller =
+    /// Some(player_id)`) or stopped (`controller = None`). `id` is the steed's entity
+    /// id. The piloting client adopts this as the authoritative "am I controlling?"
+    /// state (its steed then flies from the player's input, server-authoritatively via
+    /// [`ServerMessage::EntityMoved`]); other clients need do nothing with it. Sent in
+    /// response to a [`ClientMessage::SetControlling`] request that passed validation.
+    EntityControlled {
+        id: EntityId,
+        controller: Option<EntityId>,
     },
     /// A zombie has been caught by daylight and begun its death animation. The
     /// client plays the crumble animation for [`crate::entity::ZOMBIE_DEATH_TIME`]

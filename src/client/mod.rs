@@ -242,6 +242,15 @@ struct GameState {
     /// (see [`step_physics`]) and is drawn on the combined `player/horse` sprite with
     /// the mounted horse entity hidden. Right-clicking again dismounts.
     riding: Option<EntityId>,
+    /// The summoned white-dragon steed this player is remotely piloting, if any (its
+    /// entity id). Set authoritatively from the server's [`NetEvent::EntityControlled`]
+    /// echo after pressing the control key (<kbd>C</kbd>) over one's own steed; while
+    /// `Some`, the avatar stands frozen, the camera follows the steed, and movement /
+    /// breath inputs drive the steed instead of the player (see [`App::update`]). The
+    /// steed itself moves server-authoritatively (arriving via [`NetEvent::EntityMoved`]),
+    /// confined to within the telepathic range of the avatar. Pressing <kbd>C</kbd> again
+    /// (or the steed vanishing) clears it.
+    controlling: Option<EntityId>,
     requested: HashSet<(i32, i32)>,
     /// Index of the selected hotbar slot (`0..HOTBAR_SLOTS`); its block is the
     /// one placed on right-click.
@@ -453,6 +462,7 @@ impl GameState {
             sel_prev_rmb: false,
             pending_paste: None,
             spectating: None,
+            controlling: None,
             chat_log: Vec::new(),
             chat_open: false,
             chat_input: String::new(),
@@ -984,6 +994,9 @@ impl App {
                     // enter_dimension), leaving any horse behind in the old dimension.
                     g.boating = false;
                     g.riding = None;
+                    // A steed stays behind in the dimension you left; the server drops the
+                    // pilot link, so clear ours to match.
+                    g.controlling = None;
                 }
                 // Swap to the new dimension's (randomly chosen) music.
                 if let Some(m) = &mut self.music {
@@ -1039,12 +1052,29 @@ impl App {
                     }
                 }
             }
+            NetEvent::EntityControlled { id, controller } => {
+                // The server confirmed a steed's pilot link changed. Only the pilot acts
+                // on it: adopt (or release) the local control state. `id` is the steed;
+                // a non-`None` controller equal to our own id means we're now piloting it.
+                if let Some(g) = &mut self.game {
+                    g.controlling = match controller {
+                        Some(c) if c == g.entity_id => Some(id),
+                        _ if g.controlling == Some(id) => None,
+                        _ => g.controlling,
+                    };
+                }
+            }
             NetEvent::EntityDespawn { id } => {
                 if let Some(g) = &mut self.game {
                     // If the horse we were riding vanished, step off so we don't keep
                     // galloping on a ghost.
                     if g.riding == Some(id) {
                         g.riding = None;
+                    }
+                    // If the steed we were piloting vanished, drop control so we snap back
+                    // to our own avatar rather than steering a ghost.
+                    if g.controlling == Some(id) {
+                        g.controlling = None;
                     }
                     g.entities.remove(id);
                     g.facing.remove(&id);
@@ -1241,6 +1271,45 @@ impl App {
         if game.spectating.is_some() {
             request_chunks(game, self.gfx.as_ref(), self.net.as_ref());
             return;
+        }
+
+        // While remotely piloting a white-dragon steed the avatar stands frozen and the
+        // player's controls drive the steed instead: WASD/arrows fly it (the server moves
+        // it authoritatively), and the breath key or left mouse looses its fire at the
+        // cursor. The camera and chunk streaming follow the steed (via `view_center`).
+        if let Some(did) = game.controlling {
+            // If the steed is gone (slain, strayed to another dimension, …), end control.
+            let alive = game
+                .entities
+                .get(did)
+                .is_some_and(|e| matches!(e.kind, EntityKind::WhiteDragon { .. }));
+            if !alive {
+                game.controlling = None;
+                if let Some(net) = &self.net {
+                    let _ = net
+                        .commands
+                        .send(NetCommand::SetControlling { dragon: None });
+                }
+            } else {
+                game.action_timer -= dt;
+                let dx = (input.right as i32 - input.left as i32) as f32;
+                let dy = (input.down as i32 - input.jump as i32) as f32;
+                if let Some(net) = &self.net {
+                    let _ = net.commands.send(NetCommand::ControlDragon { dx, dy });
+                    // The breath key (B) or left mouse spits fire at the cursor, gated by
+                    // the action cooldown (the server also caps the steed's own cadence).
+                    if (input.breath || input.breaking) && game.action_timer <= 0.0 {
+                        let aim = cursor_world(game, self.gfx.as_ref(), input);
+                        let _ = net.commands.send(NetCommand::DragonBreath {
+                            tx: aim.x,
+                            ty: aim.y,
+                        });
+                        game.action_timer = ACTION_COOLDOWN;
+                    }
+                }
+                request_chunks(game, self.gfx.as_ref(), self.net.as_ref());
+                return;
+            }
         }
 
         // A boat that's been dropped, traded, or otherwise lost can no longer be
@@ -4677,7 +4746,27 @@ fn view_center(game: &GameState) -> Vec2 {
     {
         return Vec2::new(e.x, e.y) + Vec2::new(PLAYER_W * 0.5, PLAYER_H * 0.5);
     }
+    // While remotely piloting a steed the camera rides with it, so the player can see
+    // what they are flying (and aim its breath); fall back to the avatar if it's gone.
+    if let Some(did) = game.controlling
+        && let Some(e) = game.entities.get(did)
+    {
+        let (w, h) = e.kind.size();
+        return Vec2::new(e.x + w * 0.5, e.y + h * 0.5);
+    }
     game.pos + Vec2::new(PLAYER_W * 0.5, PLAYER_H * 0.5)
+}
+
+/// World-pixel point the mouse cursor is over, matching the camera the world is drawn
+/// with (centered on [`view_center`]). Falls back to that center if there's no graphics
+/// context yet. Used to aim the piloted steed's breath (block actions compute their own).
+fn cursor_world(game: &GameState, gfx: Option<&Gfx>, input: &Input) -> Vec2 {
+    let center = view_center(game);
+    let Some(gfx) = gfx else { return center };
+    let view_w = gfx.size.width.max(1) as f32 / game.zoom;
+    let view_h = gfx.size.height.max(1) as f32 / game.zoom;
+    let offset = center - Vec2::new(view_w * 0.5, view_h * 0.5);
+    offset + Vec2::new(input.mouse.0 / game.zoom, input.mouse.1 / game.zoom)
 }
 
 fn request_chunks(game: &mut GameState, gfx: Option<&Gfx>, net: Option<&NetHandle>) {
@@ -5504,6 +5593,33 @@ impl ApplicationHandler for App {
 }
 
 impl App {
+    /// Toggle remote control of one's own summoned white-dragon steed (the <kbd>C</kbd>
+    /// key). When already piloting, ask the server to release the link. Otherwise find
+    /// our steed among the live entities and ask to begin piloting it. The control state
+    /// itself is adopted authoritatively from the server's
+    /// [`NetEvent::EntityControlled`] echo, so this only sends the request.
+    fn toggle_dragon_control(&mut self) {
+        let name = self.player_name();
+        let Some(net) = &self.net else { return };
+        let Some(g) = &self.game else { return };
+        if g.controlling.is_some() {
+            let _ = net
+                .commands
+                .send(NetCommand::SetControlling { dragon: None });
+            return;
+        }
+        let steed = g
+            .entities
+            .values()
+            .find(|e| matches!(&e.kind, EntityKind::WhiteDragon { owner: Some(o) } if *o == name))
+            .map(|e| e.id);
+        if let Some(did) = steed {
+            let _ = net
+                .commands
+                .send(NetCommand::SetControlling { dragon: Some(did) });
+        }
+    }
+
     fn handle_key(&mut self, code: KeyCode, pressed: bool) {
         match code {
             KeyCode::KeyA | KeyCode::ArrowLeft => self.input.left = pressed,
@@ -5529,6 +5645,10 @@ impl App {
             // B breathes fire while riding a white-dragon steed: held, it makes the
             // steed spit a fireball at the cursor on its cadence (no effect otherwise).
             KeyCode::KeyB => self.input.breath = pressed,
+            // C reaches into a summoned white-dragon steed's mind: it toggles remote
+            // control of one's own steed, switching the controls to fly and fight it
+            // (and back). No effect without a steed of one's own nearby.
+            KeyCode::KeyC if pressed => self.toggle_dragon_control(),
             // M drops a personal waypoint at the player's feet; N removes the one
             // nearest to them.
             KeyCode::KeyM if pressed => self.add_waypoint(),

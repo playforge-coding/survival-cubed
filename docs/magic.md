@@ -136,6 +136,20 @@ the demon king once kept as steeds. The summoned steed:
   **jump**, descend on **down**, and steer with left/right. While riding, hold **B**
   to **breathe a fireball at your cursor** on the steed's cadence. Right-click again
   to dismount.
+- **Can be piloted from afar.** While *not* mounted, press **C** to reach into the
+  steed's mind and **control it like a second body** — your own avatar stands frozen
+  and the controls switch to the dragon. Steer it with the movement keys (it walks and
+  **flies** freely — rise on **jump**, descend on **down**), and **attack** with **B**
+  or **left-click** to breathe fire at your cursor. Press **C** again to let go and
+  snap back to your avatar.
+
+!!! note "Telepathic access"
+    Remote control is the white dragon **opening its mind to its summoner** — a
+    telepathic bond, not a leash you hold. Because it reaches only so far, a piloted
+    steed **cannot stray more than 8 chunks from you**; push past that and it is held
+    at the edge of the bond. Let go (or leave for another dimension) and the link
+    snaps, and the steed goes back to **fighting on its own** — it only acts
+    autonomously while it is neither ridden nor controlled.
 
 Unlike a pet, a fallen steed does **not** come back on its own: only **recasting the
 spell** raises a new one. Casting again also replaces a steed you already have, so a
