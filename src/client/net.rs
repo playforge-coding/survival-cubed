@@ -204,6 +204,14 @@ pub enum NetCommand {
         tx: f32,
         ty: f32,
     },
+    /// Fire the musket in hotbar `slot` toward world pixel `(tx, ty)` (the cursor),
+    /// spending one bullet (server validates the slot and ammunition, then looses a
+    /// friendly bullet that damages monsters).
+    FireMusket {
+        slot: u8,
+        tx: f32,
+        ty: f32,
+    },
     /// Swing the door touching cell `(x, y)` open or shut (server flips both
     /// halves and resyncs).
     ToggleDoor {
@@ -535,6 +543,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::UseArenaKey { slot } => ClientMessage::UseArenaKey { slot },
         NetCommand::CastSpell { slot, tx, ty } => ClientMessage::CastSpell { slot, tx, ty },
         NetCommand::DragonBreath { tx, ty } => ClientMessage::DragonBreath { tx, ty },
+        NetCommand::FireMusket { slot, tx, ty } => ClientMessage::FireMusket { slot, tx, ty },
         NetCommand::ToggleDoor { x, y } => ClientMessage::ToggleDoor { x, y },
         NetCommand::MoveItem { from, to } => ClientMessage::MoveItem { from, to },
         NetCommand::DropItem { slot, all, dir } => ClientMessage::DropItem { slot, all, dir },

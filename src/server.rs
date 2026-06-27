@@ -233,6 +233,55 @@ const AXE_LIFETIME: f32 = 3.0;
 /// Maximum gap (px between AABBs) at which an in-flight axe counts as striking a
 /// player or knight.
 const AXE_HIT_RANGE: f32 = 2.0;
+/// Stalking speed of a musketeer, in pixels/second — a touch quicker than the dark
+/// musketeer it mirrors, as it repositions for a clean shot.
+const MUSKETEER_SPEED: f32 = 30.0;
+/// How far (px) a musketeer notices a monster and begins stalking/firing.
+const MUSKETEER_AGGRO: f32 = 270.0;
+/// Maximum gap (px between AABBs) at which a musketeer will fire — it stops advancing
+/// and shoots once a monster is this close.
+const MUSKETEER_SHOOT_RANGE: f32 = 210.0;
+/// Standoff gap (px between AABBs) a musketeer tries to keep, backing away from a
+/// monster closer than this so it can keep peppering it from range.
+const MUSKETEER_KEEP_DIST: f32 = 90.0;
+/// Seconds a musketeer waits between shots — a long reload, befitting a slow,
+/// hard-hitting firearm (its bullet lands a heavy [`FRIENDLY_BULLET_DAMAGE`] blow).
+const MUSKETEER_SHOOT_INTERVAL: f32 = 2.6;
+/// Stalking speed of a dark musketeer, in pixels/second — the same trained foot as the
+/// dark knight it marches with.
+const DARK_MUSKETEER_SPEED: f32 = 24.0;
+/// How far (px) a dark musketeer notices a player, knight or musketeer and begins
+/// stalking/firing.
+const DARK_MUSKETEER_AGGRO: f32 = 270.0;
+/// Maximum gap (px between AABBs) at which a dark musketeer will fire.
+const DARK_MUSKETEER_SHOOT_RANGE: f32 = 210.0;
+/// Standoff gap (px between AABBs) a dark musketeer tries to keep so it can keep firing
+/// from range.
+const DARK_MUSKETEER_KEEP_DIST: f32 = 95.0;
+/// Seconds a dark musketeer waits between shots — the same slow reload as the friendly
+/// [`MUSKETEER_SHOOT_INTERVAL`] musketeer it mirrors.
+const DARK_MUSKETEER_SHOOT_INTERVAL: f32 = 2.6;
+/// Flight speed of a fired bullet, in pixels/second — far faster than any thrown
+/// projectile, befitting a firearm.
+const BULLET_SPEED: f32 = 340.0;
+/// Damage a hostile bullet (a dark musketeer's shot) deals on striking a player,
+/// knight or musketeer — the same heavy blow as the friendly [`FRIENDLY_BULLET_DAMAGE`]
+/// musket, since a dark musketeer carries the same slow, hard-hitting firearm.
+const BULLET_DAMAGE: i32 = 30;
+/// Damage a friendly bullet (a musketeer's or a player's musket shot) deals to the
+/// monster it strikes — a heavy wallop, fitting a slow-loading firearm: a musket hits
+/// far harder than any melee swing, the trade-off being its long reload.
+const FRIENDLY_BULLET_DAMAGE: i32 = 30;
+/// Seconds a bullet (hostile or friendly) stays airborne before it gives out, in case
+/// it never hits anything. Short — a bullet is fast and travels its range quickly.
+const BULLET_LIFETIME: f32 = 1.5;
+/// The musket's reload time: the minimum gap between a player's shots, enforced
+/// server-side so a fast-firing client can't fan a slow firearm. Mirrors the client's
+/// own `MUSKET_COOLDOWN` (a hair shorter, so client-paced shots are never rejected for
+/// arriving a frame early).
+const MUSKET_COOLDOWN: Duration = Duration::from_millis(1350);
+/// Maximum gap (px between AABBs) at which an in-flight bullet counts as striking.
+const BULLET_HIT_RANGE: f32 = 2.0;
 /// Charging speed of a charred skeleton, in pixels/second — quicker than a zombie,
 /// since it commits hard to running its prey down.
 const CHARRED_SKELETON_SPEED: f32 = 26.0;
@@ -407,9 +456,13 @@ const DEMON_KING_AGGRO: f32 = 460.0;
 /// bout. A touch faster than a fleeing target can run.
 const DEMON_KING_SPEED: f32 = 46.0;
 /// How many dark knights the demon king summons when it enrages (past two-thirds
-/// health).
-const DEMON_KING_KNIGHT_COUNT: u32 = 4;
-/// Spacing (px) between the dark knights the king summons as they appear around the
+/// health) — two, marching alongside [`DEMON_KING_DARK_MUSKETEER_COUNT`] dark
+/// musketeers.
+const DEMON_KING_DARK_KNIGHT_COUNT: u32 = 2;
+/// How many dark musketeers the demon king summons when it enrages, fighting at range
+/// alongside the [`DEMON_KING_DARK_KNIGHT_COUNT`] dark knights.
+const DEMON_KING_DARK_MUSKETEER_COUNT: u32 = 2;
+/// Spacing (px) between the dark warriors the king summons as they appear around the
 /// player on the arena floor.
 const DEMON_KING_KNIGHT_SPACING: f32 = 64.0;
 /// Seconds the demon king waits between attacks (the cooldown set when one begins).
@@ -973,6 +1026,11 @@ struct Shared {
     /// a player lands a hit on a hostile creature; entity ids are never reused, so a
     /// stale entry (its enemy already dead) simply matches nothing. Runtime-only.
     knight_targets: Mutex<HashMap<EntityId, EntityId>>,
+    /// The earliest instant each player may fire their musket again, keyed by entity
+    /// id, so the server enforces the firearm's slow reload (a fast-firing client
+    /// can't bypass [`MUSKET_COOLDOWN`]). An absent entry means "ready now". Runtime
+    /// only, like the other transient combat timers.
+    musket_cd: Mutex<HashMap<EntityId, Instant>>,
     /// Set when the owning [`RunningServer`] is dropped, to stop the autosave
     /// loop.
     shutdown: AtomicBool,
@@ -2036,6 +2094,60 @@ impl Shared {
         self.send_inventory(id);
     }
 
+    /// Recruit the wild musketeer `target` for player `id` by offering it a tungsten
+    /// ingot, exactly as [`try_recruit_knight`](Self::try_recruit_knight) recruits a
+    /// knight: the marksman must be wild and within reach, the player must hold a
+    /// [`TUNGSTEN_INGOT`](crate::block::TUNGSTEN_INGOT) (spent on success), and the
+    /// giver's name is stamped into the musketeer's `owner`. A no-op otherwise.
+    fn try_recruit_musketeer(&self, id: EntityId, target: EntityId, held: BlockId, dim: Dimension) {
+        if held != crate::block::TUNGSTEN_INGOT {
+            return;
+        }
+        let recruited = {
+            let mut invs = self.inventories.lock();
+            let mut entities = self.entities(dim).lock();
+            let owner_name = match (entities.get(id), entities.get(target)) {
+                (Some(a), Some(b))
+                    if matches!(b.kind, EntityKind::Musketeer { owner: None })
+                        && aabb_gap(
+                            a.x,
+                            a.y,
+                            a.size().0,
+                            a.size().1,
+                            b.x,
+                            b.y,
+                            b.size().0,
+                            b.size().1,
+                        ) <= PLAYER_ATTACK_REACH =>
+                {
+                    match &a.kind {
+                        EntityKind::Player { name } if !name.is_empty() => name.clone(),
+                        _ => return,
+                    }
+                }
+                _ => return,
+            };
+            let Some(inv) = invs.get_mut(&id) else {
+                return;
+            };
+            if inv.count(crate::block::TUNGSTEN_INGOT) == 0 {
+                return;
+            }
+            inv.remove(crate::block::TUNGSTEN_INGOT, 1);
+            entities.get_mut(target).map(|e| {
+                if let EntityKind::Musketeer { owner } = &mut e.kind {
+                    *owner = Some(owner_name);
+                }
+                e.health = e.max_health;
+                e.clone()
+            })
+        };
+        if let Some(entity) = recruited {
+            self.broadcast_dim(dim, ServerMessage::EntitySpawn { entity });
+        }
+        self.send_inventory(id);
+    }
+
     /// React to player `id` clicking the *tamed* pet `target`: if `id` is the pet's
     /// owner and within reach, flip whether it's sitting (sit it down, or stand it
     /// back up). A sitting pet stays put — its tick stops wandering and stops
@@ -2881,6 +2993,7 @@ impl Shared {
                 .values()
                 .filter(|e| {
                     matches!(&e.kind, EntityKind::Knight { owner: Some(o) } if o == owner)
+                        || matches!(&e.kind, EntityKind::Musketeer { owner: Some(o) } if o == owner)
                         || matches!(&e.kind, EntityKind::Mage { owner: Some(o) } if o == owner)
                         || matches!(&e.kind, EntityKind::WhiteDragon { owner: Some(o) } if o == owner)
                 })
@@ -3267,6 +3380,71 @@ impl Shared {
         self.broadcast_dim(dim, ServerMessage::EntitySpawn { entity: bolt });
     }
 
+    /// Fire the musket held in hotbar `slot` toward world pixel `(tx, ty)`: spend one
+    /// [`bullet`](crate::block::BULLET) and loose a [`EntityKind::FriendlyBullet`] from
+    /// the player's body at the cursor (it damages the monster it strikes; see the tick
+    /// loop). A no-op (resyncing the client's inventory) if the slot doesn't hold a
+    /// [`musket`](crate::block::is_musket) or the player is out of bullets. The musket is
+    /// reusable — firing consumes a bullet, never the gun.
+    fn fire_musket(&self, id: EntityId, slot: usize, tx: f32, ty: f32) {
+        if !self
+            .peek_slot(id, slot)
+            .is_some_and(crate::block::is_musket)
+        {
+            self.send_inventory(id);
+            return;
+        }
+        // Enforce the slow reload server-side: reject a shot that arrives before the
+        // musket is ready, so a fast-firing client can't bypass the cooldown. On a
+        // good shot, stamp the next-ready instant. (`Instant::now` is monotonic.)
+        {
+            let now = Instant::now();
+            let mut cds = self.musket_cd.lock();
+            if cds.get(&id).is_some_and(|&ready| now < ready) {
+                drop(cds);
+                self.send_inventory(id);
+                return;
+            }
+            cds.insert(id, now + MUSKET_COOLDOWN);
+        }
+        // Spend one bullet up front; bail (resyncing) if the shooter carries none.
+        {
+            let mut invs = self.inventories.lock();
+            let Some(inv) = invs.get_mut(&id) else {
+                return;
+            };
+            if inv.count(crate::block::BULLET) == 0 {
+                drop(invs);
+                self.send_inventory(id);
+                return;
+            }
+            inv.remove(crate::block::BULLET, 1);
+        }
+        self.send_inventory(id);
+
+        let dim = self.dim_of(id);
+        let (bw, bh) = crate::entity::BULLET_SIZE;
+        let bullet = {
+            let entities = self.entities(dim).lock();
+            let Some(p) = entities.get(id) else {
+                return;
+            };
+            let (pw, ph) = p.size();
+            let sx = p.x + pw * 0.5 - bw * 0.5;
+            let sy = p.y + ph * 0.3 - bh * 0.5;
+            let dx = tx - (sx + bw * 0.5);
+            let dy = ty - (sy + bh * 0.5);
+            let len = (dx * dx + dy * dy).sqrt().max(1.0);
+            let mut bullet = Entity::new(self.alloc_id(), EntityKind::FriendlyBullet, sx, sy);
+            bullet.vx = dx / len * BULLET_SPEED;
+            bullet.vy = dy / len * BULLET_SPEED;
+            bullet.attack_cd = BULLET_LIFETIME; // reused as the airborne life timer
+            bullet
+        };
+        self.entities(dim).lock().insert(bullet.clone());
+        self.broadcast_dim(dim, ServerMessage::EntitySpawn { entity: bullet });
+    }
+
     /// Loose the sunburst spell: a burst of sunlight centered on the caster that
     /// **instantly slays every creature that [burns in daylight](burns_in_daylight)**
     /// — zombies, skeletons, dark knights, necromancers and their skulls — within
@@ -3457,6 +3635,7 @@ fn creature_mana(kind: &EntityKind) -> i32 {
         EntityKind::Orc => 130,
         EntityKind::Skull => 10,
         EntityKind::DarkKnight => 160,
+        EntityKind::DarkMusketeer => 150,
         EntityKind::Dragon => 600,
         EntityKind::DemonKing => 1000,
         // Animals, companions, projectiles, items, players: no mana.
@@ -3903,6 +4082,7 @@ fn build_endpoint(
         trail_fires: Mutex::new(HashMap::new()),
         fire_cd: Mutex::new(HashMap::new()),
         knight_targets: Mutex::new(HashMap::new()),
+        musket_cd: Mutex::new(HashMap::new()),
         shutdown: AtomicBool::new(false),
         banned_ips: Mutex::new(banned_ips),
         bans_path,
@@ -4325,6 +4505,44 @@ fn maybe_spawn_knights(shared: &Shared, cx: i32, cy: i32) {
             },
         );
     }
+}
+
+/// Possibly seed a wandering musketeer onto a freshly generated **plains** chunk, the
+/// ranged twin of [`maybe_spawn_knights`]. A fresh musketeer is wild (`owner: None`)
+/// until a player recruits it with a tungsten ingot. Deterministic per chunk via
+/// [`chunk_hash`] on its own salt range, so re-exploring never double-spawns.
+fn maybe_spawn_musketeers(shared: &Shared, cx: i32, cy: i32) {
+    let world = shared.world(Dimension::Overworld).lock();
+    let seed = world.generator.seed();
+    if chunk_hash(seed, cx, cy, 640) % 100 >= KNIGHT_CHUNK_CHANCE {
+        return;
+    }
+
+    let base_x = cx * CHUNK_SIZE;
+    let chunk_top = cy * CHUNK_SIZE;
+    let chunk_bottom = chunk_top + CHUNK_SIZE;
+    let (_, h) = EntityKind::Musketeer { owner: None }.size();
+
+    let lx = chunk_hash(seed, cx, cy, 641) % CHUNK_SIZE as u32;
+    let cell_x = base_x + lx as i32;
+    let surface = world.surface(cell_x);
+    if world.biome(cell_x) != Biome::Plains || surface < chunk_top || surface >= chunk_bottom {
+        return;
+    }
+    let id = shared.alloc_id();
+    let entity = Entity::new(
+        id,
+        EntityKind::Musketeer { owner: None },
+        cell_x as f32 * TILE_SIZE,
+        surface as f32 * TILE_SIZE - h,
+    );
+    drop(world);
+
+    shared
+        .entities(Dimension::Overworld)
+        .lock()
+        .insert(entity.clone());
+    shared.broadcast_dim(Dimension::Overworld, ServerMessage::EntitySpawn { entity });
 }
 
 /// Possibly seed snakes into a freshly generated chunk. Snakes are the desert's
@@ -5299,6 +5517,7 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
                 !e.kind.is_player()
                     && !e.kind.is_pet()
                     && !e.kind.is_knight()
+                    && !e.kind.is_musketeer()
                     && !e.kind.is_mage()
                     && !e.kind.is_white_dragon()
                     && !matches!(e.kind, EntityKind::DemonKing)
@@ -5470,6 +5689,28 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         .filter(|e| matches!(e.kind, EntityKind::Axe))
         .map(|e| e.id)
         .collect();
+    let musketeer_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Musketeer { .. }))
+        .map(|e| e.id)
+        .collect();
+    let dark_musketeer_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::DarkMusketeer))
+        .map(|e| e.id)
+        .collect();
+    // Hostile bullets (a dark musketeer's shots) and the friendly bullets a musketeer
+    // or a player's musket looses fly under their own loops below.
+    let bullet_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Bullet))
+        .map(|e| e.id)
+        .collect();
+    let friendly_bullet_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::FriendlyBullet))
+        .map(|e| e.id)
+        .collect();
     // Both ordinary and magic fireballs fly under one loop below; they differ only
     // in damage, reach and life (the magic bolt's longer life is baked into its
     // per-entity timer at launch).
@@ -5484,14 +5725,14 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         .map(|e| e.id)
         .collect();
 
-    // Knights (wild and recruited alike) as `(id, x, y, w, h)`, so hostile
-    // creatures can hunt a man-at-arms the same way they hunt a player. Snapped
-    // once up front: knights that move later this tick (in the knight loop) read a
-    // tick stale to the monster loops that run after it, which is close enough for
-    // a chase heading and a melee reach check.
+    // Warriors — knights and musketeers, wild and recruited alike — as `(id, x, y, w, h)`,
+    // so hostile creatures can hunt a companion the same way they hunt a player. Snapped
+    // once up front: warriors that move later this tick (in their own loops) read a tick
+    // stale to the monster loops that run after, which is close enough for a chase
+    // heading and a reach check.
     let knight_boxes: Vec<(EntityId, f32, f32, f32, f32)> = entities
         .values()
-        .filter(|e| e.kind.is_knight())
+        .filter(|e| e.kind.is_warrior())
         .map(|e| {
             let (w, h) = e.size();
             (e.id, e.x, e.y, w, h)
@@ -6399,6 +6640,159 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         }
     }
 
+    // Musketeers: marksmen — wild or recruited alike — that fight monsters at range. A
+    // recruited one keeps to its owner (teleporting over when they stray, like a knight)
+    // and a wild one roams its home patch, but both lock onto the nearest monster in
+    // aggro and kite it: closing to firing range, backing off if it slips too near, and
+    // loosing a friendly bullet on a measured cadence. Monsters strike back from their
+    // own loops (a musketeer rides the same `knight_boxes` prey list a knight does), so
+    // there is no reprisal to apply here. Friendly bullets are spawned after the loop so
+    // we aren't holding a mutable borrow of the shooter while inserting.
+    let mut friendly_bullet_spawns: Vec<(f32, f32, f32, f32)> = Vec::new();
+    for id in musketeer_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+
+        // Singed by fire on the shared interval, taken on its own health (applied after
+        // the loops via `knight_hits`, the warriors' reprisal bucket).
+        {
+            let mut cds = shared.fire_cd.lock();
+            let cd = cds.entry(id).or_insert(0.0);
+            *cd = (*cd - TICK_DT).max(0.0);
+            if *cd <= 0.0 && body_in_fire(&mut world, e.x, e.y, w, h) {
+                *cd = FIRE_DAMAGE_INTERVAL;
+                knight_hits.push((id, FIRE_DAMAGE));
+            }
+        }
+
+        // Resolve a recruited musketeer's owner (by name) to a live player here.
+        let owner: Option<(EntityId, f32, f32)> = e.kind.owner().and_then(|name| {
+            named_players
+                .iter()
+                .find(|(n, ..)| n == name)
+                .map(|&(_, oid, ox, oy)| (oid, ox, oy))
+        });
+
+        // Recruited & owner present and strayed too far: snap to them and re-anchor.
+        if let Some((_, ox, oy)) = owner {
+            let ocx = ox + PLAYER_SIZE.0 * 0.5;
+            let ocy = oy + PLAYER_SIZE.1 * 0.5;
+            if (ocx - scx).powi(2) + (ocy - scy).powi(2)
+                > KNIGHT_TELEPORT_DIST * KNIGHT_TELEPORT_DIST
+            {
+                e.x = ox;
+                e.y = oy;
+                e.vx = 0.0;
+                e.vy = 0.0;
+                e.home_x = Some(ox);
+                broadcasts.push(ServerMessage::EntityMoved {
+                    id,
+                    x: ox,
+                    y: oy,
+                    vx: 0.0,
+                    vy: 0.0,
+                });
+                continue;
+            }
+        }
+
+        let home = *e.home_x.get_or_insert(e.x);
+        let target = nearest_of(&hostiles, scx, scy, MUSKETEER_AGGRO);
+        let chasing = target.is_some();
+
+        // Kiting heading: close in when out of firing range, back off when the monster
+        // slips inside the standoff distance, otherwise hold and fire. With no monster
+        // to hunt, a recruited musketeer heels to its owner; a wild one ambles home.
+        let (dir, gap, aim) = match target {
+            Some((_, tx, ty, tw, th)) => {
+                let gap = aabb_gap(e.x, e.y, w, h, tx, ty, tw, th);
+                let toward = if tx + tw * 0.5 >= scx { 1.0 } else { -1.0 };
+                let dir = if gap < MUSKETEER_KEEP_DIST {
+                    -toward
+                } else if gap > MUSKETEER_SHOOT_RANGE {
+                    toward
+                } else {
+                    0.0
+                };
+                (dir, gap, Some((tx, ty, tw, th)))
+            }
+            None => {
+                let dir = match owner {
+                    Some((_, ox, oy)) => {
+                        let ocx = ox + PLAYER_SIZE.0 * 0.5;
+                        let owner_gap =
+                            aabb_gap(e.x, e.y, w, h, ox, oy, PLAYER_SIZE.0, PLAYER_SIZE.1);
+                        if owner_gap <= KNIGHT_FOLLOW_GAP {
+                            0.0
+                        } else if ocx < scx {
+                            -1.0
+                        } else {
+                            1.0
+                        }
+                    }
+                    None => wander_dir(scx, e.vx, home),
+                };
+                (dir, f32::INFINITY, None)
+            }
+        };
+
+        let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, MUSKETEER_SPEED, chasing);
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        // Face the target even while striding backwards to keep distance.
+        let bcast_vx = match aim {
+            Some((px, _, pw, _)) => {
+                let cx = m.x + w * 0.5;
+                let toward = if px + pw * 0.5 >= cx { 1.0 } else { -1.0 };
+                toward * m.vx.abs()
+            }
+            None => m.vx,
+        };
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: bcast_vx,
+            vy: m.vy,
+        });
+
+        // Fire a friendly bullet when a monster is within range and we're off cooldown,
+        // from the musketeer's upper body straight at the target's center.
+        if let Some((px, py, pw, ph)) = aim {
+            if e.attack_cd <= 0.0 && gap <= MUSKETEER_SHOOT_RANGE {
+                e.attack_cd = MUSKETEER_SHOOT_INTERVAL;
+                let (bw, bh) = crate::entity::BULLET_SIZE;
+                let sx = m.x + w * 0.5 - bw * 0.5;
+                let sy = m.y + h * 0.3 - bh * 0.5;
+                let tx = px + pw * 0.5;
+                let ty = py + ph * 0.5;
+                let dx = tx - (sx + bw * 0.5);
+                let dy = ty - (sy + bh * 0.5);
+                let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                friendly_bullet_spawns.push((sx, sy, dx / len * BULLET_SPEED, dy / len * BULLET_SPEED));
+                broadcasts.push(ServerMessage::EntityLunging { id });
+            }
+        }
+    }
+    // Spawn the friendly bullets musketeers loosed this tick. They aren't in
+    // `friendly_bullet_ids`, so they begin flying next tick rather than at once.
+    for (x, y, vx, vy) in friendly_bullet_spawns {
+        let bid = shared.alloc_id();
+        let mut bullet = Entity::new(bid, EntityKind::FriendlyBullet, x, y);
+        bullet.vx = vx;
+        bullet.vy = vy;
+        bullet.attack_cd = BULLET_LIFETIME; // reused as the airborne lifetime timer
+        entities.insert(bullet.clone());
+        broadcasts.push(ServerMessage::EntitySpawn { entity: bullet });
+    }
+
     // Mages: the spellcasters the restore spell conjures. A recruited mage shadows
     // its owner (teleporting over when they stray, like a knight); a wild one ambles
     // its home patch. On a measured cadence it looses one of the world's spells at
@@ -6911,6 +7305,113 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         axe.attack_cd = AXE_LIFETIME; // reused as the airborne lifetime timer
         entities.insert(axe.clone());
         broadcasts.push(ServerMessage::EntitySpawn { entity: axe });
+    }
+
+    // Dark musketeers: black-clad marksmen that march under the demon king's banner and
+    // kite their quarry like a dark knight — hanging at range and firing bullets — but
+    // they hunt knights and musketeers as readily as players (nearest_prey hands back
+    // players and warriors alike, and `knight_boxes` now carries both). They burn up at
+    // daybreak like the other overworld night mobs (and roam the always-dark arena they
+    // are summoned into around the clock).
+    let mut dark_musketeer_despawns: Vec<EntityId> = Vec::new();
+    // Bullets loosed this tick, spawned after the loop so we aren't holding a mutable
+    // borrow of the shooter while inserting. Each is `(x, y, vx, vy)`.
+    let mut bullet_throws: Vec<(f32, f32, f32, f32)> = Vec::new();
+    for id in dark_musketeer_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+
+        // Daybreak: burn up and vanish on the spot (no death animation).
+        if !night {
+            dark_musketeer_despawns.push(id);
+            continue;
+        }
+
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let home = *e.home_x.get_or_insert(e.x);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+        let target = nearest_prey(&hostile_players, &knight_boxes, scx, scy, DARK_MUSKETEER_AGGRO);
+        let chasing = target.is_some();
+
+        let (dir, gap, aim) = match target {
+            Some(p) => {
+                let gap = aabb_gap(e.x, e.y, w, h, p.x, p.y, p.w, p.h);
+                let toward = if p.x + p.w * 0.5 >= scx { 1.0 } else { -1.0 };
+                let dir = if gap < DARK_MUSKETEER_KEEP_DIST {
+                    -toward
+                } else if gap > DARK_MUSKETEER_SHOOT_RANGE {
+                    toward
+                } else {
+                    0.0
+                };
+                (dir, gap, Some((p.x, p.y, p.w, p.h)))
+            }
+            None => (wander_dir(scx, e.vx, home), f32::INFINITY, None),
+        };
+
+        let m = step_ground(
+            &mut world,
+            (e.x, e.y, w, h),
+            e.vy,
+            dir,
+            DARK_MUSKETEER_SPEED,
+            chasing,
+        );
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        let bcast_vx = match aim {
+            Some((px, _, pw, _)) => {
+                let cx = m.x + w * 0.5;
+                let toward = if px + pw * 0.5 >= cx { 1.0 } else { -1.0 };
+                toward * m.vx.abs()
+            }
+            None => m.vx,
+        };
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: bcast_vx,
+            vy: m.vy,
+        });
+
+        // Fire a bullet when a target is within range and we're off cooldown, from the
+        // dark musketeer's upper body straight at the target's center.
+        if let Some((px, py, pw, ph)) = aim {
+            if e.attack_cd <= 0.0 && gap <= DARK_MUSKETEER_SHOOT_RANGE {
+                e.attack_cd = DARK_MUSKETEER_SHOOT_INTERVAL;
+                let (bw, bh) = crate::entity::BULLET_SIZE;
+                let sx = m.x + w * 0.5 - bw * 0.5;
+                let sy = m.y + h * 0.3 - bh * 0.5;
+                let tx = px + pw * 0.5;
+                let ty = py + ph * 0.5;
+                let dx = tx - (sx + bw * 0.5);
+                let dy = ty - (sy + bh * 0.5);
+                let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                bullet_throws.push((sx, sy, dx / len * BULLET_SPEED, dy / len * BULLET_SPEED));
+                broadcasts.push(ServerMessage::EntityLunging { id });
+            }
+        }
+    }
+    for id in dark_musketeer_despawns {
+        entities.remove(id);
+        broadcasts.push(ServerMessage::EntityDespawn { id });
+    }
+    // Spawn the bullets dark musketeers loosed this tick. They aren't in `bullet_ids`,
+    // so they begin flying next tick rather than being simulated again immediately.
+    for (x, y, vx, vy) in bullet_throws {
+        let bid = shared.alloc_id();
+        let mut bullet = Entity::new(bid, EntityKind::Bullet, x, y);
+        bullet.vx = vx;
+        bullet.vy = vy;
+        bullet.attack_cd = BULLET_LIFETIME; // reused as the airborne lifetime timer
+        entities.insert(bullet.clone());
+        broadcasts.push(ServerMessage::EntitySpawn { entity: bullet });
     }
 
     // Necromancers: hooded ranged casters that kite the player like a skeleton but,
@@ -8173,20 +8674,30 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         entities.insert(bolt.clone());
         broadcasts.push(ServerMessage::EntitySpawn { entity: bolt });
     }
-    // Spawn the host of dark knights the king called down as it enraged, fanned out
-    // across the floor around the player to swarm them alongside the king.
+    // Spawn the host the king called down as it enraged — two dark knights and two dark
+    // musketeers — fanned out across the floor around the player to swarm them alongside
+    // the king. The two kinds are interleaved so the marksmen don't all cluster on one
+    // flank, and each is dropped onto its own column's surface.
     if let Some(px) = summon_around {
-        let (_, kh) = EntityKind::DarkKnight.size();
-        for i in 0..DEMON_KING_KNIGHT_COUNT {
+        let mut host: Vec<EntityKind> = Vec::new();
+        for _ in 0..DEMON_KING_DARK_KNIGHT_COUNT {
+            host.push(EntityKind::DarkKnight);
+        }
+        for _ in 0..DEMON_KING_DARK_MUSKETEER_COUNT {
+            host.push(EntityKind::DarkMusketeer);
+        }
+        for (i, kind) in host.into_iter().enumerate() {
+            let i = i as u32;
             let rank = (i / 2) as f32 + 1.0;
             let dir = if i % 2 == 0 { -1.0 } else { 1.0 };
             let gx = px + dir * rank * DEMON_KING_KNIGHT_SPACING;
             let gcx = (gx / TILE_SIZE).floor() as i32;
             let surface = world.surface(gcx);
+            let (_, kh) = kind.size();
             let gy = surface as f32 * TILE_SIZE - kh;
-            let knight = Entity::new(shared.alloc_id(), EntityKind::DarkKnight, gx, gy);
-            entities.insert(knight.clone());
-            broadcasts.push(ServerMessage::EntitySpawn { entity: knight });
+            let warrior = Entity::new(shared.alloc_id(), kind, gx, gy);
+            entities.insert(warrior.clone());
+            broadcasts.push(ServerMessage::EntitySpawn { entity: warrior });
         }
     }
 
@@ -8572,6 +9083,121 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         });
     }
     for id in axe_despawns {
+        entities.remove(id);
+        broadcasts.push(ServerMessage::EntityDespawn { id });
+    }
+
+    // Hostile bullets in flight: a dark musketeer's shots. Like axes they travel in a
+    // straight line (no gravity), striking the first player or warrior they overlap (a
+    // warrior soaks it via `knight_hits`) or winking out on a wall or when their short
+    // life ends. They leave nothing behind where they land.
+    let mut bullet_despawns: Vec<EntityId> = Vec::new();
+    for id in bullet_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+
+        let (nx, hit_x) = move_x(&mut world, e.x, e.y, w, h, e.vx * TICK_DT);
+        let (ny, hit_y) = move_y(&mut world, nx, e.y, w, h, e.vy * TICK_DT);
+        e.x = nx;
+        e.y = ny;
+
+        if hit_x || hit_y || e.attack_cd <= 0.0 {
+            bullet_despawns.push(id);
+            continue;
+        }
+
+        let kx = if e.vx >= 0.0 {
+            KNOCKBACK_X
+        } else {
+            -KNOCKBACK_X
+        };
+        let mut struck = false;
+        for &(pid, px, py) in &players {
+            if aabb_gap(nx, ny, w, h, px, py, PLAYER_SIZE.0, PLAYER_SIZE.1) <= BULLET_HIT_RANGE {
+                bites.push((pid, (kx, -KNOCKBACK_Y), BULLET_DAMAGE));
+                struck = true;
+                break;
+            }
+        }
+        if !struck {
+            for &(kid, kx2, ky, kw, kh) in &knight_boxes {
+                if aabb_gap(nx, ny, w, h, kx2, ky, kw, kh) <= BULLET_HIT_RANGE {
+                    knight_hits.push((kid, BULLET_DAMAGE));
+                    struck = true;
+                    break;
+                }
+            }
+        }
+        if struck {
+            bullet_despawns.push(id);
+            continue;
+        }
+
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: nx,
+            y: ny,
+            vx: e.vx,
+            vy: e.vy,
+        });
+    }
+    for id in bullet_despawns {
+        entities.remove(id);
+        broadcasts.push(ServerMessage::EntityDespawn { id });
+    }
+
+    // Friendly bullets in flight: the shots a musketeer or a player's musket looses.
+    // Like the hostile bullet they fly straight (no gravity), but they help the caster —
+    // damaging the *monster* they strike rather than players, and knights and monsters
+    // pay them no mind. They leave nothing behind where they land.
+    let mut friendly_bullet_despawns: Vec<EntityId> = Vec::new();
+    for id in friendly_bullet_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+
+        let (nx, hit_x) = move_x(&mut world, e.x, e.y, w, h, e.vx * TICK_DT);
+        let (ny, hit_y) = move_y(&mut world, nx, e.y, w, h, e.vy * TICK_DT);
+        e.x = nx;
+        e.y = ny;
+
+        if hit_x || hit_y || e.attack_cd <= 0.0 {
+            friendly_bullet_despawns.push(id);
+            continue;
+        }
+
+        let kx = if e.vx >= 0.0 {
+            KNOCKBACK_X
+        } else {
+            -KNOCKBACK_X
+        };
+        let mut struck = false;
+        for &(tid, tx, ty, tw, th) in &hostiles {
+            if aabb_gap(nx, ny, w, h, tx, ty, tw, th) <= BULLET_HIT_RANGE {
+                creature_hits.push((tid, (kx, -KNOCKBACK_Y), FRIENDLY_BULLET_DAMAGE));
+                struck = true;
+                break;
+            }
+        }
+        if struck {
+            friendly_bullet_despawns.push(id);
+            continue;
+        }
+
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: nx,
+            y: ny,
+            vx: e.vx,
+            vy: e.vy,
+        });
+    }
+    for id in friendly_bullet_despawns {
         entities.remove(id);
         broadcasts.push(ServerMessage::EntityDespawn { id });
     }
@@ -9267,6 +9893,7 @@ fn is_hostile(kind: &EntityKind) -> bool {
             | EntityKind::Necromancer
             | EntityKind::Skull
             | EntityKind::DarkKnight
+            | EntityKind::DarkMusketeer
             | EntityKind::Dragon
     )
 }
@@ -9283,6 +9910,7 @@ fn burns_in_daylight(kind: &EntityKind) -> bool {
         EntityKind::Zombie
             | EntityKind::Skeleton
             | EntityKind::DarkKnight
+            | EntityKind::DarkMusketeer
             | EntityKind::Necromancer
             | EntityKind::Skull
     )
@@ -9290,14 +9918,17 @@ fn burns_in_daylight(kind: &EntityKind) -> bool {
 
 /// What a creature `kind` is **restored** into by the [restore
 /// spell](crate::block::RESTORE_SPELL), or `None` if it cannot be restored. An orc
-/// or a dark knight is turned to a [`EntityKind::Knight`]; an orc mage to a
-/// [`EntityKind::Mage`]; an enchanted demon is calmed back into an ordinary
-/// [`EntityKind::Demon`]. `owner` is stamped onto the resulting knight/mage — the
-/// caster's name (recruiting it) or `None` (leaving it wild); it is ignored for the
-/// ownerless demon.
+/// or a dark knight is turned to a [`EntityKind::Knight`]; a dark musketeer to a
+/// [`EntityKind::Musketeer`]; an orc mage to a [`EntityKind::Mage`]; an enchanted
+/// demon is calmed back into an ordinary [`EntityKind::Demon`]. `owner` is stamped
+/// onto the resulting knight/musketeer/mage — the caster's name (recruiting it) or
+/// `None` (leaving it wild); it is ignored for the ownerless demon.
 fn restored_kind(kind: &EntityKind, owner: &Option<String>) -> Option<EntityKind> {
     match kind {
         EntityKind::Orc | EntityKind::DarkKnight => Some(EntityKind::Knight {
+            owner: owner.clone(),
+        }),
+        EntityKind::DarkMusketeer => Some(EntityKind::Musketeer {
             owner: owner.clone(),
         }),
         EntityKind::OrcMage => Some(EntityKind::Mage {
@@ -9488,6 +10119,21 @@ fn apply_damage(
             *owner = None;
         }
         // Resync the whole entity (the cleared owner rides along in `kind`).
+        msgs.push(ServerMessage::EntitySpawn { entity: e.clone() });
+        (msgs, None)
+    } else if matches!(e.kind, EntityKind::Musketeer { owner: Some(_) }) {
+        // A slain musketeer, like a knight, reappears **wild** at its owner's respawn
+        // point — the bond does not survive death; it must be recruited afresh.
+        let (_, rx, ry) = respawn;
+        e.health = e.max_health;
+        e.x = rx;
+        e.y = ry;
+        e.vx = 0.0;
+        e.vy = 0.0;
+        e.home_x = Some(rx);
+        if let EntityKind::Musketeer { owner } = &mut e.kind {
+            *owner = None;
+        }
         msgs.push(ServerMessage::EntitySpawn { entity: e.clone() });
         (msgs, None)
     } else if e.kind.owner().is_some() {
@@ -10063,6 +10709,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                 maybe_spawn_puppies(&shared, cx, cy);
                                 maybe_spawn_horses(&shared, cx, cy);
                                 maybe_spawn_knights(&shared, cx, cy);
+                                maybe_spawn_musketeers(&shared, cx, cy);
                                 maybe_realize_structures(&shared, cx, cy);
                             }
                             Dimension::Underworld => {
@@ -10508,6 +11155,9 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 ClientMessage::DragonBreath { tx, ty } => {
                     shared.dragon_breath(id, tx, ty);
                 }
+                ClientMessage::FireMusket { slot, tx, ty } => {
+                    shared.fire_musket(id, slot as usize, tx, ty);
+                }
                 ClientMessage::ToggleDoor { x, y } => {
                     let dim = shared.dim_of(id);
                     // Gated by the player's melee reach, the same limit governing
@@ -10851,6 +11501,23 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         }
                         continue;
                     }
+                    // Musketeers are sacrosanct too, and recruited the same way: a wild
+                    // one is won with a tungsten ingot, a recruited one shrugs the swing
+                    // off. Either way the damage path is skipped.
+                    let musketeer_owner = shared
+                        .entities(dim)
+                        .lock()
+                        .get(target)
+                        .and_then(|e| match &e.kind {
+                            EntityKind::Musketeer { owner } => Some(owner.clone()),
+                            _ => None,
+                        });
+                    if let Some(owner) = musketeer_owner {
+                        if owner.is_none() {
+                            shared.try_recruit_musketeer(id, target, held, dim);
+                        }
+                        continue;
+                    }
                     // Mages are sacrosanct too: nothing harms a mage — it can't be
                     // recruited by hand (only the restore spell makes one), so a swing
                     // at one simply does nothing.
@@ -11113,6 +11780,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
     shared.fire_cd.lock().remove(&id);
     shared.fire_marks.lock().remove(&id);
     shared.knight_targets.lock().remove(&id);
+    shared.musket_cd.lock().remove(&id);
     shared.spectate_return.lock().remove(&id);
     shared.creators.lock().remove(&id);
     // Forget any chest this player had open and the session unlocks they earned

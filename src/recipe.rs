@@ -9,12 +9,12 @@
 //! A recipe is identified on the wire by its index in [`RECIPES`].
 
 use crate::block::{
-    ARENA_KEY, BARK, BOAT, BUCKET, CAMPFIRE, CHARRED_ROCK, CHEST, COOKED_MEAT, DOOR, DRAGON_SCALE,
-    DRAGONIAN_STEED, FIRE_KEY, FORGE, GOLD_INGOT, IRON_ARMOR, IRON_AXE, IRON_INGOT, IRON_PICKAXE,
-    IRON_SWORD, LADDER, LOG, PAPER, PICKAXE, QUEST_BOARD, RAW_GOLD, RAW_IRON, RAW_MEAT,
-    RAW_TUNGSTEN, RESTORE_SPELL, ROPE, ROPE_LADDER, SIGN, STICK, STONE, STONE_AXE, STONE_BRICKS,
-    STONE_PICKAXE, STONE_SWORD, SUMMONER_SPELL, SUNBURST_SPELL, TUNGSTEN_ARMOR, TUNGSTEN_AXE,
-    TUNGSTEN_INGOT, TUNGSTEN_PICKAXE, TUNGSTEN_SWORD, WOOD, WOOD_AXE, WOOD_SWORD,
+    ARENA_KEY, BARK, BOAT, BUCKET, BULLET, CAMPFIRE, CHARRED_ROCK, CHEST, COOKED_MEAT, DOOR,
+    DRAGON_SCALE, DRAGONIAN_STEED, FIRE_KEY, FORGE, GOLD_INGOT, IRON_ARMOR, IRON_AXE, IRON_INGOT,
+    IRON_PICKAXE, IRON_SWORD, LADDER, LOG, MUSKET, PAPER, PICKAXE, QUEST_BOARD, RAW_GOLD, RAW_IRON,
+    RAW_MEAT, RAW_TUNGSTEN, RESTORE_SPELL, ROPE, ROPE_LADDER, SIGN, STICK, STONE, STONE_AXE,
+    STONE_BRICKS, STONE_PICKAXE, STONE_SWORD, SUMMONER_SPELL, SUNBURST_SPELL, TUNGSTEN_ARMOR,
+    TUNGSTEN_AXE, TUNGSTEN_INGOT, TUNGSTEN_PICKAXE, TUNGSTEN_SWORD, WOOD, WOOD_AXE, WOOD_SWORD,
 };
 use crate::inventory::Inventory;
 use crate::protocol::BlockId;
@@ -78,6 +78,18 @@ pub const RECIPES: &[Recipe] = &[
         name: "Iron Sword",
         inputs: &[(IRON_INGOT, 2), (STICK, 1)],
         outputs: &[(IRON_SWORD, 1)],
+    },
+    // A wooden stock fitted with an iron barrel: a musket that fires bullets at range.
+    Recipe {
+        name: "Musket",
+        inputs: &[(WOOD, 2), (IRON_INGOT, 1)],
+        outputs: &[(MUSKET, 1)],
+    },
+    // An iron ingot cast into a clutch of lead-grey bullets, the musket's ammunition.
+    Recipe {
+        name: "Bullet",
+        inputs: &[(IRON_INGOT, 1)],
+        outputs: &[(BULLET, 8)],
     },
     // Forged tungsten on a stick: the deadliest blade in the world.
     Recipe {

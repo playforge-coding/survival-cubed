@@ -32,6 +32,8 @@ server-authoritative, so the result is always consistent in multiplayer.
 | Stone Axe | 3 Stone + 2 Stick | 1 Stone Axe |
 | Iron Axe | 3 Iron Ingot + 2 Stick | 1 Iron Axe |
 | Tungsten Axe | 3 Tungsten Ingot + 2 Stick | 1 Tungsten Axe |
+| Musket | 2 Wood + 1 Iron Ingot | 1 Musket |
+| Bullet | 1 Iron Ingot | 8 Bullet |
 | Stone Bricks | 4 Stone | 4 Stone Bricks |
 | Forge | 8 Stone | 1 Forge |
 | Campfire | 1 Stone + 5 Bark | 1 Campfire |
@@ -88,6 +90,18 @@ twice as quickly.
 | Stone Axe | 132 | 13 |
 | Iron Axe | 251 | 16 |
 | Tungsten Axe | 480 | 20 |
+
+### The musket
+
+The **musket** is a ranged firearm, crafted from **2 wood + 1 iron ingot**. Hold it
+and **right-click** to fire a bullet toward your cursor — a fast lead ball that flies
+straight until it strikes a monster or a wall, dealing a heavy **30 HP** — far more
+than any melee swing. The trade-off is the **slow reload**: a musket fires only about
+once every **1.4 seconds**, so it can't be fanned like a sword. Each shot spends one
+**bullet**; cast a batch of **8 bullets from 1 iron ingot** at the crafting table and
+keep them stocked. The musket never wears out — only the bullets are consumed — but an
+empty musket can't fire, so mind your ammunition. It's the same weapon a wild
+[musketeer](../entities/musketeer.md) carries.
 
 ### Repairing tools
 

@@ -3,7 +3,8 @@
 The **boss** of the [arena](../world.md#the-arena), and the only one of its kind in
 a world. A towering, winged fiend that **fights on foot** the whole bout, striding
 across the arena floor after you. Once wounded past **two-thirds health** it
-**enrages**, calling down a **host of dark knights** to swarm you alongside it. It
+**enrages**, calling down a **host of two [dark knights](dark-knight.md) and two
+[dark musketeers](dark-musketeer.md)** to swarm you alongside it. It
 wields the whole demonic arsenal: a fan of fireballs, a spread of magic fireballs, a
 summoned bolt, or a crushing slam.
 It enters **invulnerable**, shielded by eight [orc-mage](orcs.md#orc-mage)
@@ -37,9 +38,10 @@ king is finally yours to kill.
 
 The Demon King fights **on foot the whole bout**, striding across the arena floor
 after you — so it is always in reach of your sword. Once you wound it past
-**two-thirds health** it **enrages**, calling down a **host of four
-[dark knights](dark-knight.md)** to swarm you alongside it. The king itself fights
-exactly the same before and after; the enrage only adds the knights to deal with.
+**two-thirds health** it **enrages**, calling down a **host of two
+[dark knights](dark-knight.md) and two [dark musketeers](dark-musketeer.md)** to
+swarm you alongside it. The king itself fights exactly the same before and after;
+the enrage only adds the dark warriors to deal with.
 
 It attacks every ~1.7 seconds, choosing at random from **four attacks**, each
 telegraphed by the same **wind-up animation** before it releases:
@@ -55,8 +57,9 @@ telegraphed by the same **wind-up animation** before it releases:
 
 The fight is up close throughout — trade sword blows between its volleys. After it
 enrages, deal with the **dark knights** (they throw axes and drop tungsten when they
-fall) while you keep punishing the king. There is no ranged weapon to whittle it
-with, so every window to strike counts.
+fall) and **[dark musketeers](dark-musketeer.md)** (they fire bullets at range — and
+a [restore spell](../magic.md#the-restore-spell) turns one into your own loyal
+[musketeer](musketeer.md)) while you keep punishing the king.
 
 !!! danger "Bring everything"
 1000 HP is a deep pool — far more than anything else in the game. Come with the

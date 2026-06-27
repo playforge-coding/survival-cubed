@@ -22,6 +22,7 @@ Projectiles (bones, fireballs) are the exception, flying at 130–170 px/s.
 | [Cat & Puppy](pets.md)         | 8 / 14 | Tameable pets                     |
 | [Horse](horse.md)              | 30     | Tameable mount                    |
 | [Knight](knight.md)            | 40     | Recruitable man-at-arms           |
+| [Musketeer](musketeer.md)      | 34     | Recruitable ranged marksman       |
 | [Mage](mage.md)                | 30     | Spellcaster made by the restore spell |
 | [White Dragon](../magic.md#the-dragonian-steed-spell) | 200 | Rideable steed summoned by the dragonian steed spell |
 
@@ -32,6 +33,7 @@ Projectiles (bones, fireballs) are the exception, flying at 130–170 px/s.
 | [Slime](slime.md)                      | 10      | Mountains                                      |
 | [Zombie](zombie.md)                    | 40      | All biomes, night                              |
 | [Dark Knight](dark-knight.md)          | 44      | All biomes, night (overworld) — drops tungsten |
+| [Dark Musketeer](dark-musketeer.md)    | 40      | Summoned by the enraged demon king             |
 | [Spider](spider.md)                    | 12      | Forests & caves                                |
 | [Snake](snake.md)                      | 14      | Desert                                         |
 | [Skeletons](skeletons.md)              | 24 / 36 | All biomes (night) / underworld ash valleys    |

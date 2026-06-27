@@ -125,6 +125,16 @@ pub const DARK_KNIGHT_SIZE: (f32, f32) = (12.0, 13.0);
 /// Collision/draw size (width, height) in pixels of a thrown axe — a small
 /// tumbling projectile, like the [`BONE_SIZE`] bone but a touch smaller.
 pub const AXE_SIZE: (f32, f32) = (8.0, 8.0);
+/// Collision/draw size (width, height) in pixels of a musketeer — a slight
+/// humanoid on foot, the lean build of its art (its broader firing pose blooms
+/// from a larger sheet but the collision box stays this on-foot size).
+pub const MUSKETEER_SIZE: (f32, f32) = (11.0, 14.0);
+/// Collision/draw size (width, height) in pixels of a dark musketeer — the same
+/// lean build as the [`MUSKETEER_SIZE`] musketeer it preys on, clad in black.
+pub const DARK_MUSKETEER_SIZE: (f32, f32) = (11.0, 14.0);
+/// Collision/draw size (width, height) in pixels of a fired bullet — a tiny lead
+/// ball, the smallest projectile in the world.
+pub const BULLET_SIZE: (f32, f32) = (6.0, 6.0);
 /// Collision/draw size (width, height) in pixels of a dropped block item.
 pub const ITEM_SIZE: (f32, f32) = (8.0, 8.0);
 
@@ -175,6 +185,13 @@ pub const MAGE_CAST_TIME: f32 = 0.8;
 /// blow, and the client plays the attack sheet for this long. Purely cosmetic — the
 /// damage is dealt server-side on the [`Entity::attack_cd`] cadence.
 pub const KNIGHT_ATTACK_TIME: f32 = 0.45;
+
+/// Seconds a musketeer's (or dark musketeer's) firing animation plays. Like the
+/// knight swing it rides on the [`Entity::lunge`] timer: the server kicks it off
+/// (broadcasting [`crate::protocol::ServerMessage::EntityLunging`]) each time the
+/// musketeer looses a [`EntityKind::Bullet`], and the client plays the firing sheet
+/// for this long. Purely cosmetic — the shot is spawned server-side.
+pub const MUSKETEER_ATTACK_TIME: f32 = 0.4;
 
 /// Seconds a dragon's fireball-breathing animation plays end to end. Like the
 /// other attack poses it rides on the [`Entity::lunge`] timer: the server kicks
@@ -261,6 +278,14 @@ pub const MAGE_MAX_HEALTH: i32 = 30;
 /// the overworld night — a shade harder to fell than even the [`KNIGHT_MAX_HEALTH`]
 /// man-at-arms it hunts, fitting a rare foe that drops tungsten when it falls.
 pub const DARK_KNIGHT_MAX_HEALTH: i32 = 44;
+/// Maximum health of a musketeer, in hit points. A trained marksman — a touch
+/// frailer than the [`KNIGHT_MAX_HEALTH`] man-at-arms it fights beside, since it
+/// fells its foes from range rather than soaking up blows in the press.
+pub const MUSKETEER_MAX_HEALTH: i32 = 34;
+/// Maximum health of a dark musketeer, in hit points. As hardy as the
+/// [`DARK_KNIGHT_MAX_HEALTH`] dark knight it marches with, fitting a rare and
+/// dangerous foe summoned to the demon king's banner.
+pub const DARK_MUSKETEER_MAX_HEALTH: i32 = 40;
 /// Maximum health of a dragon, in hit points. A miniboss: far tougher than the
 /// rank-and-file underworld monsters, so felling one is a genuine fight — its
 /// health drives the miniboss bar the client shows while a dragon is near.
@@ -484,7 +509,8 @@ pub enum EntityKind {
     /// (which bursts into a bouncing [`EntityKind::Skull`]), or — at close range —
     /// brings its fists down in a heavy melee **slam** (like the [`EntityKind::Orc`]).
     /// It picks among these at random as it attacks, and past two-thirds health it
-    /// **enrages**, summoning a host of dark knights. Slaying it drops a **chest** of
+    /// **enrages**, summoning a host of two [`EntityKind::DarkKnight`]s and two
+    /// [`EntityKind::DarkMusketeer`]s. Slaying it drops a **chest** of
     /// loot where it falls rather than loose items, and no new king is ever raised in
     /// that world (see [`crate::server`]). Server-simulated. Appended last so older
     /// saves and the wire format keep their variant indices.
@@ -548,6 +574,40 @@ pub enum EntityKind {
     /// flight velocity. Server-simulated. Appended last so older saves and the wire
     /// format keep their variant indices.
     FriendlyDragonFireball,
+    /// A musketeer: a wandering marksman that spawns rarely on the **plains** like the
+    /// [`EntityKind::Knight`], and is likewise either **wild** (`owner` = `None`, just
+    /// roams and cannot be attacked by players) or **recruited** (giving it a **tungsten
+    /// ingot** stamps the giver's **name** into `owner`, stored by name so the bond
+    /// survives a restart). Unlike the melee knight it fights at **range**: it keeps its
+    /// distance from the monsters it hunts and looses [`EntityKind::FriendlyBullet`]s
+    /// from its musket. A recruited one follows its owner (teleporting over when they
+    /// stray, like a knight) and, like a knight, does not respawn loyal — a slain one
+    /// reappears wild at its owner's respawn point. A dark musketeer subjected to the
+    /// [restore spell](crate::block::RESTORE_SPELL) becomes one. Server-simulated.
+    /// Appended last so older saves and the wire format keep their variant indices.
+    Musketeer { owner: Option<String> },
+    /// A dark musketeer: a black-clad marksman that marches under the demon king's
+    /// banner (two appear alongside two [`EntityKind::DarkKnight`]s when the king
+    /// **enrages**). Like the dark knight it is a ranged kiter — it hangs at distance
+    /// and fires [`EntityKind::Bullet`]s rather than closing for melee — but it makes
+    /// war on the [`EntityKind::Knight`] and the [`EntityKind::Musketeer`] as readily as
+    /// on players, firing at all three. The [restore spell](crate::block::RESTORE_SPELL)
+    /// turns one into a loyal [`EntityKind::Musketeer`]. Server-simulated. Appended last
+    /// so older saves and the wire format keep their variant indices.
+    DarkMusketeer,
+    /// A bullet fired by a [`EntityKind::DarkMusketeer`] (or a player's musket — see the
+    /// [`EntityKind::FriendlyBullet`] twin), flying in a straight line until it strikes a
+    /// player or knight or musketeer or a wall (or its short life runs out). Its
+    /// [`Entity::vx`]/[`Entity::vy`] carry its flight velocity. Server-simulated. Appended
+    /// last so older saves and the wire format keep their variant indices.
+    Bullet,
+    /// A friendly bullet: the shot a player's **musket** (see [`crate::block::MUSKET`])
+    /// or a friendly [`EntityKind::Musketeer`] looses. It flies in a straight line like
+    /// the hostile [`EntityKind::Bullet`], but it **helps the caster** — it damages the
+    /// *monster* it strikes rather than players, and knights and monsters pay it no mind.
+    /// Its [`Entity::vx`]/[`Entity::vy`] carry its flight velocity. Server-simulated.
+    /// Appended last so older saves and the wire format keep their variant indices.
+    FriendlyBullet,
 }
 
 impl EntityKind {
@@ -587,6 +647,9 @@ impl EntityKind {
             EntityKind::Mage { .. } => MAGE_SIZE,
             EntityKind::WhiteDragon { .. } => WHITE_DRAGON_SIZE,
             EntityKind::FriendlyDragonFireball => FRIENDLY_DRAGON_FIREBALL_SIZE,
+            EntityKind::Musketeer { .. } => MUSKETEER_SIZE,
+            EntityKind::DarkMusketeer => DARK_MUSKETEER_SIZE,
+            EntityKind::Bullet | EntityKind::FriendlyBullet => BULLET_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -625,6 +688,21 @@ impl EntityKind {
     /// (immune to player attacks, exempt from distance despawn, follows its owner).
     pub fn is_knight(&self) -> bool {
         matches!(self, EntityKind::Knight { .. })
+    }
+
+    /// Whether this is a musketeer (recruited or wild) — the ranged twin of the
+    /// [knight](Self::is_knight). Like a knight it is a companion, not a [pet](Self::is_pet):
+    /// immune to player attacks, exempt from distance despawn, following its owner, and
+    /// hunted by monsters the same way a knight is.
+    pub fn is_musketeer(&self) -> bool {
+        matches!(self, EntityKind::Musketeer { .. })
+    }
+
+    /// Whether this is a companion that monsters treat as prey and that fights *for*
+    /// the player — a [knight](Self::is_knight) or a [musketeer](Self::is_musketeer).
+    /// Both ride the same despawn-immunity, monster-targeting and reprisal machinery.
+    pub fn is_warrior(&self) -> bool {
+        self.is_knight() || self.is_musketeer()
     }
 
     /// Whether this is a mage (recruited or wild) — the spellcaster the restore
@@ -675,6 +753,7 @@ impl EntityKind {
             | EntityKind::Horse { owner }
             | EntityKind::Knight { owner }
             | EntityKind::Mage { owner }
+            | EntityKind::Musketeer { owner }
             | EntityKind::WhiteDragon { owner } => owner.as_deref(),
             _ => None,
         }
@@ -734,6 +813,11 @@ impl EntityKind {
             // A friendly dragon fireball is an inert projectile; 1 keeps health ==
             // max_health so no health bar shows and a stray swing can't "kill" it.
             EntityKind::FriendlyDragonFireball => 1,
+            EntityKind::Musketeer { .. } => MUSKETEER_MAX_HEALTH,
+            EntityKind::DarkMusketeer => DARK_MUSKETEER_MAX_HEALTH,
+            // A bullet (hostile or friendly) is an inert projectile; 1 keeps health ==
+            // max_health so no health bar shows and a stray swing can't "kill" it.
+            EntityKind::Bullet | EntityKind::FriendlyBullet => 1,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }

@@ -125,7 +125,7 @@ pub enum SlotRef {
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 21;
+pub const PROTOCOL_VERSION: u32 = 22;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -359,6 +359,14 @@ pub enum ClientMessage {
     /// the steed's maw at the cursor (damaging monsters where it strikes). A no-op
     /// otherwise — it costs no mana, only the steed's own breath cadence.
     DragonBreath { tx: f32, ty: f32 },
+    /// Fire the musket held in hotbar `slot` toward world pixel `(tx, ty)` (the
+    /// player's cursor). The server checks the slot really holds a
+    /// [`musket`](crate::block::is_musket) and that the player carries at least one
+    /// [`bullet`](crate::block::BULLET); on success it spends one bullet and looses a
+    /// friendly bullet from the musket's muzzle at the cursor (damaging monsters where
+    /// it strikes). A no-op (with an inventory resync) if the slot doesn't hold a musket
+    /// or the player is out of bullets.
+    FireMusket { slot: u8, tx: f32, ty: f32 },
 }
 
 /// Sent from server to client over the single bidirectional stream.

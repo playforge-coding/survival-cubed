@@ -117,6 +117,10 @@ const ZOOM_MAX: f32 = 6.0;
 const ZOOM_STEP: f32 = 0.5;
 /// How often (seconds) a held mouse button places a block or swings a melee hit.
 const ACTION_COOLDOWN: f32 = 0.12;
+/// Seconds between musket shots — a long reload. A musket is a slow, hard-hitting
+/// firearm, so it can't be fired like a melee weapon; this is its own cooldown,
+/// kept apart from the brief [`ACTION_COOLDOWN`] every other action shares.
+const MUSKET_COOLDOWN: f32 = 1.4;
 /// Extra chunks loaded beyond the screen edges.
 const CHUNK_MARGIN: i32 = 1;
 /// Falls shorter than this (in tiles) are harmless.
@@ -308,6 +312,11 @@ struct GameState {
     /// Set after a wrong password so the prompt can show an error.
     chest_prompt_error: bool,
     action_timer: f32,
+    /// Seconds until the musket can fire again. A firearm is slow to reload, so it
+    /// has its own long cooldown ([`MUSKET_COOLDOWN`]) separate from the brief shared
+    /// [`ACTION_COOLDOWN`] — firing it doesn't lock out mining or placing, and the
+    /// short action cooldown doesn't let it be fired like a fast weapon.
+    musket_timer: f32,
     move_send_timer: f32,
     last_sent: Vec2,
     /// Local player health, authoritative on the server but mirrored here for
@@ -438,6 +447,7 @@ impl GameState {
             chest_prompt_input: String::new(),
             chest_prompt_error: false,
             action_timer: 0.0,
+            musket_timer: 0.0,
             move_send_timer: 0.0,
             last_sent: spawn,
             health: PLAYER_MAX_HEALTH,
@@ -1113,6 +1123,9 @@ impl App {
                             EntityKind::OrcMage => crate::entity::ORC_MAGE_CAST_TIME,
                             EntityKind::Mage { .. } => crate::entity::MAGE_CAST_TIME,
                             EntityKind::Knight { .. } => crate::entity::KNIGHT_ATTACK_TIME,
+                            EntityKind::Musketeer { .. } | EntityKind::DarkMusketeer => {
+                                crate::entity::MUSKETEER_ATTACK_TIME
+                            }
                             EntityKind::Dragon => crate::entity::DRAGON_ATTACK_TIME,
                             _ => crate::entity::SNAKE_LUNGE_TIME,
                         };
@@ -3242,6 +3255,12 @@ impl App {
                             if ui.button("Dark Knight").clicked() {
                                 spawn = Some(EntityKind::DarkKnight);
                             }
+                            if ui.button("Musketeer").clicked() {
+                                spawn = Some(EntityKind::Musketeer { owner: None });
+                            }
+                            if ui.button("Dark Musketeer").clicked() {
+                                spawn = Some(EntityKind::DarkMusketeer);
+                            }
                             if ui.button("Dragon").clicked() {
                                 spawn = Some(EntityKind::Dragon);
                             }
@@ -3764,6 +3783,50 @@ impl App {
                 }
                 continue;
             }
+            // A musketeer (friendly or dark) has two poses: walking, or mid-shot (its
+            // firing animation rides on the `lunge` timer). The firing sheet blooms
+            // beyond the collision box, so — like the knight — it is drawn centred on the
+            // musketeer's box and resting on its feet.
+            if matches!(e.kind, EntityKind::Musketeer { .. } | EntityKind::DarkMusketeer) {
+                let dark = matches!(e.kind, EntityKind::DarkMusketeer);
+                let attacking = e.lunge > 0.0;
+                let def = match (dark, attacking) {
+                    (false, false) => &sprite::MUSKETEER_SPRITE,
+                    (false, true) => &sprite::MUSKETEER_ATTACK_SPRITE,
+                    (true, false) => &sprite::DARK_MUSKETEER_SPRITE,
+                    (true, true) => &sprite::DARK_MUSKETEER_ATTACK_SPRITE,
+                };
+                let frame = if attacking {
+                    let progress =
+                        1.0 - (e.lunge / crate::entity::MUSKETEER_ATTACK_TIME).clamp(0.0, 1.0);
+                    ((progress * def.frames as f32) as u32).min(def.frames - 1)
+                } else {
+                    sprite::frame_index(e.vx.abs() > 1.0, self.anim_time, def)
+                };
+                let (sw, sh) = (def.frame_w as f32, def.frame_h as f32);
+                let facing = g.facing.get(&e.id).copied().unwrap_or(true);
+                tiles.push(entity_instance(
+                    self.atlas.sprite_frame(def.name, frame),
+                    e.x + (w - sw) * 0.5,
+                    e.y + h - sh,
+                    sw,
+                    sh,
+                    facing,
+                    flash_tint(tint, e.hit_flash),
+                ));
+                if e.health < e.max_health && e.max_health > 0 {
+                    push_health_bar(
+                        &mut tiles,
+                        self.atlas.white(),
+                        e.x,
+                        e.y,
+                        w,
+                        e.health,
+                        e.max_health,
+                    );
+                }
+                continue;
+            }
             // A dying zombie plays its one-shot crumble (frame stepped by the
             // death timer); everything else uses its walk sheet (frame stepped by
             // the shared animation clock when moving).
@@ -3856,6 +3919,7 @@ impl App {
                 EntityKind::FriendlySkull
                     | EntityKind::FriendlySummonerFireball
                     | EntityKind::FriendlyDragonFireball
+                    | EntityKind::FriendlyBullet
             ) {
                 [base[0] * 0.45, base[1] * 0.8, base[2], base[3]]
             } else {
@@ -4813,6 +4877,7 @@ fn handle_block_actions(
     dt: f32,
 ) {
     game.action_timer -= dt;
+    game.musket_timer = (game.musket_timer - dt).max(0.0);
 
     // Open menus (inventory, forge, campfire) capture the mouse for their own UI;
     // don't mine or place in the world while one is open.
@@ -5153,6 +5218,34 @@ fn handle_block_actions(
             }
             // Either way, consume the click so a spellbook never falls through to
             // ordinary block placement.
+            game.action_timer = ACTION_COOLDOWN;
+            return;
+        }
+    }
+
+    // Right-clicking while holding a musket fires a bullet toward the cursor, spending
+    // one bullet from the inventory. Like a spellbook it acts on aim rather than a cell,
+    // so it needs no reach check; the server validates the ammunition, looses the
+    // friendly bullet, and resyncs the authoritative inventory. A musket is slow to
+    // reload, so it has its own long cooldown (separate from the brief shared one) —
+    // it can't be fanned like a melee weapon.
+    if input.placing && game.action_timer <= 0.0 {
+        let slot = game.selected_slot;
+        if game
+            .inventory
+            .get(slot)
+            .is_some_and(|(b, _, _)| crate::block::is_musket(b))
+        {
+            // Only fire if the reload is finished and a bullet is actually carried, so an
+            // empty or still-reloading musket clicks idly rather than spamming the server.
+            if game.musket_timer <= 0.0 && game.inventory.count(crate::block::BULLET) > 0 {
+                let _ = net.commands.send(NetCommand::FireMusket {
+                    slot: slot as u8,
+                    tx: world.x,
+                    ty: world.y,
+                });
+                game.musket_timer = MUSKET_COOLDOWN;
+            }
             game.action_timer = ACTION_COOLDOWN;
             return;
         }

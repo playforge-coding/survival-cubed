@@ -508,8 +508,60 @@ pub static SUMMONER_FIREBALL_SPRITE: SpriteDef = SpriteDef {
     fps: 1.0,
 };
 
+/// Musketeer (walking): a marksman that strides along on its walk cycle as it stalks
+/// the monsters it hunts.
+pub static MUSKETEER_SPRITE: SpriteDef = SpriteDef {
+    name: "musketeer",
+    frame_w: 11,
+    frame_h: 14,
+    frames: 5,
+    fps: 8.0,
+};
+
+/// Musketeer (firing): the one-shot shoulder-the-musket pose, played off the
+/// musketeer's attack (lunge) timer when it looses a bullet. Drawn from a larger sheet
+/// that blooms beyond the collision box. Lives in the `musketeer/attack` subdirectory.
+pub static MUSKETEER_ATTACK_SPRITE: SpriteDef = SpriteDef {
+    name: "musketeer/attack",
+    frame_w: 15,
+    frame_h: 15,
+    frames: 4,
+    fps: 8.0,
+};
+
+/// Dark musketeer (walking): the black-clad twin of the musketeer, striding along its
+/// walk cycle as it kites its quarry.
+pub static DARK_MUSKETEER_SPRITE: SpriteDef = SpriteDef {
+    name: "dark_musketeer",
+    frame_w: 11,
+    frame_h: 14,
+    frames: 5,
+    fps: 8.0,
+};
+
+/// Dark musketeer (firing): the one-shot firing pose, played off its attack (lunge)
+/// timer. Lives in the `dark_musketeer/attack` subdirectory.
+pub static DARK_MUSKETEER_ATTACK_SPRITE: SpriteDef = SpriteDef {
+    name: "dark_musketeer/attack",
+    frame_w: 15,
+    frame_h: 15,
+    frames: 4,
+    fps: 8.0,
+};
+
+/// Bullet: the small lead ball a musket fires, a single frame that flies until it
+/// strikes or burns out. Reused (tinted) for the friendly bullet a player's musket
+/// looses.
+pub static BULLET_SPRITE: SpriteDef = SpriteDef {
+    name: "bullet",
+    frame_w: 6,
+    frame_h: 6,
+    frames: 1,
+    fps: 1.0,
+};
+
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 48] {
+pub fn all() -> [&'static SpriteDef; 53] {
     [
         &PLAYER_SPRITE,
         &BOAT_SPRITE,
@@ -559,6 +611,11 @@ pub fn all() -> [&'static SpriteDef; 48] {
         &FIREBALL_SPRITE,
         &MAGIC_FIREBALL_SPRITE,
         &SUMMONER_FIREBALL_SPRITE,
+        &MUSKETEER_SPRITE,
+        &MUSKETEER_ATTACK_SPRITE,
+        &DARK_MUSKETEER_SPRITE,
+        &DARK_MUSKETEER_ATTACK_SPRITE,
+        &BULLET_SPRITE,
     ]
 }
 
@@ -625,6 +682,13 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         // skeleton); this walk sheet is its base.
         EntityKind::DarkKnight => &DARK_KNIGHT_SPRITE,
         EntityKind::Axe => &AXE_SPRITE,
+        // A musketeer's firing pose is handled by the scene builder off its lunge
+        // timer; these walk sheets are their bases.
+        EntityKind::Musketeer { .. } => &MUSKETEER_SPRITE,
+        EntityKind::DarkMusketeer => &DARK_MUSKETEER_SPRITE,
+        // A friendly bullet reuses the bullet art (the scene builder tints friendly
+        // shots so they read as the caster's own).
+        EntityKind::Bullet | EntityKind::FriendlyBullet => &BULLET_SPRITE,
         EntityKind::Bone => &BONE_SPRITE,
         EntityKind::Fireball => &FIREBALL_SPRITE,
         // Dropped items are drawn from their block texture, not an animation

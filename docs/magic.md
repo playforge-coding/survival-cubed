@@ -13,17 +13,21 @@ disconnects and restarts.
 
 | Monster | Mana | Monster | Mana |
 |---|---:|---|---:|
-| Skull | 10 | Demon | 90 |
-| Slime | 20 | Necromancer | 110 |
-| Spider | 30 | Orc mage | 110 |
-| Snake | 40 | Enchanted demon | 120 |
-| Skeleton | 50 | Orc | 130 |
-| Ash twister | 60 | Dark knight | 160 |
-| Zombie | 70 | Dragon | 600 |
-| Charred skeleton | 90 | Demon king | 1000 |
+| Skull | 10 | Enchanted demon | 120 |
+| Slime | 20 | Orc | 130 |
+| Spider | 30 | Dark musketeer | 150 |
+| Snake | 40 | Dark knight | 160 |
+| Skeleton | 50 | Dragon | 600 |
+| Ash twister | 60 | Demon king | 1000 |
+| Zombie | 70 | | |
+| Charred skeleton | 90 | | |
+| Demon | 90 | | |
+| Necromancer | 110 | | |
+| Orc mage | 110 | | |
 
-Peaceable animals (chickens, goats), companions (cats, puppies, horses, knights)
-and your own summons give **no** mana — only the slaying of *monsters* does.
+Peaceable animals (chickens, goats), companions (cats, puppies, horses, knights,
+musketeers) and your own summons give **no** mana — only the slaying of *monsters*
+does.
 
 !!! note "Mana is won by your own hand"
     Mana is banked when **you** land the killing blow. A monster felled by a knight,
@@ -100,11 +104,12 @@ The deepest magic, won only by felling the boss. Aim at a creature and cast to
 |---|---|
 | An **[orc](entities/orcs.md)** | A **[knight](entities/knight.md)**, recruited to you |
 | A **[dark knight](entities/dark-knight.md)** | A **[knight](entities/knight.md)**, recruited to you |
+| A **[dark musketeer](entities/dark-musketeer.md)** | A **[musketeer](entities/musketeer.md)**, recruited to you |
 | An **[orc mage](entities/orcs.md)** | A **[mage](entities/mage.md)**, recruited to you |
 | An **enchanted [demon](entities/demons.md)** | An ordinary (ground-walking) demon |
 
-A knight or mage you restore is **recruited** — it serves you just like a knight
-recruited with a tungsten ingot, following you everywhere (even across dimensions).
+A knight, musketeer or mage you restore is **recruited** — it serves you just like a
+knight recruited with a tungsten ingot, following you everywhere (even across dimensions).
 Casting on anything else does nothing, and a wasted cast **refunds its mana**, so
 you only ever pay for a restore that lands.
 

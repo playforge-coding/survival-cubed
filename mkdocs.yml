@@ -68,9 +68,11 @@ nav:
     - Cat & Puppy: entities/pets.md
     - Horse: entities/horse.md
     - Knight: entities/knight.md
+    - Musketeer: entities/musketeer.md
     - Slime: entities/slime.md
     - Zombie: entities/zombie.md
     - Dark Knight: entities/dark-knight.md
+    - Dark Musketeer: entities/dark-musketeer.md
     - Spider: entities/spider.md
     - Snake: entities/snake.md
     - Skeletons: entities/skeletons.md

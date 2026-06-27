@@ -135,6 +135,8 @@ blocks!(
     "restore_spell",
     "dragonian_steed_spell",
     "paper",
+    "musket",
+    "bullet",
 );
 
 sprites!(
@@ -194,6 +196,13 @@ sprites!(
     "axe" => [0, 1, 2, 3, 4, 5, 6, 7],
     "bone" => [0, 1, 2, 3],
     "fireball" => [0],
+    // Musketeers (friendly and dark): a walk cycle plus a one-shot firing pose. A
+    // single-frame bullet they loose flies until it strikes or burns out.
+    "musketeer" => [0, 1, 2, 3, 4],
+    "musketeer/attack" => [0, 1, 2, 3],
+    "dark_musketeer" => [0, 1, 2, 3, 4],
+    "dark_musketeer/attack" => [0, 1, 2, 3],
+    "bullet" => [0],
 );
 
 music!(

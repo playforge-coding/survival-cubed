@@ -237,8 +237,9 @@ pub const SUNBURST_SPELL: BlockId = 64;
 /// loot chest. An item (not placeable, stacks to one). Right-click while holding it
 /// to spend [`RESTORE_SPELL_MANA_COST`] mana and **restore** the creature under your
 /// cursor: an orc or a dark knight becomes a [`knight`](crate::entity::EntityKind::Knight),
+/// a dark musketeer becomes a [`musketeer`](crate::entity::EntityKind::Musketeer),
 /// an orc mage becomes a [`mage`](crate::entity::EntityKind::Mage), and an enchanted
-/// demon is calmed back into an ordinary one. A knight or mage you restore is
+/// demon is calmed back into an ordinary one. A knight, musketeer or mage you restore is
 /// **recruited** to you. Reusable — casting never consumes the book, only mana.
 pub const RESTORE_SPELL: BlockId = 65;
 /// The dragonian steed spellbook: a spellbook found in the
@@ -259,6 +260,16 @@ pub const DRAGONIAN_STEED: BlockId = 66;
 /// is **cloning spellbooks**: a spellbook bound together with a sheaf of paper
 /// transcribes itself into a second identical tome (see [`crate::recipe::RECIPES`]).
 pub const PAPER: BlockId = 67;
+/// A musket: a ranged firearm crafted from [`WOOD`] and an [`IRON_INGOT`]. A tool
+/// item (not placeable, stacks to one). Right-click while holding it to fire a
+/// [`crate::entity::EntityKind::FriendlyBullet`] toward the cursor, spending one
+/// [`BULLET`] from the inventory as ammunition (see [`crate::server`]'s musket
+/// handling). Reusable — firing consumes a bullet, never the musket itself.
+pub const MUSKET: BlockId = 68;
+/// A bullet: ammunition for the [`MUSKET`], crafted in batches from an
+/// [`IRON_INGOT`]. An item (not placeable). Firing a musket spends one bullet; a
+/// player out of bullets can't shoot.
+pub const BULLET: BlockId = 69;
 
 /// Gold ingots consumed to reinforce a plain [`CHEST`] into a [`LOCKED_CHEST`].
 /// Shared by the server (which charges it) and the client (which shows the cost).
@@ -424,6 +435,10 @@ impl BlockRegistry {
         r.register("dragonian_steed_spell", false, true, false, 0.0);
         // Paper: a non-placeable item pressed from bark, used to clone spellbooks.
         r.register("paper", false, true, false, 0.0);
+        // A musket: a non-placeable ranged weapon (a tool, stacks to one). Right-click
+        // fires a bullet toward the cursor. Bullets: its non-placeable ammunition.
+        r.register("musket", false, true, false, 0.0);
+        r.register("bullet", false, true, false, 0.0);
         r
     }
 
@@ -488,6 +503,8 @@ pub fn max_stack(id: BlockId) -> u32 {
         WATER_BUCKET => 1,
         // A boat is a single bulky vehicle, so it never stacks.
         BOAT => 1,
+        // A musket is a single bulky firearm, so it never stacks (its bullets do).
+        MUSKET => 1,
         // A suit of armor is a single bulky piece, so it never stacks.
         IRON_ARMOR | TUNGSTEN_ARMOR => 1,
         // A spellbook is a single bound tome, so it never stacks.
@@ -653,6 +670,12 @@ pub fn is_arena_key(item: BlockId) -> bool {
 /// Whether `item` is a boat — the vehicle ridden to glide across water.
 pub fn is_boat(item: BlockId) -> bool {
     item == BOAT
+}
+
+/// Whether `item` is a musket — the ranged firearm fired (by right-click) toward the
+/// cursor, spending a [`BULLET`] as ammunition rather than being placed or consumed.
+pub fn is_musket(item: BlockId) -> bool {
+    item == MUSKET
 }
 
 /// Mana spent casting the summoner spell once. Shared by the server (which charges
