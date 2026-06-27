@@ -2141,19 +2141,27 @@ impl App {
 
                 ui.separator();
                 ui.label("Crafting");
-                for (idx, recipe) in crate::recipe::RECIPES.iter().enumerate() {
-                    let can = recipe.craftable(&inventory);
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(can, egui::Button::new(recipe.name))
-                            .on_hover_text(recipe_tooltip(&registry, recipe))
-                            .clicked()
-                        {
-                            craft = Some(idx as u16);
+                // The recipe list outgrows the screen, so it scrolls within a
+                // bounded area (the scroll wheel works here because the window
+                // claims pointer input while open).
+                egui::ScrollArea::vertical()
+                    .max_height(220.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for (idx, recipe) in crate::recipe::RECIPES.iter().enumerate() {
+                            let can = recipe.craftable(&inventory);
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add_enabled(can, egui::Button::new(recipe.name))
+                                    .on_hover_text(recipe_tooltip(&registry, recipe))
+                                    .clicked()
+                                {
+                                    craft = Some(idx as u16);
+                                }
+                                ui.weak(recipe_summary(&registry, recipe));
+                            });
                         }
-                        ui.weak(recipe_summary(&registry, recipe));
                     });
-                }
 
                 ui.add_space(4.0);
                 if ui.button("Close").clicked() {

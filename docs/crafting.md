@@ -9,7 +9,8 @@ stack. Tools remember their durability even when dropped and picked up again.
 
 ## Crafting
 
-Open the inventory (<kbd>E</kbd>) to see the crafting list. Recipes are
+Open the inventory (<kbd>E</kbd>) to see the crafting list, which **scrolls** (with
+the scroll wheel or its scrollbar) when there are more recipes than fit. Recipes are
 shapeless — you just need the listed ingredients somewhere in your inventory —
 and clicking a recipe crafts it if you have the materials. Crafting is
 server-authoritative, so the result is always consistent in multiplayer.
