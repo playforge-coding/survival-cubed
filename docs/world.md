@@ -110,21 +110,26 @@ every crossing after returns you to where you left.
 
 ## The arena
 
-The **arena** is a separate combat plane built entirely of **stone bricks**: a
-single, flat, level floor of dressed stone stretching out forever, with open air
-above it and solid brick below. There is no terrain, no day or night (it sits
+The **arena** is a separate combat plane built entirely of **stone bricks** — a
+sealed block of dressed stone hollowed into just two spaces. You warp in at the mouth
+of a **long, low entrance hall** and walk it inward until it opens into one **very
+large, high-ceilinged room**: the bounded fighting floor. The room's walls and roof
+seal it in on every side, and everything beyond the hall and the room — above, below,
+and to either end — is solid brick. There is no terrain, no day or night (it sits
 under a steady, even light), and no ambient life — it exists for one thing, the
 **boss fight**.
 
 A world has exactly one **[Demon King](entities/demon-king.md)** — a towering boss
-that holds court in the arena, fighting **on foot** throughout. The first time you
-step in with the
-king still alive, it rises across the floor from you, flanked by **eight
-[orc-mage](entities/orcs.md#orc-mage) guardians** scattered across the field, and a
-**boss health bar** appears at the top of the screen. The king is **invulnerable
-until every guardian is slain** — hunt the mages down first, then bring the king
-itself to bay. Wound it past two-thirds health and it **enrages**, **summoning a
-host of dark knights** to swarm you alongside it. Slay it and it leaves a **chest**
+that holds court in the **room** at the end of the hall, fighting **on foot**
+throughout. It only rises once you **walk out of the hall and into the room** (so the
+long approach is a calm one): the king appears across the room from you, flanked by
+**eight [orc-mage](entities/orcs.md#orc-mage) guardians** scattered across the floor,
+and a **boss health bar** appears at the top of the screen. The king is
+**invulnerable until every guardian is slain** — hunt the mages down first, then bring
+the king itself to bay. Wound it past two-thirds health and it **enrages**, **summoning
+a host of two [dark knights](entities/dark-knight.md) and two
+[dark musketeers](entities/dark-musketeer.md)** to swarm you alongside it. Slay it and
+it leaves a **chest**
 of spoils where it falls (the full
 tungsten arsenal, a hoard of ingots and gold, and a meal) — and **no new king is
 ever raised** in that world. Win the arena once and it is won for good.

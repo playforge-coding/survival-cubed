@@ -3787,7 +3787,10 @@ impl App {
             // firing animation rides on the `lunge` timer). The firing sheet blooms
             // beyond the collision box, so — like the knight — it is drawn centred on the
             // musketeer's box and resting on its feet.
-            if matches!(e.kind, EntityKind::Musketeer { .. } | EntityKind::DarkMusketeer) {
+            if matches!(
+                e.kind,
+                EntityKind::Musketeer { .. } | EntityKind::DarkMusketeer
+            ) {
                 let dark = matches!(e.kind, EntityKind::DarkMusketeer);
                 let attacking = e.lunge > 0.0;
                 let def = match (dark, attacking) {

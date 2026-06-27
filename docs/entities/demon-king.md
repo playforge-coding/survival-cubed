@@ -2,7 +2,8 @@
 
 The **boss** of the [arena](../world.md#the-arena), and the only one of its kind in
 a world. A towering, winged fiend that **fights on foot** the whole bout, striding
-across the arena floor after you. Once wounded past **two-thirds health** it
+across the arena room after you. It waits in the **room** at the end of the arena's
+long entrance hall — walk in to trigger the fight. Once wounded past **two-thirds health** it
 **enrages**, calling down a **host of two [dark knights](dark-knight.md) and two
 [dark musketeers](dark-musketeer.md)** to swarm you alongside it. It
 wields the whole demonic arsenal: a fan of fireballs, a spread of magic fireballs, a
@@ -25,7 +26,7 @@ king itself be harmed. Felling it is a campaign, not a scrap, and it leaves a
 ## The guardians
 
 The fight opens with the king **invulnerable**. Eight **[orc mages](orcs.md#orc-mage)**
-(30 HP each) are scattered across the arena floor, and the king cannot be harmed
+(30 HP each) are scattered across the arena room floor, and the king cannot be harmed
 while a single one still lives — your blows land and flash it red, but deal no
 damage. The mages don't fight back: like their underworld kin they **shy away** from
 you, so the opening of the fight is a **hunt** — run each one down (you are faster
@@ -36,7 +37,7 @@ king is finally yours to kill.
 
 ## Behaviour
 
-The Demon King fights **on foot the whole bout**, striding across the arena floor
+The Demon King fights **on foot the whole bout**, striding across the arena room
 after you — so it is always in reach of your sword. Once you wound it past
 **two-thirds health** it **enrages**, calling down a **host of two
 [dark knights](dark-knight.md) and two [dark musketeers](dark-musketeer.md)** to

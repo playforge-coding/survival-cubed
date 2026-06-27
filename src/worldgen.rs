@@ -169,10 +169,39 @@ const UNDERWORLD_SURFACE_AMP: f32 = 4.0;
 /// scattered flames rather than being a wall of fire.
 const UNDERWORLD_FIRE_CHANCE: u32 = 70;
 /// Floor row of the [`Dimension::Arena`]: the topmost solid stone-brick cell a
-/// player walks on. Open air fills everything above it (a tall fighting space);
-/// solid stone bricks fill everything below it. Flat across every column, so the
-/// arena is a clean, level field with no terrain to break a boss fight up.
+/// player walks on, level across the whole arena. The walkable space above it is
+/// not open everywhere — the arena is a sealed block of stone brick hollowed into a
+/// long entrance **hall** that opens into one big bounded **room** (see
+/// [`generate_arena_chunk`](WorldGen::generate_arena_chunk)); everything else, above
+/// and around them, is solid brick.
 const ARENA_FLOOR: i32 = WORLD_HEIGHT / 2;
+/// Leftmost interior column of the arena's entrance **hall**. Every column left of
+/// it is solid brick, so the hall is sealed at its mouth.
+const ARENA_HALL_LEFT: i32 = 8;
+/// Interior length (cells) of the hall before it opens into the room — a long
+/// corridor the challenger walks down to reach the fight.
+const ARENA_HALL_LEN: i32 = 48;
+/// Interior height (cells, above the floor) of the hall — a low corridor, far
+/// shorter than the room it leads into.
+const ARENA_HALL_HEIGHT: i32 = 8;
+/// Leftmost interior column of the arena **room** — where the hall ends and the
+/// big fighting space begins.
+const ARENA_ROOM_LEFT: i32 = ARENA_HALL_LEFT + ARENA_HALL_LEN;
+/// Interior width (cells) of the arena room — very large, but bounded: solid brick
+/// walls seal it at both ends.
+const ARENA_ROOM_WIDTH: i32 = 160;
+/// One past the rightmost interior column of the room. Every column at or right of
+/// it is solid brick, sealing the far wall.
+const ARENA_ROOM_RIGHT: i32 = ARENA_ROOM_LEFT + ARENA_ROOM_WIDTH;
+/// Interior height (cells, above the floor) of the arena room — a high ceiling, so
+/// the towering boss and its airborne attacks have room overhead.
+const ARENA_ROOM_HEIGHT: i32 = 60;
+/// Column the challenger lands in on entering the arena: a little inside the sealed
+/// mouth of the hall, so they begin the long walk in toward the room.
+const ARENA_SPAWN_COL: i32 = ARENA_HALL_LEFT + 2;
+/// Column at the horizontal center of the arena room: where the boss and its
+/// guardians are raised, so the fight is set in the room, not the hall.
+const ARENA_ROOM_CENTER_COL: i32 = ARENA_ROOM_LEFT + ARENA_ROOM_WIDTH / 2;
 /// Tungsten ore only replaces charred rock at least this many cells below the
 /// underworld ceiling, keeping it out of the exposed surface the player lands on.
 const TUNGSTEN_ORE_MIN_DEPTH: i32 = 6;
@@ -624,21 +653,48 @@ impl WorldGen {
         match dim {
             Dimension::Overworld => self.generate_chunk(cx, cy),
             Dimension::Underworld => self.generate_underworld_chunk(cx, cy),
-            Dimension::Arena => Self::generate_arena_chunk(cy),
+            Dimension::Arena => Self::generate_arena_chunk(cx, cy),
         }
     }
 
-    /// Generate a chunk of the [`Dimension::Arena`]: a flat plane of stone bricks.
-    /// Every cell at or below [`ARENA_FLOOR`] is solid stone brick; everything above
-    /// is open air. Independent of `cx` (the arena looks the same in every column)
-    /// and of the seed (there is nothing random to vary), so it is a pure function
-    /// of the chunk's vertical position.
-    fn generate_arena_chunk(cy: i32) -> Chunk {
+    /// Generate a chunk of the [`Dimension::Arena`]: a solid block of stone brick
+    /// hollowed into a long entrance **hall** that opens into one big bounded **room**.
+    /// Every cell is stone brick *except* the air carved for the hall and the room:
+    ///
+    /// - The floor ([`ARENA_FLOOR`] and below) is solid everywhere — a level base.
+    /// - The hall is open air in `ARENA_HALL_LEFT..ARENA_ROOM_LEFT`, from the floor up
+    ///   [`ARENA_HALL_HEIGHT`] cells (a low corridor).
+    /// - The room is open air in `ARENA_ROOM_LEFT..ARENA_ROOM_RIGHT`, from the floor up
+    ///   [`ARENA_ROOM_HEIGHT`] cells (a high ceiling).
+    /// - Everywhere else — left of the hall mouth, right of the room's far wall, and
+    ///   above either ceiling — is solid brick.
+    ///
+    /// A pure function of the chunk's position (and of nothing random), so the arena
+    /// is identical in every world.
+    fn generate_arena_chunk(cx: i32, cy: i32) -> Chunk {
         let mut chunk = Chunk::empty();
+        let base_x = cx * CHUNK_SIZE;
         let base_y = cy * CHUNK_SIZE;
-        for ly in 0..CHUNK_SIZE {
-            if base_y + ly >= ARENA_FLOOR {
-                for lx in 0..CHUNK_SIZE {
+        for lx in 0..CHUNK_SIZE {
+            let wx = base_x + lx;
+            // The open ceiling row for this column, if it lies inside the hall or the
+            // room: air fills `[ceiling, ARENA_FLOOR)`. `None` is a fully solid column.
+            let ceiling = if (ARENA_HALL_LEFT..ARENA_ROOM_LEFT).contains(&wx) {
+                Some(ARENA_FLOOR - ARENA_HALL_HEIGHT)
+            } else if (ARENA_ROOM_LEFT..ARENA_ROOM_RIGHT).contains(&wx) {
+                Some(ARENA_FLOOR - ARENA_ROOM_HEIGHT)
+            } else {
+                None
+            };
+            for ly in 0..CHUNK_SIZE {
+                let wy = base_y + ly;
+                let solid = match ceiling {
+                    // Brick at/below the floor and above the interior ceiling; air between.
+                    Some(top) => wy >= ARENA_FLOOR || wy < top,
+                    // A sealing column: solid brick top to bottom.
+                    None => true,
+                };
+                if solid {
                     chunk.set(lx, ly, STONE_BRICKS);
                 }
             }
@@ -1029,6 +1085,30 @@ pub fn spawn_point(generator: &WorldGen, world_x: i32) -> (f32, f32) {
     (x_px, y_px)
 }
 
+/// Where a challenger lands when warping into the [`Dimension::Arena`]: just inside
+/// the sealed mouth of the entrance hall, a few cells above the floor so they drop
+/// cleanly onto it and begin the long walk in toward the room. A fixed point (the
+/// arena is the same in every world), as `(x_px, y_px)`.
+pub fn arena_player_spawn() -> (f32, f32) {
+    let x_px = ARENA_SPAWN_COL as f32 * crate::world::TILE_SIZE;
+    let y_px = (ARENA_FLOOR - 3) as f32 * crate::world::TILE_SIZE;
+    (x_px, y_px)
+}
+
+/// World-pixel x at the horizontal center of the arena **room**, where the demon
+/// king and its guardians are raised so the fight is set in the room rather than the
+/// hall the challenger enters through.
+pub fn arena_room_center_x() -> f32 {
+    ARENA_ROOM_CENTER_COL as f32 * crate::world::TILE_SIZE
+}
+
+/// World-pixel x of the arena room's left wall — the threshold a challenger crosses
+/// (walking out of the entrance hall) to step into the room. The boss is only raised
+/// once a challenger is past it, so the king never charges down the hall.
+pub fn arena_room_left_x() -> f32 {
+    ARENA_ROOM_LEFT as f32 * crate::world::TILE_SIZE
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1307,6 +1387,72 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The arena is a sealed block of stone brick hollowed into a long, low entrance
+    /// hall that opens into one big, high-ceilinged room — and nothing else: the
+    /// floor is solid everywhere, the hall and room interiors are open air, and every
+    /// cell beyond them (the sealing walls, the high ceilings) is brick.
+    #[test]
+    fn arena_is_a_sealed_hall_and_room_of_brick() {
+        use crate::world::Dimension;
+        let worldgen = WorldGen::new(0xC0FFEE);
+        let block = |wx: i32, wy: i32| {
+            let chunk = worldgen.generate(
+                Dimension::Arena,
+                wx.div_euclid(CHUNK_SIZE),
+                wy.div_euclid(CHUNK_SIZE),
+            );
+            chunk.get(wx.rem_euclid(CHUNK_SIZE), wy.rem_euclid(CHUNK_SIZE))
+        };
+
+        // The room must be both bigger and taller than the hall it opens off.
+        assert!(ARENA_ROOM_WIDTH > ARENA_HALL_LEN);
+        assert!(ARENA_ROOM_HEIGHT > ARENA_HALL_HEIGHT);
+
+        let hall_x = ARENA_HALL_LEFT + 1;
+        let room_x = ARENA_ROOM_CENTER_COL;
+
+        // The floor (and everything below it) is solid brick in both spaces.
+        assert_eq!(block(hall_x, ARENA_FLOOR), STONE_BRICKS);
+        assert_eq!(block(room_x, ARENA_FLOOR), STONE_BRICKS);
+        assert_eq!(block(room_x, ARENA_FLOOR + 20), STONE_BRICKS);
+
+        // The hall is a low corridor of open air, capped by brick above its ceiling.
+        assert_eq!(block(hall_x, ARENA_FLOOR - 1), AIR);
+        assert_eq!(block(hall_x, ARENA_FLOOR - ARENA_HALL_HEIGHT), AIR);
+        assert_eq!(
+            block(hall_x, ARENA_FLOOR - ARENA_HALL_HEIGHT - 1),
+            STONE_BRICKS
+        );
+
+        // The room is open air all the way up to its high ceiling, then brick — and at
+        // the hall's ceiling height (where the hall is roofed) the room is still open.
+        assert_eq!(block(room_x, ARENA_FLOOR - 1), AIR);
+        assert_eq!(block(room_x, ARENA_FLOOR - ARENA_HALL_HEIGHT - 1), AIR);
+        assert_eq!(block(room_x, ARENA_FLOOR - ARENA_ROOM_HEIGHT), AIR);
+        assert_eq!(
+            block(room_x, ARENA_FLOOR - ARENA_ROOM_HEIGHT - 1),
+            STONE_BRICKS
+        );
+
+        // Both ends are sealed: solid brick left of the hall mouth and right of the
+        // room's far wall, at floor level where the interiors are otherwise open.
+        assert_eq!(block(ARENA_HALL_LEFT - 1, ARENA_FLOOR - 1), STONE_BRICKS);
+        assert_eq!(block(ARENA_ROOM_RIGHT, ARENA_FLOOR - 1), STONE_BRICKS);
+
+        // The challenger lands inside the hall (on open floor), and the boss is raised
+        // in the room — both standing spots are open air just above solid floor.
+        let (sx, _) = arena_player_spawn();
+        let spawn_col = (sx / crate::world::TILE_SIZE) as i32;
+        assert_eq!(block(spawn_col, ARENA_FLOOR - 1), AIR);
+        assert_eq!(block(spawn_col, ARENA_FLOOR), STONE_BRICKS);
+        assert!(
+            spawn_col < ARENA_ROOM_LEFT,
+            "challenger should start in the hall"
+        );
+        let boss_col = (arena_room_center_x() / crate::world::TILE_SIZE) as i32;
+        assert!((ARENA_ROOM_LEFT..ARENA_ROOM_RIGHT).contains(&boss_col));
     }
 
     /// Caves only break the surface on a steep slope — the side of a hill or

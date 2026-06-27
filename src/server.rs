@@ -37,7 +37,9 @@ use crate::save::{SavedPlayer, WorldMeta, WorldStore};
 use crate::world::{
     CHUNK_AREA, CHUNK_SIZE, ChunkCoord, Dimension, NUM_DIMENSIONS, TILE_SIZE, WORLD_HEIGHT, World,
 };
-use crate::worldgen::{Biome, WorldGen, spawn_point};
+use crate::worldgen::{
+    Biome, WorldGen, arena_player_spawn, arena_room_center_x, arena_room_left_x, spawn_point,
+};
 
 /// How often the server simulates non-player entities, in seconds.
 const TICK_DT: f32 = 0.05;
@@ -3082,12 +3084,10 @@ impl Shared {
                 (x, ((surface - 3).max(0) as f32) * TILE_SIZE)
             }
             Dimension::Overworld => self.carve_overworld_landing(cell_x),
-            // Drop onto the arena's flat stone-brick floor in the same column, a few
-            // tiles up so the player falls cleanly onto it.
-            Dimension::Arena => {
-                let surface = self.world(Dimension::Arena).lock().surface(cell_x);
-                (x, ((surface - 3).max(0) as f32) * TILE_SIZE)
-            }
+            // The arena is a fixed hall-and-room, so every challenger lands at the same
+            // spot — just inside the mouth of the entrance hall — and walks in toward
+            // the room, rather than dropping into their old overworld column.
+            Dimension::Arena => arena_player_spawn(),
         }
     }
 
@@ -5217,49 +5217,54 @@ fn ensure_arena_boss(shared: &Shared) {
                 .store(already_enraged, Ordering::SeqCst);
             Vec::new()
         } else {
-            let player_pos = entities
+            // Stage the fight only once a challenger has walked out of the entrance
+            // hall and into the room — so the long hall is a calm approach and the
+            // king never charges down it toward a hall-bound player.
+            let challenger_in_room = entities
                 .values()
-                .find(|e| e.kind.is_player())
-                .map(|e| (e.x, e.y));
-            match player_pos {
-                None => Vec::new(),
-                Some((px, _py)) => {
-                    let mut spawned = Vec::new();
-                    // The king itself, standing on the floor across the arena from the
-                    // challenger (it begins the fight on foot, taking wing only later).
-                    let (_, kh) = EntityKind::DemonKing.size();
-                    let side = if (px as i32) & 1 == 0 { 1.0 } else { -1.0 };
-                    let bx = px + side * DEMON_KING_SPAWN_DIST;
-                    let cell_x = (bx / TILE_SIZE).floor() as i32;
-                    let surface = world.surface(cell_x);
-                    let by = surface as f32 * TILE_SIZE - kh;
-                    let king = Entity::new(shared.alloc_id(), EntityKind::DemonKing, bx, by);
-                    entities.insert(king.clone());
-                    spawned.push(king);
-                    // A fresh king hasn't yet called its host of dark knights.
-                    shared
-                        .demon_king_knights_summoned
-                        .store(false, Ordering::SeqCst);
+                .any(|e| e.kind.is_player() && e.x >= arena_room_left_x());
+            if !challenger_in_room {
+                Vec::new()
+            } else {
+                let mut spawned = Vec::new();
+                // The fight is staged in the arena **room**, not the hall the
+                // challenger enters through, so the king and its guardians are
+                // raised around the room's center — wherever the challenger is.
+                let anchor_x = arena_room_center_x();
+                // The king itself, standing on the floor deeper in the room (it
+                // begins the fight on foot, taking wing only later), so the
+                // challenger crosses the room to reach it.
+                let (_, kh) = EntityKind::DemonKing.size();
+                let bx = anchor_x + DEMON_KING_SPAWN_DIST;
+                let cell_x = (bx / TILE_SIZE).floor() as i32;
+                let surface = world.surface(cell_x);
+                let by = surface as f32 * TILE_SIZE - kh;
+                let king = Entity::new(shared.alloc_id(), EntityKind::DemonKing, bx, by);
+                entities.insert(king.clone());
+                spawned.push(king);
+                // A fresh king hasn't yet called its host of dark knights.
+                shared
+                    .demon_king_knights_summoned
+                    .store(false, Ordering::SeqCst);
 
-                    // The orc-mage guardians, scattered at intervals across the floor
-                    // on both sides of the challenger so they fan out across the arena.
-                    let (_, mh) = EntityKind::OrcMage.size();
-                    for i in 0..DEMON_KING_GUARD_COUNT {
-                        // Offsets stride out alternately left and right of the player,
-                        // each a little farther, so the mages spread across the field.
-                        let rank = (i / 2) as f32 + 1.0;
-                        let dir = if i % 2 == 0 { -1.0 } else { 1.0 };
-                        let gx = px + dir * rank * DEMON_KING_GUARD_SPACING;
-                        let gcx = (gx / TILE_SIZE).floor() as i32;
-                        let gsurface = world.surface(gcx);
-                        let gy = gsurface as f32 * TILE_SIZE - mh;
-                        let mage = Entity::new(shared.alloc_id(), EntityKind::OrcMage, gx, gy);
-                        entities.insert(mage.clone());
-                        spawned.push(mage);
-                    }
-                    shared.demon_king_alive.store(true, Ordering::SeqCst);
-                    spawned
+                // The orc-mage guardians, scattered at intervals across the room
+                // floor on both sides of its center so they fan out across the field.
+                let (_, mh) = EntityKind::OrcMage.size();
+                for i in 0..DEMON_KING_GUARD_COUNT {
+                    // Offsets stride out alternately left and right of the room
+                    // center, each a little farther, so the mages spread across it.
+                    let rank = (i / 2) as f32 + 1.0;
+                    let dir = if i % 2 == 0 { -1.0 } else { 1.0 };
+                    let gx = anchor_x + dir * rank * DEMON_KING_GUARD_SPACING;
+                    let gcx = (gx / TILE_SIZE).floor() as i32;
+                    let gsurface = world.surface(gcx);
+                    let gy = gsurface as f32 * TILE_SIZE - mh;
+                    let mage = Entity::new(shared.alloc_id(), EntityKind::OrcMage, gx, gy);
+                    entities.insert(mage.clone());
+                    spawned.push(mage);
                 }
+                shared.demon_king_alive.store(true, Ordering::SeqCst);
+                spawned
             }
         }
     };
@@ -6741,7 +6746,14 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             }
         };
 
-        let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, MUSKETEER_SPEED, chasing);
+        let m = step_ground(
+            &mut world,
+            (e.x, e.y, w, h),
+            e.vy,
+            dir,
+            MUSKETEER_SPEED,
+            chasing,
+        );
         e.x = m.x;
         e.y = m.y;
         e.vx = m.vx;
@@ -6776,7 +6788,12 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
                 let dx = tx - (sx + bw * 0.5);
                 let dy = ty - (sy + bh * 0.5);
                 let len = (dx * dx + dy * dy).sqrt().max(1.0);
-                friendly_bullet_spawns.push((sx, sy, dx / len * BULLET_SPEED, dy / len * BULLET_SPEED));
+                friendly_bullet_spawns.push((
+                    sx,
+                    sy,
+                    dx / len * BULLET_SPEED,
+                    dy / len * BULLET_SPEED,
+                ));
                 broadcasts.push(ServerMessage::EntityLunging { id });
             }
         }
@@ -7333,7 +7350,13 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         let home = *e.home_x.get_or_insert(e.x);
         let scx = e.x + w * 0.5;
         let scy = e.y + h * 0.5;
-        let target = nearest_prey(&hostile_players, &knight_boxes, scx, scy, DARK_MUSKETEER_AGGRO);
+        let target = nearest_prey(
+            &hostile_players,
+            &knight_boxes,
+            scx,
+            scy,
+            DARK_MUSKETEER_AGGRO,
+        );
         let chasing = target.is_some();
 
         let (dir, gap, aim) = match target {
