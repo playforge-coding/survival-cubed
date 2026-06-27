@@ -5535,10 +5535,13 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             .values()
             // Players are authoritative on their clients; pets and knights never
             // despawn for distance (they teleport to their owner instead), and the
-            // arena boss — and its orc-mage guardians — are fixtures of the arena: they
-            // stay put whether or not a player is nearby, so the guardians can't drift
-            // off and lift the king's shield without a fight. Everything else is culled
-            // once it drifts beyond DESPAWN_DIST of every player.
+            // arena boss — together with its orc-mage guardians and the dark-knight /
+            // dark-musketeer host it summons when enraged — are fixtures of the arena:
+            // they stay put whether or not a player is nearby, so the guardians can't
+            // drift off and lift the king's shield, and the summoned host can't be
+            // culled while a player is briefly far away (e.g. after respawning at the
+            // far mouth of the hall). Everything else is culled once it drifts beyond
+            // DESPAWN_DIST of every player.
             .filter(|e| {
                 !e.kind.is_player()
                     && !e.kind.is_pet()
@@ -5547,7 +5550,13 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
                     && !e.kind.is_mage()
                     && !e.kind.is_white_dragon()
                     && !matches!(e.kind, EntityKind::DemonKing)
-                    && !(dim == Dimension::Arena && matches!(e.kind, EntityKind::OrcMage))
+                    && !(dim == Dimension::Arena
+                        && matches!(
+                            e.kind,
+                            EntityKind::OrcMage
+                                | EntityKind::DarkKnight
+                                | EntityKind::DarkMusketeer
+                        ))
             })
             .filter(|e| {
                 let (w, h) = e.size();
