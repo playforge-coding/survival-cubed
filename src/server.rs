@@ -750,6 +750,14 @@ const MAX_NAME_LEN: usize = 24;
 /// feedback and ban announcements. Distinct from any real player name.
 const SERVER_CHAT_FROM: &str = "Server";
 
+/// Chat sender name the demon king's taunt is attributed to, so its line reads as the
+/// boss speaking rather than the server.
+const DEMON_KING_CHAT_FROM: &str = "Demon King";
+/// The taunt the demon king flings at a challenger the instant it is raised (when the
+/// player walks into the arena room and the fight begins).
+const DEMON_KING_TAUNT: &str =
+    "You've done well. But that ends now. Like it did for your king! En garde!";
+
 /// File under the world's save directory holding banned IP addresses, one per
 /// line (`#` comments and blanks ignored). Loaded on startup and rewritten
 /// whenever a ban is added or lifted, so bans survive restarts.
@@ -5268,8 +5276,21 @@ fn ensure_arena_boss(shared: &Shared) {
             }
         }
     };
+    // A non-empty `spawned` means a fresh king was just raised (the restored-from-save
+    // and no-challenger cases both yield none) — so the boss greets the challenger with
+    // its taunt, once, as the fight begins.
+    let raised = !spawned.is_empty();
     for entity in spawned {
         shared.broadcast_dim(dim, ServerMessage::EntitySpawn { entity });
+    }
+    if raised {
+        shared.broadcast_dim(
+            dim,
+            ServerMessage::Chat {
+                from: DEMON_KING_CHAT_FROM.to_string(),
+                text: DEMON_KING_TAUNT.to_string(),
+            },
+        );
     }
 }
 

@@ -2094,7 +2094,10 @@ impl App {
             .show(ui.ctx(), |ui| {
                 ui.set_max_width(440.0);
                 egui::Frame::NONE
-                    .fill(egui::Color32::from_black_alpha(150))
+                    // A near-opaque backdrop so lines read clearly over busy terrain,
+                    // edged with a subtle border to set the panel apart from the world.
+                    .fill(egui::Color32::from_black_alpha(225))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_black_alpha(235)))
                     .inner_margin(egui::Margin::same(6))
                     .corner_radius(egui::CornerRadius::same(4))
                     .show(ui, |ui| {
