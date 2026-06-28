@@ -125,7 +125,7 @@ pub enum SlotRef {
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 23;
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -498,11 +498,13 @@ pub enum ServerMessage {
     /// player's saved position.
     Respawn { x: f32, y: f32, died: bool },
     /// Authoritative snapshot of the owning player's personal waypoints plus the
-    /// current home (respawn) point in world pixels. Sent on join and after any
-    /// waypoint or respawn-point change. Only ever sent to the list's owner.
+    /// current home (respawn) point — the dimension it lives in and its world
+    /// pixels. Sent on join and after any waypoint or respawn-point change. Only
+    /// ever sent to the list's owner. The client only draws the home marker while
+    /// in its dimension, so it doesn't haunt the other planes.
     Waypoints {
         list: Vec<Waypoint>,
-        home: (f32, f32),
+        home: (Dimension, f32, f32),
     },
     /// Authoritative snapshot of the owning player's inventory slots (hotbar
     /// first, then storage). Sent on join and after any change (pickup,

@@ -130,10 +130,11 @@ pub enum NetEvent {
         y: f32,
         died: bool,
     },
-    /// Authoritative snapshot of this client's waypoints and home (respawn) point.
+    /// Authoritative snapshot of this client's waypoints and home (respawn) point
+    /// (the dimension it lives in and its world pixels).
     Waypoints {
         list: Vec<Waypoint>,
-        home: (f32, f32),
+        home: (Dimension, f32, f32),
     },
     /// Authoritative snapshot of this client's inventory slots.
     Inventory {

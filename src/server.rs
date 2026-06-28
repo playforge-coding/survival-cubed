@@ -2879,12 +2879,12 @@ impl Shared {
     /// home (respawn) point, so the client can redraw its markers.
     fn send_waypoints(&self, id: EntityId) {
         let list = self.waypoints.lock().get(&id).cloned().unwrap_or_default();
-        let (_, hx, hy) = self.respawn_target(id);
+        let (hdim, hx, hy) = self.respawn_target(id);
         self.send_to(
             id,
             ServerMessage::Waypoints {
                 list,
-                home: (hx, hy),
+                home: (hdim, hx, hy),
             },
         );
     }

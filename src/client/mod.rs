@@ -393,12 +393,14 @@ struct GameState {
     /// Personal waypoints this player has dropped, mirrored from the server (which
     /// persists them). Each carries the stable random colour drawn for its dot.
     waypoints: Vec<Waypoint>,
-    /// Home (respawn) waypoint in world pixels — the player's last campfire, or
-    /// world spawn before they've used one. Mirrored from the server.
-    home: Option<Vec2>,
-    /// Where the player last died, in world pixels. Shown as a death marker until
-    /// they walk back to it (then it clears). Derived locally from death respawns.
-    death: Option<Vec2>,
+    /// Home (respawn) waypoint — the dimension it lives in and its world pixels:
+    /// the player's last campfire, or world spawn before they've used one. Mirrored
+    /// from the server. Only drawn while the player is in its dimension.
+    home: Option<(Dimension, Vec2)>,
+    /// Where the player last died — the dimension it happened in and the world
+    /// pixels. Shown as a death marker until they walk back to it (then it clears).
+    /// Derived locally from death respawns; only drawn while in its dimension.
+    death: Option<(Dimension, Vec2)>,
     /// Camera zoom: physical pixels drawn per world pixel. Adjusted live by the
     /// zoom keybinds, clamped to [`ZOOM_MIN`]..=[`ZOOM_MAX`]. Higher means tiles are
     /// bigger and less of the world is visible.
@@ -484,8 +486,9 @@ impl GameState {
             chat_input: String::new(),
             chat_focus: false,
             waypoints: Vec::new(),
-            // Until the server's first sync arrives, treat world spawn as home.
-            home: Some(spawn),
+            // Until the server's first sync arrives, treat world spawn (in the
+            // overworld, where play begins) as home.
+            home: Some((Dimension::Overworld, spawn)),
             death: None,
             zoom: ZOOM,
         }
@@ -1182,7 +1185,7 @@ impl App {
                     // A death respawn drops a marker at the spot we fell, so we can
                     // find our way back to whatever killed (or dropped) us.
                     if died {
-                        g.death = Some(g.pos);
+                        g.death = Some((g.dim, g.pos));
                     }
                     g.pos = Vec2::new(x, y);
                     g.vel = Vec2::ZERO;
@@ -1194,7 +1197,7 @@ impl App {
             NetEvent::Waypoints { list, home } => {
                 if let Some(g) = &mut self.game {
                     g.waypoints = list;
-                    g.home = Some(Vec2::new(home.0, home.1));
+                    g.home = Some((home.0, Vec2::new(home.1, home.2)));
                 }
             }
             NetEvent::Inventory { slots } => {
@@ -1359,8 +1362,9 @@ impl App {
         handle_block_actions(game, reg, input, self.gfx.as_ref(), self.net.as_ref(), dt);
 
         // The death marker is a one-shot: it clears once the player gets back to
-        // the spot they fell.
-        if let Some(d) = game.death
+        // the spot they fell — but only in the dimension they fell in.
+        if let Some((dim, d)) = game.death
+            && dim == game.dim
             && game.pos.distance(d) < WAYPOINT_REACHED_DIST
         {
             game.death = None;
@@ -1817,11 +1821,17 @@ impl App {
 
         // Collect markers: (world top-left, disc colour, optional icon glyph).
         let mut markers: Vec<(Vec2, egui::Color32, Option<&str>)> = Vec::new();
-        if let Some(h) = g.home {
-            markers.push((h, egui::Color32::from_rgb(80, 200, 120), Some("🏠")));
+        // Home and death markers belong to the dimension they were set in, so they
+        // only appear while the player is standing in that same plane.
+        if let Some((dim, h)) = g.home {
+            if dim == g.dim {
+                markers.push((h, egui::Color32::from_rgb(80, 200, 120), Some("🏠")));
+            }
         }
-        if let Some(d) = g.death {
-            markers.push((d, egui::Color32::from_rgb(210, 60, 60), Some("💀")));
+        if let Some((dim, d)) = g.death {
+            if dim == g.dim {
+                markers.push((d, egui::Color32::from_rgb(210, 60, 60), Some("💀")));
+            }
         }
         for w in &g.waypoints {
             let c = egui::Color32::from_rgb(

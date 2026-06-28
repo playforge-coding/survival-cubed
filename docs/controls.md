@@ -62,6 +62,8 @@ cursor always targets the block it's over.
 
 Waypoints, your home (last campfire) marker 🏠, and your death marker 💀 appear
 around the edges of the screen with a distance readout when they're off-screen.
+The home and death markers belong to the dimension they were set in, so they only
+show while you're in that same world — they won't haunt you across dimensions.
 
 ## Chat & UI
 
