@@ -34,7 +34,9 @@ yourself in the air with it, not steer it from safety on the floor.
 
 ## Behaviour
 
-Twinscale tracks you from on high and, on a cadence, looses one of three attacks —
+Twinscale **flies straight at you**, holding its high altitude but closing in to
+hover right overhead — you cannot park in one spot and let every volley miss; you
+have to keep moving and out-fly it. On a cadence it looses one of three attacks,
 each telegraphed by a wind-up before it releases:
 
 - **Fireball storm** — a wide fan of **ten** [fireballs](demons.md#demon) raining down.
@@ -42,6 +44,12 @@ each telegraphed by a wind-up before it releases:
   which fly farther and hit harder.
 - **Summoner volley** — **two** [summoner bolts](necromancer.md#necromancer), each
   bursting into a bouncing [skull](necromancer.md#skull).
+
+If you tuck in **directly underneath** Twinscale — the blind spot a wide fan would
+arc straight over — it abandons its cadence entirely and pours an **unbroken stream
+of magic fireballs straight down** onto you, with no wind-up and no pause between
+bolts, for as long as you stay below it. Hiding right under it is no longer safe; the
+only way to break the stream is to **slide out from under it**.
 
 Its range is enormous, so it can pelt the floor even before you take to the air —
 pressure that pushes you up onto your steed to engage.

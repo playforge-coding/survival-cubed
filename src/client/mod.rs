@@ -1266,10 +1266,19 @@ impl App {
         // miniboss theme; otherwise (it has been slain, has strayed far, or we've
         // changed dimension — leaving no nearby dragon) fall back to the dimension's
         // own music. `play_for`/`play_miniboss` are cheap no-ops when nothing changes.
-        let near_dragon = game.entities.values().any(|e| {
-            matches!(e.kind, EntityKind::Dragon)
-                && Vec2::new(e.x, e.y).distance(game.pos) <= MINIBOSS_MUSIC_RANGE
-        });
+        //
+        // Exception: while Twinscale reigns, the flight of dragons it calls down at half
+        // health must NOT hijack the music — the arena's own Twinscale theme stays in
+        // play, so those summoned dragons are ignored here.
+        let twinscale_present = game
+            .entities
+            .values()
+            .any(|e| matches!(e.kind, EntityKind::Twinscale));
+        let near_dragon = !twinscale_present
+            && game.entities.values().any(|e| {
+                matches!(e.kind, EntityKind::Dragon)
+                    && Vec2::new(e.x, e.y).distance(game.pos) <= MINIBOSS_MUSIC_RANGE
+            });
         let dim = game.dim;
         if let Some(m) = &mut self.music {
             if near_dragon {

@@ -505,8 +505,10 @@ const TWINSCALE_DELAY_SECS: f32 = 5.0 * daylight::DAY_LENGTH_SECS;
 /// How far (px) Twinscale notices a challenger and turns to rain its arsenal down.
 const TWINSCALE_AGGRO: f32 = 900.0;
 /// Flight speed of Twinscale, in pixels/second — swift for its great size as it wheels
-/// over the arena.
-const TWINSCALE_SPEED: f32 = 60.0;
+/// over the arena and runs its quarry down. Brisk enough to keep the pressure on a
+/// rider who tries to drift away, yet shy of the steed's control speed so a steady
+/// flier can still open ground to dodge.
+const TWINSCALE_SPEED: f32 = 110.0;
 /// How far below the room's open ceiling (px) Twinscale holds station — high out of
 /// reach of ground attacks, so a challenger must take to the air to fight it.
 const TWINSCALE_HOVER_DROP: f32 = 2.0 * TILE_SIZE;
@@ -514,9 +516,11 @@ const TWINSCALE_HOVER_DROP: f32 = 2.0 * TILE_SIZE;
 /// to reach the floor from its high perch, so it pelts a grounded challenger and
 /// pressures them up onto a steed rather than hovering idle out of reach.
 const TWINSCALE_SHOOT_RANGE: f32 = 980.0;
-/// Horizontal standoff (px) Twinscale tries to keep from its target, drifting aside
-/// when crowded so it keeps its distance while it fires.
-const TWINSCALE_KEEP_DIST: f32 = 220.0;
+/// Horizontal deadzone (px) within which Twinscale stops closing on its target — it
+/// flies straight toward the challenger and pulls up only once it is nearly overhead,
+/// so it hovers right on top of you rather than keeping a comfortable standoff. That
+/// pursuit is what stops you from parking in one spot and letting every volley miss.
+const TWINSCALE_PURSUE_DIST: f32 = 40.0;
 /// Seconds Twinscale waits between attacks (the cooldown set when one begins).
 const TWINSCALE_ATTACK_INTERVAL: f32 = 1.9;
 /// Seconds of attack remaining (of [`crate::entity::TWINSCALE_ATTACK_TIME`]) at which
@@ -534,6 +538,11 @@ const TWINSCALE_MAGIC_SPREAD: f32 = 0.20;
 const TWINSCALE_SUMMONER_COUNT: i32 = 2;
 /// Angular spacing (radians) between Twinscale's summoner bolts.
 const TWINSCALE_SUMMONER_SPREAD: f32 = 0.30;
+/// Horizontal gap (px between centres) within which a challenger counts as "right
+/// below" Twinscale, so it forgoes its rolled fan and pours an unbroken stream of magic
+/// fireballs straight down on them — a fresh bolt every tick — punishing anyone who
+/// tries to hide in its blind spot directly underneath.
+const TWINSCALE_BELOW_THRESHOLD: f32 = 90.0;
 /// How many dragons Twinscale summons when it drops to half health.
 const TWINSCALE_DRAGON_COUNT: u32 = 3;
 /// Horizontal spacing (px) between the dragons Twinscale summons as they appear across
@@ -8968,9 +8977,10 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     // station HIGH beneath the room's ceiling and rains its arsenal down, chosen at
     // random and telegraphed by a wind-up (riding `lunge`, the chosen attack stashed in
     // `lunge_dir`): a wide fan of ten fireballs, a spread of six magic fireballs, or two
-    // summoner bolts. It tracks the challenger horizontally while keeping its distance,
-    // and at half health calls down a flight of dragons. Because it never descends, only
-    // a flying challenger (the dragonian steed) can fight it.
+    // summoner bolts. It flies straight at the challenger to hover right overhead (at a
+    // fixed altitude — it never descends), so you cannot park in one spot and let every
+    // volley miss, and at half health calls down a flight of dragons. Because it never
+    // descends, only a flying challenger (the dragonian steed) can fight it.
     //
     // Bolts loosed this tick and the room-x to summon dragons around, both applied after
     // the loop so we aren't holding a mutable borrow of the boss while inserting.
@@ -9012,6 +9022,52 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
                 .swap(true, Ordering::SeqCst)
         {
             twinscale_summon = Some(scx);
+        }
+
+        // Directly below: pour an unbroken stream of magic fireballs straight down — no
+        // wind-up, no cooldown, a fresh bolt every tick for as long as the challenger
+        // cowers in the blind spot a fan would arc over. This takes priority over (and
+        // cancels) any rolled fan, while the boss still drifts to stay overhead. Sliding
+        // out from under it past TWINSCALE_BELOW_THRESHOLD is the only way to break it.
+        if let Some(ref p) = target {
+            let gap = aabb_gap(e.x, e.y, w, h, p.x, p.y, p.w, p.h);
+            let pcx = p.x + p.w * 0.5;
+            let below = (pcx - scx).abs() <= TWINSCALE_BELOW_THRESHOLD
+                && (p.y + p.h * 0.5) > scy
+                && gap <= TWINSCALE_SHOOT_RANGE;
+            if below {
+                e.lunge = 0.0;
+                let (mw, _mh) = MAGIC_FIREBALL_SIZE;
+                twinscale_bolts.push((
+                    EntityKind::MagicFireball,
+                    pcx - mw * 0.5,
+                    scy,
+                    0.0,
+                    MAGIC_FIREBALL_SPEED,
+                ));
+                // Hold station overhead: track horizontally and correct back to altitude.
+                let hx = pcx - scx;
+                let vx = if hx.abs() > TWINSCALE_PURSUE_DIST {
+                    hx.signum() * TWINSCALE_SPEED
+                } else {
+                    0.0
+                };
+                let vy = (ts_hover_y - e.y).clamp(-TWINSCALE_SPEED, TWINSCALE_SPEED);
+                let (nx, _) = move_x(&mut world, e.x, e.y, w, h, vx * TICK_DT);
+                let (ny, _) = move_y(&mut world, nx, e.y, w, h, vy * TICK_DT);
+                e.x = nx;
+                e.y = ny;
+                e.vx = vx;
+                e.vy = vy;
+                broadcasts.push(ServerMessage::EntityMoved {
+                    id,
+                    x: nx,
+                    y: ny,
+                    vx: toward * vx.abs().max(1.0),
+                    vy,
+                });
+                continue;
+            }
         }
 
         // Mid-attack: a committed wind-up over TWINSCALE_ATTACK_TIME, holding station and
@@ -9108,16 +9164,15 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             }
         }
 
-        // Not attacking: hold its high altitude and keep loosely overhead of the target,
-        // sliding aside when crowded — never descending to the floor.
+        // Not attacking: hold its high altitude and fly straight at the target, closing
+        // until it hovers right overhead — never descending to the floor. Running you
+        // down like this is what denies a static dodge spot; only a small deadzone keeps
+        // it from jittering back and forth once it is on top of you.
         let vx = match target {
             Some(ref p) => {
                 let hx = (p.x + p.w * 0.5) - scx;
                 let hdir = if hx >= 0.0 { 1.0 } else { -1.0 };
-                let hdist = hx.abs();
-                if hdist < TWINSCALE_KEEP_DIST {
-                    -hdir * TWINSCALE_SPEED
-                } else if hdist > TWINSCALE_KEEP_DIST * 1.6 {
+                if hx.abs() > TWINSCALE_PURSUE_DIST {
                     hdir * TWINSCALE_SPEED
                 } else {
                     0.0

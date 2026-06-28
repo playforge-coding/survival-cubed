@@ -20,3 +20,13 @@ sounds.
 `overworld/0.ogg`, `overworld/1.ogg`, and `underworld/1.ogg` were released under
 multiple licenses, including CC&nbsp;BY-SA&nbsp;3.0 and GPL&nbsp;3.0; we use them under the
 **GPL&nbsp;3.0** option, which permits embedding them directly into the game binary.
+
+## Sprites
+
+| Sprite     | Author                                                                  | Source          | License     |
+| ---------- | ----------------------------------------------------------------------- | --------------- | ----------- |
+| Twinscale  | ZaPaper & [Jordan Irwin (AntumDeluge)](https://opengameart.org/users/antumdeluge) | OpenGameArt.org | CC BY 3.0   |
+
+The Twinscale sprites were created by ZaPaper & Jordan Irwin (AntumDeluge). Credits to
+[buko studios](http://www.buko-studios.com/), commissioned by
+[PlayCraft](https://www.playcraftapp.com/).

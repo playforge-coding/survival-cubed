@@ -53,6 +53,10 @@ close (within ~340 px — on or near your screen) and fall away again when you p
 distance between you, when the dragon is **slain**, or when you **leave the
 dimension**.
 
+The one exception is the **[Twinscale](twinscale.md)** fight: the flight of dragons it
+summons at half health does **not** raise the miniboss music or a dragon health bar —
+the arena's own boss theme keeps playing and Twinscale's bar stays on screen throughout.
+
 ## Lore
 
 The dragons were not always the depths' wild terrors. In the long age before his
