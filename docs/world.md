@@ -134,6 +134,18 @@ of spoils where it falls (the full
 tungsten arsenal, a hoard of ingots and gold, and a meal) — and **no new king is
 ever raised** in that world. Win the arena once and it is won for good.
 
+### The post-game: Twinscale
+
+The arena holds one more fight. **Five days after the demon king falls**, a
+**[Twinscale](entities/twinscale.md)** — a colossal twin-headed blue dragon, the
+king's greatest creation — wakes beneath the arena and takes wing. The next time you
+enter the room it descends, and the **high ceiling** of the room comes into play: it
+**flies high and never lands**, so you must ride a **[white dragon
+steed](magic.md#the-dragonian-steed-spell)** up to it to fight it at all (the arena
+even bars steering a steed telepathically — you have to *ride* it up). It rains fans
+of fireballs, magic bolts, and summoner volleys, and at half health calls down a
+flight of three [dragons](entities/dragon.md). It is the hardest fight in the world.
+
 To get there, craft an **[arena key](crafting.md#tools-and-utility-items)** from
 tungsten and gold and right-click to warp in. Right-click the key again while in
 the arena to return to exactly where you entered from.

@@ -560,8 +560,18 @@ pub static BULLET_SPRITE: SpriteDef = SpriteDef {
     fps: 1.0,
 };
 
+/// Twinscale: the post-game twin-headed dragon boss — a huge winged serpent whose
+/// twin wings beat through a three-frame cycle as it wheels high over the arena.
+pub static TWINSCALE_SPRITE: SpriteDef = SpriteDef {
+    name: "twinscale",
+    frame_w: 118,
+    frame_h: 72,
+    frames: 3,
+    fps: 6.0,
+};
+
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 53] {
+pub fn all() -> [&'static SpriteDef; 54] {
     [
         &PLAYER_SPRITE,
         &BOAT_SPRITE,
@@ -616,6 +626,7 @@ pub fn all() -> [&'static SpriteDef; 53] {
         &DARK_MUSKETEER_SPRITE,
         &DARK_MUSKETEER_ATTACK_SPRITE,
         &BULLET_SPRITE,
+        &TWINSCALE_SPRITE,
     ]
 }
 
@@ -689,6 +700,9 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         // A friendly bullet reuses the bullet art (the scene builder tints friendly
         // shots so they read as the caster's own).
         EntityKind::Bullet | EntityKind::FriendlyBullet => &BULLET_SPRITE,
+        // Twinscale's attack pose is handled by the scene builder off its lunge timer;
+        // this wing-beat cycle is its base, always flapping as it hovers.
+        EntityKind::Twinscale => &TWINSCALE_SPRITE,
         EntityKind::Bone => &BONE_SPRITE,
         EntityKind::Fireball => &FIREBALL_SPRITE,
         // Dropped items are drawn from their block texture, not an animation

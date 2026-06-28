@@ -135,6 +135,10 @@ pub const DARK_MUSKETEER_SIZE: (f32, f32) = (11.0, 14.0);
 /// Collision/draw size (width, height) in pixels of a fired bullet — a tiny lead
 /// ball, the smallest projectile in the world.
 pub const BULLET_SIZE: (f32, f32) = (6.0, 6.0);
+/// Collision/draw size (width, height) in pixels of Twinscale — the post-game
+/// twin-headed dragon boss of the arena. Vastly larger than any other creature,
+/// matching its enormous twin-headed art so it fills the arena's high room.
+pub const TWINSCALE_SIZE: (f32, f32) = (118.0, 72.0);
 /// Collision/draw size (width, height) in pixels of a dropped block item.
 pub const ITEM_SIZE: (f32, f32) = (8.0, 8.0);
 
@@ -192,6 +196,13 @@ pub const KNIGHT_ATTACK_TIME: f32 = 0.45;
 /// musketeer looses a [`EntityKind::Bullet`], and the client plays the firing sheet
 /// for this long. Purely cosmetic — the shot is spawned server-side.
 pub const MUSKETEER_ATTACK_TIME: f32 = 0.4;
+
+/// Seconds Twinscale's attack wind-up plays end to end, for every one of its
+/// attacks (a fan of fireballs, magic fireballs, or summoner bolts). Like the demon
+/// king's attack it rides on the [`Entity::lunge`] timer: the server kicks it off
+/// (broadcasting [`crate::protocol::ServerMessage::EntityLunging`]) and resolves the
+/// strike partway through, while the client plays the wind-up. Shared by both sides.
+pub const TWINSCALE_ATTACK_TIME: f32 = 1.0;
 
 /// Seconds a dragon's fireball-breathing animation plays end to end. Like the
 /// other attack poses it rides on the [`Entity::lunge`] timer: the server kicks
@@ -299,6 +310,10 @@ pub const WHITE_DRAGON_MAX_HEALTH: i32 = 200;
 /// anything else in the world, so felling it is a real campaign rather than a
 /// brief scrap. Its health drives the boss bar the client shows during the fight.
 pub const DEMON_KING_MAX_HEALTH: i32 = 1000;
+/// Maximum health of Twinscale, in hit points. The post-game superboss — tougher
+/// even than the demon king, fitting a foe raised only after the king has fallen.
+/// At half this it calls down a flight of dragons. Drives its own boss bar.
+pub const TWINSCALE_MAX_HEALTH: i32 = 1600;
 
 /// What an entity *is*. Adding a new creature/object means adding a variant
 /// here plus (for server-simulated kinds) a branch in the server tick loop.
@@ -608,6 +623,17 @@ pub enum EntityKind {
     /// Its [`Entity::vx`]/[`Entity::vy`] carry its flight velocity. Server-simulated.
     /// Appended last so older saves and the wire format keep their variant indices.
     FriendlyBullet,
+    /// Twinscale: the **post-game** boss of the [`crate::world::Dimension::Arena`] — a
+    /// huge **twin-headed dragon** raised only after the [`EntityKind::DemonKing`] has
+    /// been slain, appearing **five days** later. Like the [`EntityKind::Dragon`] it
+    /// **flies**, but it holds station **high** beneath the arena room's tall ceiling and
+    /// rains its arsenal down: a wide fan of ten [`EntityKind::Fireball`]s, a spread of six
+    /// [`EntityKind::MagicFireball`]s, or two [`EntityKind::SummonerFireball`]s. At half
+    /// health it summons a flight of three [`EntityKind::Dragon`]s. Because it stays aloft,
+    /// felling it needs the [`crate::block::DRAGONIAN_STEED`] steed to fly up and fight it.
+    /// Server-simulated. Appended last so older saves and the wire format keep their
+    /// variant indices.
+    Twinscale,
 }
 
 impl EntityKind {
@@ -650,6 +676,7 @@ impl EntityKind {
             EntityKind::Musketeer { .. } => MUSKETEER_SIZE,
             EntityKind::DarkMusketeer => DARK_MUSKETEER_SIZE,
             EntityKind::Bullet | EntityKind::FriendlyBullet => BULLET_SIZE,
+            EntityKind::Twinscale => TWINSCALE_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -818,6 +845,7 @@ impl EntityKind {
             // A bullet (hostile or friendly) is an inert projectile; 1 keeps health ==
             // max_health so no health bar shows and a stray swing can't "kill" it.
             EntityKind::Bullet | EntityKind::FriendlyBullet => 1,
+            EntityKind::Twinscale => TWINSCALE_MAX_HEALTH,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }

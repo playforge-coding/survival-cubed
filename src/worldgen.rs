@@ -1109,6 +1109,14 @@ pub fn arena_room_left_x() -> f32 {
     ARENA_ROOM_LEFT as f32 * crate::world::TILE_SIZE
 }
 
+/// World-pixel y of the arena room's open **ceiling** — the topmost air row beneath
+/// the room's high roof. The post-game [`Twinscale`](crate::entity::EntityKind::Twinscale)
+/// boss hovers just below this, high out of reach of ground attacks, so a challenger
+/// must take to the air to fight it.
+pub fn arena_room_ceiling_y() -> f32 {
+    (ARENA_FLOOR - ARENA_ROOM_HEIGHT) as f32 * crate::world::TILE_SIZE
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

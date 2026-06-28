@@ -50,6 +50,7 @@ Projectiles (bones, fireballs) are the exception, flying at 130–170 px/s.
 
 ## Bosses
 
-| Entity                      | HP   | Where                         |
-| --------------------------- | ---- | ----------------------------- |
-| [Demon King](demon-king.md) | 1000 | The **arena** — one per world |
+| Entity                      | HP   | Where                                          |
+| --------------------------- | ---- | ---------------------------------------------- |
+| [Demon King](demon-king.md) | 1000 | The **arena** — one per world                  |
+| [Twinscale](twinscale.md)   | 1600 | The **arena**, 5 days after the king — post-game, **flies** |

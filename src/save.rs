@@ -114,6 +114,16 @@ pub struct WorldMeta {
     /// slain. Once `true` no new boss is ever raised in the arena (one per world).
     #[serde(default)]
     pub demon_king_slain: bool,
+    /// In-world time ([`elapsed_secs`](Self::elapsed_secs)) at which the demon king was
+    /// slain, or `None` if it still lives. The post-game
+    /// [`Twinscale`](crate::entity::EntityKind::Twinscale) boss is raised five days
+    /// after this. Persisted so the countdown survives a save/reload.
+    #[serde(default)]
+    pub demon_king_slain_at: Option<f32>,
+    /// Whether this world's single [`Twinscale`](crate::entity::EntityKind::Twinscale)
+    /// post-game boss has been slain. Once `true` it is never raised again.
+    #[serde(default)]
+    pub twinscale_slain: bool,
     /// Saved state of every player who has ever joined this world.
     pub players: Vec<SavedPlayer>,
     /// Lit campfires as `(dimension, x, y, remaining_burn_secs)`, so fires keep
@@ -439,6 +449,8 @@ mod tests {
             underworld_entities: vec![Entity::new(8, EntityKind::CharredSkeleton, 4.0, 5.0)],
             arena_entities: vec![Entity::new(9, EntityKind::DemonKing, 6.0, 7.0)],
             demon_king_slain: true,
+            demon_king_slain_at: Some(1000.0),
+            twinscale_slain: false,
             players: vec![SavedPlayer {
                 name: "ada".into(),
                 x: 10.0,

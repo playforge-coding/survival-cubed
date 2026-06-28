@@ -38,7 +38,8 @@ use crate::world::{
     CHUNK_AREA, CHUNK_SIZE, ChunkCoord, Dimension, NUM_DIMENSIONS, TILE_SIZE, WORLD_HEIGHT, World,
 };
 use crate::worldgen::{
-    Biome, WorldGen, arena_player_spawn, arena_room_center_x, arena_room_left_x, spawn_point,
+    Biome, WorldGen, arena_player_spawn, arena_room_ceiling_y, arena_room_center_x,
+    arena_room_left_x, spawn_point,
 };
 
 /// How often the server simulates non-player entities, in seconds.
@@ -496,6 +497,51 @@ const DEMON_KING_GUARD_SPACING: f32 = 90.0;
 /// Seconds between arena boss-presence checks (raising the king when the arena
 /// holds a player and none yet reigns). Coarse — the boss is a once-per-world event.
 const BOSS_CHECK_INTERVAL: f32 = 2.0;
+
+// --- Twinscale (post-game arena superboss) -------------------------------------
+/// In-world seconds after the demon king is slain before Twinscale is raised — five
+/// full day/night cycles (see [`daylight::DAY_LENGTH_SECS`]).
+const TWINSCALE_DELAY_SECS: f32 = 5.0 * daylight::DAY_LENGTH_SECS;
+/// How far (px) Twinscale notices a challenger and turns to rain its arsenal down.
+const TWINSCALE_AGGRO: f32 = 900.0;
+/// Flight speed of Twinscale, in pixels/second — swift for its great size as it wheels
+/// over the arena.
+const TWINSCALE_SPEED: f32 = 60.0;
+/// How far below the room's open ceiling (px) Twinscale holds station — high out of
+/// reach of ground attacks, so a challenger must take to the air to fight it.
+const TWINSCALE_HOVER_DROP: f32 = 2.0 * TILE_SIZE;
+/// Maximum gap (px between AABBs) at which Twinscale looses an attack — generous enough
+/// to reach the floor from its high perch, so it pelts a grounded challenger and
+/// pressures them up onto a steed rather than hovering idle out of reach.
+const TWINSCALE_SHOOT_RANGE: f32 = 980.0;
+/// Horizontal standoff (px) Twinscale tries to keep from its target, drifting aside
+/// when crowded so it keeps its distance while it fires.
+const TWINSCALE_KEEP_DIST: f32 = 220.0;
+/// Seconds Twinscale waits between attacks (the cooldown set when one begins).
+const TWINSCALE_ATTACK_INTERVAL: f32 = 1.9;
+/// Seconds of attack remaining (of [`crate::entity::TWINSCALE_ATTACK_TIME`]) at which
+/// the wind-up gives way to the strike — the frame its bolts loose. Halfway through.
+const TWINSCALE_STRIKE_TIME: f32 = crate::entity::TWINSCALE_ATTACK_TIME * 0.5;
+/// Number of ordinary fireballs in Twinscale's wide fan.
+const TWINSCALE_FIREBALL_COUNT: i32 = 10;
+/// Angular spacing (radians) between the fireballs in that fan.
+const TWINSCALE_FIREBALL_SPREAD: f32 = 0.16;
+/// Number of magic fireballs in Twinscale's spread.
+const TWINSCALE_MAGIC_COUNT: i32 = 6;
+/// Angular spacing (radians) between the magic fireballs in that spread.
+const TWINSCALE_MAGIC_SPREAD: f32 = 0.20;
+/// Number of summoner bolts Twinscale looses at once (each bursts into a skull).
+const TWINSCALE_SUMMONER_COUNT: i32 = 2;
+/// Angular spacing (radians) between Twinscale's summoner bolts.
+const TWINSCALE_SUMMONER_SPREAD: f32 = 0.30;
+/// How many dragons Twinscale summons when it drops to half health.
+const TWINSCALE_DRAGON_COUNT: u32 = 3;
+/// Horizontal spacing (px) between the dragons Twinscale summons as they appear across
+/// the upper room.
+const TWINSCALE_DRAGON_SPACING: f32 = 200.0;
+/// How far Twinscale first appears to the side of the room center (px), so it makes a
+/// dramatic entrance sweeping across the high room.
+const TWINSCALE_SPAWN_OFFSET: f32 = 240.0;
 /// Lumbering speed of an orc mage, in pixels/second — quicker than the brute orc so
 /// it can reposition to shepherd its demons, but it never closes for a fight.
 const ORC_MAGE_SPEED: f32 = 16.0;
@@ -757,6 +803,14 @@ const DEMON_KING_CHAT_FROM: &str = "Demon King";
 /// player walks into the arena room and the fight begins).
 const DEMON_KING_TAUNT: &str =
     "You've done well. But that ends now. Like it did for your king! En garde!";
+
+/// Chat sender name Twinscale's roar is attributed to, so its line reads as the boss
+/// speaking rather than the server.
+const TWINSCALE_CHAT_FROM: &str = "Twinscale";
+/// The roar Twinscale looses as it descends on a challenger, five days after the demon
+/// king fell.
+const TWINSCALE_TAUNT: &str =
+    "Two heads. Twice the fire. You should not have lingered. Now you will burn!";
 
 /// File under the world's save directory holding banned IP addresses, one per
 /// line (`#` comments and blanks ignored). Loaded on startup and rewritten
@@ -1103,6 +1157,22 @@ struct Shared {
     /// Reset when a fresh king is raised, so each king's second phase summons its own
     /// host exactly once. Runtime-only.
     demon_king_knights_summoned: AtomicBool,
+    /// In-world time (matching [`Self::time_of_day`]'s elapsed-seconds clock) at which
+    /// the demon king was slain, or `None` while it still lives. The post-game
+    /// [`EntityKind::Twinscale`] boss is raised [`TWINSCALE_DELAY_SECS`] later.
+    /// Persisted in [`WorldMeta`] so the countdown survives a restart.
+    demon_king_slain_at: Mutex<Option<f32>>,
+    /// Whether this world's single [`EntityKind::Twinscale`] post-game boss has been
+    /// slain. Persisted; while `true` it is never raised again (one per world).
+    twinscale_slain: AtomicBool,
+    /// Whether a live [`EntityKind::Twinscale`] currently haunts the arena — the
+    /// runtime mirror of "a Twinscale is in `entities(Arena)`", so the spawn check is
+    /// cheap. Set when one is raised, cleared when it dies.
+    twinscale_alive: AtomicBool,
+    /// Whether the reigning Twinscale has already called down its flight of dragons (it
+    /// does so once, the moment it drops to half health). Reset when a fresh Twinscale
+    /// is raised. Runtime-only.
+    twinscale_dragons_summoned: AtomicBool,
 }
 
 impl Shared {
@@ -1134,6 +1204,28 @@ impl Shared {
                 let _ = h.tx.send(msg.clone());
             }
         }
+    }
+
+    /// Record that the demon king has fallen: clear the "alive" mirror, latch the
+    /// "slain" flag (so no new king is ever raised), and — the first time — stamp the
+    /// in-world time, starting the [`TWINSCALE_DELAY_SECS`] countdown to the post-game
+    /// [`EntityKind::Twinscale`] boss. Called from every site that can kill the king.
+    fn record_demon_king_slain(&self) {
+        self.demon_king_alive.store(false, Ordering::SeqCst);
+        self.demon_king_slain.store(true, Ordering::SeqCst);
+        let now = self.start.lock().elapsed().as_secs_f32();
+        let mut at = self.demon_king_slain_at.lock();
+        if at.is_none() {
+            *at = Some(now);
+        }
+    }
+
+    /// Record that Twinscale has fallen: clear its "alive" mirror and latch the "slain"
+    /// flag so the post-game boss is never raised again. Called from every site that
+    /// can kill it.
+    fn record_twinscale_slain(&self) {
+        self.twinscale_alive.store(false, Ordering::SeqCst);
+        self.twinscale_slain.store(true, Ordering::SeqCst);
     }
 
     /// Send `msg` to every client in dimension `dim` except `except`.
@@ -1262,6 +1354,8 @@ impl Shared {
             underworld_entities,
             arena_entities,
             demon_king_slain: self.demon_king_slain.load(Ordering::SeqCst),
+            demon_king_slain_at: *self.demon_king_slain_at.lock(),
+            twinscale_slain: self.twinscale_slain.load(Ordering::SeqCst),
             players: players.into_values().collect(),
             campfires,
             placed_logs,
@@ -3646,9 +3740,21 @@ fn creature_mana(kind: &EntityKind) -> i32 {
         EntityKind::DarkMusketeer => 150,
         EntityKind::Dragon => 600,
         EntityKind::DemonKing => 1000,
+        EntityKind::Twinscale => 2000,
         // Animals, companions, projectiles, items, players: no mana.
         _ => 0,
     }
+}
+
+/// The hoard a slain [`EntityKind::Twinscale`] spills where it falls — a generous
+/// post-game reward (it flies, so it has no chest like the demon king): a clutch of
+/// dragon scales and a purse of refined metal.
+fn twinscale_loot() -> Vec<(BlockId, u32)> {
+    vec![
+        (crate::block::DRAGON_SCALE, 10),
+        (crate::block::GOLD_INGOT, 6),
+        (crate::block::TUNGSTEN_INGOT, 6),
+    ]
 }
 
 /// The loot a slain [`EntityKind::Necromancer`] spills. Nothing most kills, but
@@ -3984,6 +4090,8 @@ fn build_endpoint(
     let mut underworld_entities = Entities::new();
     let mut arena_entities = Entities::new();
     let mut demon_king_slain = false;
+    let mut demon_king_slain_at: Option<f32> = None;
+    let mut twinscale_slain = false;
     let mut saved_players = HashMap::new();
     let mut accounts = HashMap::new();
     let mut campfires = HashMap::new();
@@ -4003,6 +4111,8 @@ fn build_endpoint(
             arena_entities.insert(e.clone());
         }
         demon_king_slain = m.demon_king_slain;
+        demon_king_slain_at = m.demon_king_slain_at;
+        twinscale_slain = m.twinscale_slain;
         for p in &m.players {
             saved_players.insert(p.name.clone(), p.clone());
         }
@@ -4053,11 +4163,27 @@ fn build_endpoint(
         dirty: HashSet::new(),
     });
 
-    // Whether a king is already presiding (e.g. a save captured mid-fight), so the
-    // runtime "alive" mirror starts in agreement with the restored entities.
+    // Whether a king (or Twinscale) is already presiding (e.g. a save captured
+    // mid-fight), so the runtime "alive" mirrors start in agreement with the restored
+    // entities.
     let king_present = arena_entities
         .values()
         .any(|e| matches!(e.kind, EntityKind::DemonKing));
+    let twinscale_present = arena_entities
+        .values()
+        .any(|e| matches!(e.kind, EntityKind::Twinscale));
+    // A restored Twinscale already at or below half health has already called down its
+    // flight of dragons, so re-latch that to avoid summoning a fresh flight on reload.
+    let twinscale_dragons_done = arena_entities
+        .values()
+        .find(|e| matches!(e.kind, EntityKind::Twinscale))
+        .is_some_and(|e| e.health * 2 <= e.max_health);
+    // If the king is recorded slain but we have no timestamp (a pre-Twinscale save),
+    // start the five-day countdown from the world's current time, so Twinscale still
+    // eventually comes rather than never appearing.
+    if demon_king_slain && demon_king_slain_at.is_none() {
+        demon_king_slain_at = Some(start.elapsed().as_secs_f32());
+    }
 
     let shared = Arc::new(Shared {
         worlds_by_dim: [
@@ -4105,6 +4231,10 @@ fn build_endpoint(
         demon_king_slain: AtomicBool::new(demon_king_slain),
         demon_king_alive: AtomicBool::new(king_present),
         demon_king_knights_summoned: AtomicBool::new(false),
+        demon_king_slain_at: Mutex::new(demon_king_slain_at),
+        twinscale_slain: AtomicBool::new(twinscale_slain),
+        twinscale_alive: AtomicBool::new(twinscale_present),
+        twinscale_dragons_summoned: AtomicBool::new(twinscale_dragons_done),
     });
 
     // Only seed fresh creatures for a brand-new world; a loaded one keeps its own.
@@ -5294,6 +5424,79 @@ fn ensure_arena_boss(shared: &Shared) {
     }
 }
 
+/// Raise the arena's post-game [`EntityKind::Twinscale`] superboss when the time is
+/// right: the demon king has been slain, [`TWINSCALE_DELAY_SECS`] (five days) have
+/// passed since, no Twinscale yet reigns (or has been slain), and a challenger stands
+/// in the arena room. Twinscale appears high beneath the room's tall ceiling, out of
+/// reach of ground attacks — so a challenger needs the
+/// [`dragonian steed`](crate::block::DRAGONIAN_STEED) to fly up and fight it. A no-op
+/// otherwise; like the king, exactly one is ever raised per world.
+fn ensure_arena_twinscale(shared: &Shared) {
+    if shared.twinscale_slain.load(Ordering::SeqCst)
+        || shared.twinscale_alive.load(Ordering::SeqCst)
+        || !shared.demon_king_slain.load(Ordering::SeqCst)
+    {
+        return;
+    }
+    // Five days must have passed in world-time since the king fell.
+    let due = match *shared.demon_king_slain_at.lock() {
+        Some(t0) => shared.start.lock().elapsed().as_secs_f32() - t0 >= TWINSCALE_DELAY_SECS,
+        None => false,
+    };
+    if !due {
+        return;
+    }
+
+    let dim = Dimension::Arena;
+    let spawned: Option<Entity> = {
+        let mut entities = shared.entities(dim).lock();
+        // A Twinscale restored from a save (mid-fight): just bring the mirror into
+        // agreement and re-derive its dragon-summon latch from its health.
+        if let Some(ts) = entities
+            .values()
+            .find(|e| matches!(e.kind, EntityKind::Twinscale))
+        {
+            shared.twinscale_alive.store(true, Ordering::SeqCst);
+            let already_summoned = ts.health * 2 <= ts.max_health;
+            shared
+                .twinscale_dragons_summoned
+                .store(already_summoned, Ordering::SeqCst);
+            None
+        } else {
+            // Raise it only once a challenger is in the room, like the king.
+            let challenger_in_room = entities
+                .values()
+                .any(|e| e.kind.is_player() && e.x >= arena_room_left_x());
+            if !challenger_in_room {
+                None
+            } else {
+                let (tw, _th) = EntityKind::Twinscale.size();
+                let cx = arena_room_center_x() + TWINSCALE_SPAWN_OFFSET;
+                // Hover high, just below the room's open ceiling.
+                let ty = arena_room_ceiling_y() + TWINSCALE_HOVER_DROP;
+                let bx = cx - tw * 0.5;
+                let twinscale = Entity::new(shared.alloc_id(), EntityKind::Twinscale, bx, ty);
+                entities.insert(twinscale.clone());
+                shared.twinscale_alive.store(true, Ordering::SeqCst);
+                shared
+                    .twinscale_dragons_summoned
+                    .store(false, Ordering::SeqCst);
+                Some(twinscale)
+            }
+        }
+    };
+    if let Some(entity) = spawned {
+        shared.broadcast_dim(dim, ServerMessage::EntitySpawn { entity });
+        shared.broadcast_dim(
+            dim,
+            ServerMessage::Chat {
+                from: TWINSCALE_CHAT_FROM.to_string(),
+                text: TWINSCALE_TAUNT.to_string(),
+            },
+        );
+    }
+}
+
 /// Spawn a dropped-block item at the center of cell `(cell_x, cell_y)` in `dim`,
 /// popping it upward so it clears the player who mined it, and announce it to that
 /// dimension. Mined/crafted drops are a single item at full durability.
@@ -5425,6 +5628,7 @@ async fn entity_tick_loop(shared: Arc<Shared>) {
         if since_boss_check >= BOSS_CHECK_INTERVAL {
             since_boss_check = 0.0;
             ensure_arena_boss(&shared);
+            ensure_arena_twinscale(&shared);
         }
 
         // Keep every client's day/night clock in sync.
@@ -5549,13 +5753,14 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
                     && !e.kind.is_musketeer()
                     && !e.kind.is_mage()
                     && !e.kind.is_white_dragon()
-                    && !matches!(e.kind, EntityKind::DemonKing)
+                    && !matches!(e.kind, EntityKind::DemonKing | EntityKind::Twinscale)
                     && !(dim == Dimension::Arena
                         && matches!(
                             e.kind,
                             EntityKind::OrcMage
                                 | EntityKind::DarkKnight
                                 | EntityKind::DarkMusketeer
+                                | EntityKind::Dragon
                         ))
             })
             .filter(|e| {
@@ -5637,6 +5842,11 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     let demon_king_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::DemonKing))
+        .map(|e| e.id)
+        .collect();
+    let twinscale_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Twinscale))
         .map(|e| e.id)
         .collect();
     let ash_twister_ids: Vec<EntityId> = entities
@@ -8754,6 +8964,213 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         }
     }
 
+    // Twinscale: the post-game arena superboss — a huge twin-headed dragon that holds
+    // station HIGH beneath the room's ceiling and rains its arsenal down, chosen at
+    // random and telegraphed by a wind-up (riding `lunge`, the chosen attack stashed in
+    // `lunge_dir`): a wide fan of ten fireballs, a spread of six magic fireballs, or two
+    // summoner bolts. It tracks the challenger horizontally while keeping its distance,
+    // and at half health calls down a flight of dragons. Because it never descends, only
+    // a flying challenger (the dragonian steed) can fight it.
+    //
+    // Bolts loosed this tick and the room-x to summon dragons around, both applied after
+    // the loop so we aren't holding a mutable borrow of the boss while inserting.
+    let mut twinscale_bolts: Vec<(EntityKind, f32, f32, f32, f32)> = Vec::new();
+    let mut twinscale_summon: Option<f32> = None;
+    let ts_seed = world.generator.seed();
+    let ts_hover_y = arena_room_ceiling_y() + TWINSCALE_HOVER_DROP;
+    for id in twinscale_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let home = *e.home_x.get_or_insert(e.x);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+        let target = nearest_prey(&hostile_players, &knight_boxes, scx, scy, TWINSCALE_AGGRO);
+        let toward = match target {
+            Some(ref p) => {
+                if p.x + p.w * 0.5 >= scx {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+            None => {
+                if e.vx >= 0.0 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+        };
+
+        // Half health: call down a flight of dragons to fight alongside it — once.
+        if e.health * 2 <= e.max_health
+            && !shared
+                .twinscale_dragons_summoned
+                .swap(true, Ordering::SeqCst)
+        {
+            twinscale_summon = Some(scx);
+        }
+
+        // Mid-attack: a committed wind-up over TWINSCALE_ATTACK_TIME, holding station and
+        // correcting back to its hover altitude, then loosing its bolts on the strike.
+        if e.lunge > 0.0 {
+            let was_winding = e.lunge > TWINSCALE_STRIKE_TIME;
+            e.lunge = (e.lunge - TICK_DT).max(0.0);
+            let striking = e.lunge <= TWINSCALE_STRIKE_TIME;
+            let vy = (ts_hover_y - e.y).clamp(-TWINSCALE_SPEED, TWINSCALE_SPEED);
+            let (ny, _) = move_y(&mut world, e.x, e.y, w, h, vy * TICK_DT);
+            e.y = ny;
+            e.vx = 0.0;
+            e.vy = vy;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: e.x,
+                y: e.y,
+                vx: toward,
+                vy,
+            });
+
+            if was_winding && striking {
+                let attack = e.lunge_dir as i32;
+                let (fw, fh) = FIREBALL_SIZE;
+                let sx = scx - fw * 0.5;
+                let sy = scy - fh * 0.5;
+                // Aim from Twinscale's body at the target's center, or straight down if
+                // it has lost its quarry mid-cast (it fires from on high).
+                let (ux, uy) = match target {
+                    Some(ref p) => {
+                        let dx = (p.x + p.w * 0.5) - (sx + fw * 0.5);
+                        let dy = (p.y + p.h * 0.5) - (sy + fh * 0.5);
+                        let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                        (dx / len, dy / len)
+                    }
+                    None => (0.0, 1.0),
+                };
+                let rot = |a: f32| -> (f32, f32) {
+                    let (s, c) = a.sin_cos();
+                    (ux * c - uy * s, ux * s + uy * c)
+                };
+                // A symmetric fan of `n` bolts at `speed`, evenly spread about the aim.
+                let mut fan = |kind: EntityKind, n: i32, spread: f32, speed: f32| {
+                    for i in 0..n {
+                        let off = (i as f32 - (n as f32 - 1.0) * 0.5) * spread;
+                        let (rx, ry) = rot(off);
+                        twinscale_bolts.push((kind.clone(), sx, sy, rx * speed, ry * speed));
+                    }
+                };
+                match attack {
+                    0 => fan(
+                        EntityKind::Fireball,
+                        TWINSCALE_FIREBALL_COUNT,
+                        TWINSCALE_FIREBALL_SPREAD,
+                        FIREBALL_SPEED,
+                    ),
+                    1 => fan(
+                        EntityKind::MagicFireball,
+                        TWINSCALE_MAGIC_COUNT,
+                        TWINSCALE_MAGIC_SPREAD,
+                        MAGIC_FIREBALL_SPEED,
+                    ),
+                    _ => fan(
+                        EntityKind::SummonerFireball,
+                        TWINSCALE_SUMMONER_COUNT,
+                        TWINSCALE_SUMMONER_SPREAD,
+                        SUMMONER_FIREBALL_SPEED,
+                    ),
+                }
+            }
+            continue;
+        }
+
+        // Begin an attack if a target is within range and the cooldown has elapsed.
+        if let Some(ref p) = target {
+            let gap = aabb_gap(e.x, e.y, w, h, p.x, p.y, p.w, p.h);
+            if e.attack_cd <= 0.0 && gap <= TWINSCALE_SHOOT_RANGE {
+                let salt = id.wrapping_add((e.flee as u32).wrapping_mul(2_654_435_761));
+                e.flee = (e.flee + 1.0) % 1_000_000.0;
+                let roll = chunk_hash(ts_seed, e.x as i32, e.y as i32, salt);
+                e.lunge = crate::entity::TWINSCALE_ATTACK_TIME;
+                e.lunge_dir = (roll % 3) as f32;
+                e.attack_cd = TWINSCALE_ATTACK_INTERVAL;
+                e.vx = 0.0;
+                broadcasts.push(ServerMessage::EntityLunging { id });
+                broadcasts.push(ServerMessage::EntityMoved {
+                    id,
+                    x: e.x,
+                    y: e.y,
+                    vx: toward,
+                    vy: e.vy,
+                });
+                continue;
+            }
+        }
+
+        // Not attacking: hold its high altitude and keep loosely overhead of the target,
+        // sliding aside when crowded — never descending to the floor.
+        let vx = match target {
+            Some(ref p) => {
+                let hx = (p.x + p.w * 0.5) - scx;
+                let hdir = if hx >= 0.0 { 1.0 } else { -1.0 };
+                let hdist = hx.abs();
+                if hdist < TWINSCALE_KEEP_DIST {
+                    -hdir * TWINSCALE_SPEED
+                } else if hdist > TWINSCALE_KEEP_DIST * 1.6 {
+                    hdir * TWINSCALE_SPEED
+                } else {
+                    0.0
+                }
+            }
+            None => wander_dir(scx, e.vx, home) * TWINSCALE_SPEED,
+        };
+        let vy = (ts_hover_y - e.y).clamp(-TWINSCALE_SPEED, TWINSCALE_SPEED);
+        let (nx, _) = move_x(&mut world, e.x, e.y, w, h, vx * TICK_DT);
+        let (ny, _) = move_y(&mut world, nx, e.y, w, h, vy * TICK_DT);
+        e.x = nx;
+        e.y = ny;
+        e.vx = vx;
+        e.vy = vy;
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: nx,
+            y: ny,
+            vx: toward * vx.abs().max(1.0),
+            vy,
+        });
+    }
+    // Spawn the bolts Twinscale loosed this tick (each with its own lifetime; not in any
+    // projectile id list, so they begin flying next tick).
+    for (kind, x, y, vx, vy) in twinscale_bolts {
+        let life = match kind {
+            EntityKind::MagicFireball => MAGIC_FIREBALL_LIFETIME,
+            EntityKind::SummonerFireball => SUMMONER_FIREBALL_LIFETIME,
+            _ => FIREBALL_LIFETIME,
+        };
+        let bid = shared.alloc_id();
+        let mut bolt = Entity::new(bid, kind, x, y);
+        bolt.vx = vx;
+        bolt.vy = vy;
+        bolt.attack_cd = life; // reused as the airborne lifetime timer
+        entities.insert(bolt.clone());
+        broadcasts.push(ServerMessage::EntitySpawn { entity: bolt });
+    }
+    // Spawn the flight of dragons Twinscale called down at half health, fanned across the
+    // upper room just below it, soaring in to harry the challenger.
+    if let Some(cx) = twinscale_summon {
+        let (dw, _dh) = EntityKind::Dragon.size();
+        let dy = ts_hover_y + 4.0 * TILE_SIZE;
+        for i in 0..TWINSCALE_DRAGON_COUNT {
+            let rank = (i / 2) as f32 + 1.0;
+            let dir = if i % 2 == 0 { -1.0 } else { 1.0 };
+            let gx = cx + dir * rank * TWINSCALE_DRAGON_SPACING - dw * 0.5;
+            let dragon = Entity::new(shared.alloc_id(), EntityKind::Dragon, gx, dy);
+            entities.insert(dragon.clone());
+            broadcasts.push(ServerMessage::EntitySpawn { entity: dragon });
+        }
+    }
+
     // Orc mages: robed underworld support casters. They land no blows of their own —
     // they shy away from players and instead seek out ordinary demons to empower,
     // casting an enchant that turns a demon into a flying, harder-hitting enchanted
@@ -9775,8 +10192,18 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     for (kind, kx, ky) in puppy_kills {
         if matches!(kind, EntityKind::DemonKing) {
             spawn_boss_chest(shared, dim, kx);
-            shared.demon_king_alive.store(false, Ordering::SeqCst);
-            shared.demon_king_slain.store(true, Ordering::SeqCst);
+            shared.record_demon_king_slain();
+            continue;
+        }
+        if matches!(kind, EntityKind::Twinscale) {
+            shared.record_twinscale_slain();
+            for (item, n) in twinscale_loot() {
+                let cx = (kx / TILE_SIZE) as i32;
+                let cy = (ky / TILE_SIZE) as i32;
+                for _ in 0..n {
+                    spawn_drop(shared, dim, cx, cy, item);
+                }
+            }
             continue;
         }
         let cx = (kx / TILE_SIZE) as i32;
@@ -9963,6 +10390,7 @@ fn is_hostile(kind: &EntityKind) -> bool {
             | EntityKind::DarkMusketeer
             | EntityKind::Dragon
             | EntityKind::DemonKing
+            | EntityKind::Twinscale
     )
 }
 
@@ -11459,6 +11887,10 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         let entities = shared.entities(dim).lock();
                         match dragon {
                             None => Some(None),
+                            // Telepathic piloting is barred in the arena: a challenger
+                            // must *ride* their steed up to fight the airborne boss,
+                            // not pilot it from safety on the floor. (Stopping still works.)
+                            Some(_) if dim == Dimension::Arena => None,
                             Some(did) => {
                                 let owner = match entities.get(id).map(|a| &a.kind) {
                                     Some(EntityKind::Player { name }) if !name.is_empty() => {
@@ -11676,8 +12108,16 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             }
                             if matches!(kind, EntityKind::DemonKing) {
                                 spawn_boss_chest(&shared, dim, vx);
-                                shared.demon_king_alive.store(false, Ordering::SeqCst);
-                                shared.demon_king_slain.store(true, Ordering::SeqCst);
+                                shared.record_demon_king_slain();
+                            } else if matches!(kind, EntityKind::Twinscale) {
+                                shared.record_twinscale_slain();
+                                let cx = (vx / TILE_SIZE) as i32;
+                                let cy = (vy / TILE_SIZE) as i32;
+                                for (item, n) in twinscale_loot() {
+                                    for _ in 0..n {
+                                        spawn_drop(&shared, dim, cx, cy, item);
+                                    }
+                                }
                             } else {
                                 let cx = (vx / TILE_SIZE) as i32;
                                 let cy = (vy / TILE_SIZE) as i32;
@@ -11764,6 +12204,20 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     *shared.start.lock() = new_start;
                     shared.broadcast_all(ServerMessage::TimeOfDay { t });
                 }
+                ClientMessage::AdvanceDay if creator_allowed => {
+                    // Move the clock's origin back a full day so total elapsed in-world
+                    // time jumps forward one day/night cycle (the time-of-day phase is
+                    // unchanged, but countdowns like Twinscale's five days advance).
+                    {
+                        let mut start = shared.start.lock();
+                        *start = start
+                            .checked_sub(Duration::from_secs_f32(daylight::DAY_LENGTH_SECS))
+                            .unwrap_or(*start);
+                    }
+                    shared.broadcast_all(ServerMessage::TimeOfDay {
+                        t: shared.time_of_day(),
+                    });
+                }
                 ClientMessage::SpawnEntity { kind, x, y } if creator_allowed => {
                     // Never let a creator spawn a player avatar (those are owned by
                     // a connection); only server-simulated creatures, into the
@@ -11830,6 +12284,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 // Creator commands from a player without creator access are ignored.
                 ClientMessage::SetCreator { .. }
                 | ClientMessage::SetTime { .. }
+                | ClientMessage::AdvanceDay
                 | ClientMessage::SpawnEntity { .. }
                 | ClientMessage::GiveItem { .. }
                 | ClientMessage::CreatorSetBlock { .. }

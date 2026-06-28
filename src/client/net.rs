@@ -323,6 +323,9 @@ pub enum NetCommand {
     SetTime {
         t: f32,
     },
+    /// Creator mode: advance the world clock by one full day/night cycle (to
+    /// fast-forward long countdowns like Twinscale's five days).
+    AdvanceDay,
     /// Creator mode: spawn a creature of `kind` at world pixel `(x, y)`.
     SpawnEntity {
         kind: EntityKind,
@@ -584,6 +587,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::ControlDragon { dx, dy } => ClientMessage::ControlDragon { dx, dy },
         NetCommand::SetCreator { on } => ClientMessage::SetCreator { on },
         NetCommand::SetTime { t } => ClientMessage::SetTime { t },
+        NetCommand::AdvanceDay => ClientMessage::AdvanceDay,
         NetCommand::SpawnEntity { kind, x, y } => ClientMessage::SpawnEntity { kind, x, y },
         NetCommand::GiveItem { item, count } => ClientMessage::GiveItem { item, count },
         NetCommand::CreatorSetBlock { x, y, block } => {

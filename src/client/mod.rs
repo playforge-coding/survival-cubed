@@ -1127,6 +1127,7 @@ impl App {
                                 crate::entity::MUSKETEER_ATTACK_TIME
                             }
                             EntityKind::Dragon => crate::entity::DRAGON_ATTACK_TIME,
+                            EntityKind::Twinscale => crate::entity::TWINSCALE_ATTACK_TIME,
                             _ => crate::entity::SNAKE_LUNGE_TIME,
                         };
                     }
@@ -1871,12 +1872,17 @@ impl App {
     /// or the player changes dimension. A no-op when no boss is in view.
     fn boss_bar_overlay(&self, ui: &mut egui::Ui) {
         let Some(g) = &self.game else { return };
-        // The arena king takes precedence; otherwise the nearest in-range dragon.
+        // The post-game superboss Twinscale takes precedence, then the arena king;
+        // otherwise the nearest in-range dragon miniboss.
+        let twinscale = g
+            .entities
+            .values()
+            .find(|e| matches!(e.kind, EntityKind::Twinscale));
         let king = g
             .entities
             .values()
             .find(|e| matches!(e.kind, EntityKind::DemonKing));
-        let boss = king.or_else(|| {
+        let boss = twinscale.or(king).or_else(|| {
             g.entities
                 .values()
                 .filter(|e| matches!(e.kind, EntityKind::Dragon))
@@ -1890,10 +1896,10 @@ impl App {
         let Some(boss) = boss else {
             return;
         };
-        let title = if matches!(boss.kind, EntityKind::DemonKing) {
-            "The Demon King"
-        } else {
-            "Dragon"
+        let title = match boss.kind {
+            EntityKind::Twinscale => "Twinscale",
+            EntityKind::DemonKing => "The Demon King",
+            _ => "Dragon",
         };
         let frac = if boss.max_health > 0 {
             (boss.health as f32 / boss.max_health as f32).clamp(0.0, 1.0)
@@ -3131,6 +3137,7 @@ impl App {
         let mut give_input = std::mem::take(&mut self.give_item_input);
         let mut give_count = self.give_item_count;
         let mut set_time: Option<f32> = None;
+        let mut advance_day = false;
         let mut spawn: Option<EntityKind> = None;
         let mut give: Option<(BlockId, u32)> = None;
         // Structure-tool inputs/intents, applied after the closure (which can't
@@ -3188,6 +3195,15 @@ impl App {
                         set_time = Some(0.75);
                     }
                 });
+                // Jump the world clock forward a whole day — for fast-forwarding the
+                // five days before the post-game Twinscale boss appears.
+                if ui
+                    .button("Next day ⏩")
+                    .on_hover_text("Advance the world clock one full day (e.g. to test Twinscale)")
+                    .clicked()
+                {
+                    advance_day = true;
+                }
 
                 ui.separator();
                 ui.label("Spawn entity (at player)");
@@ -3266,6 +3282,9 @@ impl App {
                             }
                             if ui.button("Dragon").clicked() {
                                 spawn = Some(EntityKind::Dragon);
+                            }
+                            if ui.button("Twinscale").clicked() {
+                                spawn = Some(EntityKind::Twinscale);
                             }
                         });
                     });
@@ -3475,6 +3494,9 @@ impl App {
             }
             if let Some(t) = set_time {
                 let _ = net.commands.send(NetCommand::SetTime { t });
+            }
+            if advance_day {
+                let _ = net.commands.send(NetCommand::AdvanceDay);
             }
             if let Some(kind) = spawn {
                 let _ = net.commands.send(NetCommand::SpawnEntity {
@@ -3907,6 +3929,11 @@ impl App {
                 // though it's standing still (frame_index would otherwise freeze a
                 // motionless entity on frame 0).
                 let d = &sprite::PUPPY_SIT_SPRITE;
+                (d, sprite::frame_index(true, self.anim_time, d))
+            } else if matches!(e.kind, EntityKind::Twinscale) {
+                // Twinscale beats its wings even while hovering in place, so its cycle
+                // loops off the shared clock rather than freezing when it holds station.
+                let d = sprite::sprite_for(&e.kind);
                 (d, sprite::frame_index(true, self.anim_time, d))
             } else {
                 let def = sprite::sprite_for(&e.kind);

@@ -125,7 +125,7 @@ pub enum SlotRef {
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -296,6 +296,11 @@ pub enum ClientMessage {
     /// Creator: jump the world clock to normalized time of day `t` in `[0, 1)`.
     /// The server adjusts its authoritative clock and rebroadcasts the time.
     SetTime { t: f32 },
+    /// Creator: advance the world clock by one full day. Unlike [`Self::SetTime`] (which
+    /// only sets the time *within* a day) this moves total in-world time forward a whole
+    /// day/night cycle, so long-running countdowns — like the five days before
+    /// [`crate::entity::EntityKind::Twinscale`] appears — can be fast-forwarded for testing.
+    AdvanceDay,
     /// Creator: spawn a creature of `kind` at world pixel `(x, y)`. Player kinds
     /// are ignored by the server.
     SpawnEntity { kind: EntityKind, x: f32, y: f32 },

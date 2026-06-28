@@ -110,3 +110,8 @@ the charred expanse as the wild minibosses a wanderer fights today. Claim the dr
 steed spell from its hoard and you wield the tamer's art the king lost — calling a
 dragon back to a master's side, white and gentle, as they were before the throne went
 dark.
+
+And the king's breeding left one last legacy. Slaying it is **not** the end of the
+arena: five days on, its **greatest creation** — the colossal two-headed
+**[Twinscale](twinscale.md)** — wakes to avenge its maker. You will want that
+dragonian steed for what comes next.

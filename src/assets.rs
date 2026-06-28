@@ -203,6 +203,8 @@ sprites!(
     "dark_musketeer" => [0, 1, 2, 3, 4],
     "dark_musketeer/attack" => [0, 1, 2, 3],
     "bullet" => [0],
+    // Twinscale: the post-game twin-headed dragon boss, a three-frame wing-beat cycle.
+    "twinscale" => [0, 1, 2],
 );
 
 music!(
