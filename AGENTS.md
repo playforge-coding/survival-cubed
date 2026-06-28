@@ -1,5 +1,9 @@
 # Survival Cubed
 
+### Code
+
+This a 2D sandbox game written in Rust.
+
 ### Docs
 
 Refer to docs for information. After making any code edits, update them.
