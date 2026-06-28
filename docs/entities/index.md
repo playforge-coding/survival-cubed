@@ -42,6 +42,7 @@ Projectiles (bones, fireballs) are the exception, flying at 130–170 px/s.
 | [Snake](snake.md)                      | 14      | Desert                                         |
 | [Skeletons](skeletons.md)              | 24 / 36 | All biomes (night) / underworld ash valleys    |
 | [Demons](demons.md)                    | 28 / 40 | Underworld charred expanse                     |
+| [Gargoyle](gargoyle.md)                | 32      | Underworld charred expanse — **pickaxe only**  |
 | [Orcs](orcs.md)                        | 50 / 30 | Underworld charred expanse                     |
 | [Necromancer & Skulls](necromancer.md) | 26 / 8  | Deserts & underworld ash valleys               |
 | [Ash Twister](ash-twister.md)          | 18      | Underworld ash valleys                         |

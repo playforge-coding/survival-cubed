@@ -332,6 +332,43 @@ const FIREBALL_HIT_RANGE: f32 = 2.0;
 /// seeded chunk gets a single demon (where the charred skeleton can come in pairs),
 /// keeping these ranged casters thin on the ground.
 const DEMON_CHUNK_CHANCE: u32 = 18;
+
+// --- Gargoyle: a stone hopper of the charred expanse ---
+/// How far (px) a gargoyle notices a player and begins hopping after them.
+const GARGOYLE_AGGRO: f32 = 240.0;
+/// Horizontal speed (px/s) of a gargoyle's ordinary roaming/chasing hop — the arc it
+/// springs in as it closes the distance (it never walks).
+const GARGOYLE_HOP_VX: f32 = 60.0;
+/// Upward launch velocity (px/s, negative is up) of a gargoyle's ordinary hop.
+const GARGOYLE_HOP_VY: f32 = -200.0;
+/// Seconds a gargoyle sits gathered on the ground between ordinary hops.
+const GARGOYLE_HOP_INTERVAL: f32 = 0.55;
+/// Maximum gap (px between AABBs) at which a gargoyle commits to its **jump-slam** — it
+/// leaps at any player closer than this, trying to land on them. Kept in step with the
+/// arc's reach (`GARGOYLE_SLAM_MAX_VX * GARGOYLE_SLAM_AIRTIME`) so a slam loosed at the
+/// edge of range can still come down on a stationary target rather than always short.
+const GARGOYLE_SLAM_RANGE: f32 = 90.0;
+/// Upward launch velocity (px/s, negative is up) of a gargoyle's slam leap — a higher,
+/// harder spring than its ordinary hop so it can drop onto the player from above.
+const GARGOYLE_SLAM_VY: f32 = -300.0;
+/// Nominal airtime (s) of a slam leap, used to aim its horizontal velocity so the arc
+/// lands on the player: roughly `2 * |GARGOYLE_SLAM_VY| / GRAVITY`.
+const GARGOYLE_SLAM_AIRTIME: f32 = 0.43;
+/// Cap (px/s) on a slam leap's horizontal velocity, so a distant target doesn't fling
+/// the gargoyle across the cavern at absurd speed.
+const GARGOYLE_SLAM_MAX_VX: f32 = 210.0;
+/// Maximum gap (px between AABBs) at which a gargoyle's landing slam connects — it has
+/// to come down essentially on top of the player.
+const GARGOYLE_SLAM_REACH: f32 = 14.0;
+/// Damage a gargoyle's landing slam deals to whoever it crashes onto.
+const GARGOYLE_SLAM_DAMAGE: i32 = 12;
+/// Seconds a gargoyle recovers (on top of the slam's own airtime) before it can leap
+/// at the player again.
+const GARGOYLE_ATTACK_INTERVAL: f32 = 1.2;
+/// Percent chance that a fresh underworld chunk seeds a gargoyle — a touch lower than
+/// [`DEMON_CHUNK_CHANCE`] so gargoyles are slightly rarer than demons.
+const GARGOYLE_CHUNK_CHANCE: u32 = 14;
+
 /// Lumbering speed of an orc, in pixels/second — slower than even a zombie, the
 /// previous slowest thing afoot. Its menace is the slam, never the chase.
 const ORC_SPEED: f32 = 12.0;
@@ -3859,6 +3896,7 @@ fn creature_mana(kind: &EntityKind) -> i32 {
         EntityKind::AshTwister => 60,
         EntityKind::CharredSkeleton => 90,
         EntityKind::Demon => 90,
+        EntityKind::Gargoyle => 100,
         EntityKind::EnchantedDemon => 120,
         EntityKind::Necromancer => 110,
         EntityKind::OrcMage => 110,
@@ -4975,6 +5013,55 @@ fn maybe_spawn_demons(shared: &Shared, cx: i32, cy: i32) {
     shared.broadcast_dim(Dimension::Underworld, ServerMessage::EntitySpawn { entity });
 }
 
+/// Possibly seed a gargoyle into a freshly generated underworld chunk. Like the
+/// demons they once guarded a king beside, they keep to the main **charred** expanse
+/// (the ash valleys belong to the twisters and charred skeletons), dropping onto any
+/// charred-rock floor (open cell above, solid below) the chunk contains — but they
+/// appear a touch more rarely than demons (see [`GARGOYLE_CHUNK_CHANCE`]).
+/// Deterministic per chunk via [`chunk_hash`] on its own salt range, so re-exploring
+/// the same terrain never double-spawns, and it runs independently of the other
+/// underworld spawners.
+fn maybe_spawn_gargoyles(shared: &Shared, cx: i32, cy: i32) {
+    let mut world = shared.world(Dimension::Underworld).lock();
+    let seed = world.generator.seed();
+    if chunk_hash(seed, cx, cy, 260) % 100 >= GARGOYLE_CHUNK_CHANCE {
+        return;
+    }
+
+    let base_x = cx * CHUNK_SIZE;
+    let chunk_top = cy * CHUNK_SIZE;
+    let chunk_bottom = chunk_top + CHUNK_SIZE;
+    let (_, h) = EntityKind::Gargoyle.size();
+
+    let lx = chunk_hash(seed, cx, cy, 261) % CHUNK_SIZE as u32;
+    let cell_x = base_x + lx as i32;
+    // Gargoyles keep to the main charred expanse, ceding the ash valleys to the
+    // twisters and charred skeletons — bail if this column is an ash valley.
+    if world.generator.underworld_biome_at(cell_x) != crate::worldgen::UnderworldBiome::Charred {
+        return;
+    }
+    // Find an open cell in this column with solid charred rock beneath — a floor to
+    // stand on — scanning from the chunk's bottom upward.
+    let mut placed = None;
+    for ty in (chunk_top..chunk_bottom).rev() {
+        if !world.solid(cell_x, ty) && world.solid(cell_x, ty + 1) {
+            placed = Some((ty + 1) as f32 * TILE_SIZE - h);
+            break;
+        }
+    }
+    let Some(y) = placed else { return };
+
+    let id = shared.alloc_id();
+    let entity = Entity::new(id, EntityKind::Gargoyle, cell_x as f32 * TILE_SIZE, y);
+    shared
+        .entities(Dimension::Underworld)
+        .lock()
+        .insert(entity.clone());
+    drop(world);
+
+    shared.broadcast_dim(Dimension::Underworld, ServerMessage::EntitySpawn { entity });
+}
+
 /// Possibly seed orcs into a freshly generated underworld chunk. They keep to the
 /// main **charred** expanse (the ash valleys belong to the twisters and charred
 /// skeletons), dropping onto any charred-rock floor (open cell above, solid below)
@@ -6041,6 +6128,11 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     let minotaur_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::Minotaur))
+        .map(|e| e.id)
+        .collect();
+    let gargoyle_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Gargoyle))
         .map(|e| e.id)
         .collect();
     let demon_king_ids: Vec<EntityId> = entities
@@ -9108,6 +9200,176 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         });
     }
 
+    // Gargoyles: stone hoppers of the charred expanse. A gargoyle never walks — it sits
+    // gathered on the ground, then **springs** in a short arc, chasing the player by
+    // hopping toward them (or drifting across its home patch when alone). When a player
+    // strays within slam range it commits to a **jump-slam**: a higher, harder leap
+    // aimed to come down on top of them, the blow landing the tick it touches earth. The
+    // slam rides the `lunge` timer (with `lunge_dir` doubling as a "landing already
+    // dealt" latch); the sit-between-hops timer rides the otherwise-unused `flee` field.
+    // Active at all hours (the underworld is always dark).
+    for id in gargoyle_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        e.flee = (e.flee - TICK_DT).max(0.0);
+        let home = *e.home_x.get_or_insert(e.x);
+
+        // Mid jump-slam: a committed leap that flies ballistically until it touches down.
+        // The blow lands once, the tick it lands during the descent — it tries to crash
+        // onto whoever is within reach. `lunge_dir` latches so the slam lands a single
+        // time.
+        if e.lunge > 0.0 {
+            e.lunge = (e.lunge - TICK_DT).max(0.0);
+            e.vy = (e.vy + GRAVITY * TICK_DT).min(MAX_FALL);
+            let (nx, _) = move_x(&mut world, e.x, e.y, w, h, e.vx * TICK_DT);
+            let (ny, on_ground) = move_y(&mut world, nx, e.y, w, h, e.vy * TICK_DT);
+            e.x = nx;
+            e.y = ny;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: nx,
+                y: ny,
+                vx: e.vx,
+                vy: e.vy,
+            });
+            // `move_y` reports "blocked" for a ceiling bonk on the way up too, so only a
+            // block while **descending** counts as touching down: that's the slam landing.
+            if on_ground && e.vy >= 0.0 && e.lunge_dir == 0.0 {
+                e.lunge_dir = 1.0;
+                e.lunge = 0.0;
+                e.vx = 0.0;
+                e.vy = 0.0;
+                let scx = nx + w * 0.5;
+                if let Some(p) = nearest_prey(
+                    &hostile_players,
+                    &knight_boxes,
+                    scx,
+                    ny + h * 0.5,
+                    GARGOYLE_AGGRO,
+                ) && aabb_gap(nx, ny, w, h, p.x, p.y, p.w, p.h) <= GARGOYLE_SLAM_REACH
+                {
+                    let kdir = if p.x + p.w * 0.5 >= scx { 1.0 } else { -1.0 };
+                    hit_prey(
+                        &mut bites,
+                        &mut knight_hits,
+                        &p,
+                        (kdir * KNOCKBACK_X, -KNOCKBACK_Y),
+                        GARGOYLE_SLAM_DAMAGE,
+                    );
+                }
+            } else if on_ground {
+                // Clipped a ceiling mid-leap: stop rising so gravity can pull it back down.
+                e.vy = 0.0;
+            }
+            continue;
+        }
+
+        // Airborne from an ordinary hop: fly the arc out under gravity, each axis stopped
+        // by walls. It settles only when it comes down on a floor — a ceiling bonk on the
+        // way up (also reported as "blocked") just halts the rise so it starts to fall.
+        if !grounded(&mut world, e.x, e.y, w, h) {
+            e.vy = (e.vy + GRAVITY * TICK_DT).min(MAX_FALL);
+            let (nx, _) = move_x(&mut world, e.x, e.y, w, h, e.vx * TICK_DT);
+            let (ny, on_ground) = move_y(&mut world, nx, e.y, w, h, e.vy * TICK_DT);
+            e.x = nx;
+            e.y = ny;
+            if on_ground && e.vy >= 0.0 {
+                e.vx = 0.0;
+                e.vy = 0.0;
+            } else if on_ground {
+                e.vy = 0.0;
+            }
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: nx,
+                y: ny,
+                vx: e.vx,
+                vy: e.vy,
+            });
+            continue;
+        }
+
+        // Grounded and gathered: decide whether to slam, hop, or keep sitting.
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+        let target = nearest_prey(&hostile_players, &knight_boxes, scx, scy, GARGOYLE_AGGRO);
+
+        // A player within slam range and off cooldown: leap at them, aiming the arc to
+        // come down on top of them.
+        if let Some(ref p) = target
+            && e.attack_cd <= 0.0
+            && aabb_gap(e.x, e.y, w, h, p.x, p.y, p.w, p.h) <= GARGOYLE_SLAM_RANGE
+        {
+            let dx = (p.x + p.w * 0.5) - scx;
+            e.lunge = crate::entity::GARGOYLE_SLAM_TIME;
+            e.lunge_dir = 0.0;
+            e.attack_cd = GARGOYLE_ATTACK_INTERVAL + crate::entity::GARGOYLE_SLAM_TIME;
+            e.vy = GARGOYLE_SLAM_VY;
+            e.vx = (dx / GARGOYLE_SLAM_AIRTIME).clamp(-GARGOYLE_SLAM_MAX_VX, GARGOYLE_SLAM_MAX_VX);
+            broadcasts.push(ServerMessage::EntityLunging { id });
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: e.x,
+                y: e.y,
+                vx: e.vx,
+                vy: e.vy,
+            });
+            continue;
+        }
+
+        // Otherwise spring an ordinary hop toward the target (or across its home patch)
+        // once the sit timer is up; between hops it stays gathered and still. The launch
+        // is applied **this tick** (a gravity step then a move) so it leaves the ground
+        // immediately — otherwise it would still read as grounded next tick and the
+        // gathered-between-hops branch below would cancel the spring before it lifted off.
+        if e.flee <= 0.0 {
+            // Persist the roaming heading in `lunge_dir` (free while not slamming) so a
+            // wandering gargoyle keeps drifting one way instead of jittering in place.
+            let dir = match target {
+                Some(ref p) if p.x + p.w * 0.5 < scx => -1.0,
+                Some(_) => 1.0,
+                None => wander_dir(scx, e.lunge_dir, home),
+            };
+            e.lunge_dir = dir;
+            e.flee = GARGOYLE_HOP_INTERVAL;
+            let vx = dir * GARGOYLE_HOP_VX;
+            let vy = (GARGOYLE_HOP_VY + GRAVITY * TICK_DT).min(MAX_FALL);
+            let (nx, _) = move_x(&mut world, e.x, e.y, w, h, vx * TICK_DT);
+            let (ny, on_ground) = move_y(&mut world, nx, e.y, w, h, vy * TICK_DT);
+            e.x = nx;
+            e.y = ny;
+            e.vx = vx;
+            e.vy = if on_ground { 0.0 } else { vy };
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: nx,
+                y: ny,
+                vx: e.vx,
+                vy: e.vy,
+            });
+            continue;
+        }
+
+        // Gathered between hops: hold still, gravity keeping it pinned to the floor.
+        e.vx = 0.0;
+        e.vy = (e.vy + GRAVITY * TICK_DT).min(MAX_FALL);
+        let (ny, on_ground) = move_y(&mut world, e.x, e.y, w, h, e.vy * TICK_DT);
+        e.y = ny;
+        if on_ground {
+            e.vy = 0.0;
+        }
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: e.x,
+            y: ny,
+            vx: 0.0,
+            vy: e.vy,
+        });
+    }
+
     // Demon king: the arena boss. It opens the fight **on foot**, striding after the
     // player across the floor, and only once it is wounded past two-thirds health does
     // it take to the air — thereafter it FLIES after the player like an enchanted demon,
@@ -10860,6 +11122,7 @@ fn is_hostile(kind: &EntityKind) -> bool {
             | EntityKind::DarkMusketeer
             | EntityKind::Dragon
             | EntityKind::Minotaur
+            | EntityKind::Gargoyle
             | EntityKind::DemonKing
             | EntityKind::Twinscale
     )
@@ -11682,6 +11945,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             Dimension::Underworld => {
                                 maybe_spawn_charred_skeletons(&shared, cx, cy);
                                 maybe_spawn_demons(&shared, cx, cy);
+                                maybe_spawn_gargoyles(&shared, cx, cy);
                                 maybe_spawn_orcs(&shared, cx, cy);
                                 maybe_spawn_orc_mages(&shared, cx, cy);
                                 maybe_spawn_dragon(&shared, cx, cy);
@@ -12512,6 +12776,17 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         .get(target)
                         .is_some_and(|e| e.kind.is_white_dragon());
                     if is_white_dragon {
+                        continue;
+                    }
+                    // A gargoyle is hewn from stone: every weapon but a **pickaxe**
+                    // glances off its hide, dealing nothing. Only a mining tool chips it
+                    // apart, so a swing with anything else (or a bare fist) just bounces.
+                    let is_gargoyle = shared
+                        .entities(dim)
+                        .lock()
+                        .get(target)
+                        .is_some_and(|e| matches!(e.kind, EntityKind::Gargoyle));
+                    if is_gargoyle && !crate::block::is_pickaxe(held) {
                         continue;
                     }
                     // Validate reach and, if good, compute the knockback shoving

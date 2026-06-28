@@ -353,6 +353,29 @@ pub static MINOTAUR_ATTACK_SPRITE: SpriteDef = SpriteDef {
     fps: 6.0,
 };
 
+/// Gargoyle: a squat stone fiend of the underworld. Its five-frame cycle is its
+/// hop — it gathers and springs rather than walks — stepped by the client off the
+/// shared clock while it is airborne between landings.
+pub static GARGOYLE_SPRITE: SpriteDef = SpriteDef {
+    name: "gargoyle",
+    frame_w: 10,
+    frame_h: 15,
+    frames: 5,
+    fps: 8.0,
+};
+
+/// Gargoyle jump-slam: the one-shot leap-and-crash the gargoyle plays for its slam
+/// attack — it gathers, springs toward the player, then comes down on them — stepped
+/// by its attack (lunge) timer rather than the hop clock. Lives in the
+/// `gargoyle/attack` subdirectory (its `name` doubles as that path).
+pub static GARGOYLE_ATTACK_SPRITE: SpriteDef = SpriteDef {
+    name: "gargoyle/attack",
+    frame_w: 12,
+    frame_h: 15,
+    frames: 6,
+    fps: 6.0,
+};
+
 /// Ash twister: a whirling column of underworld ash. A single drifting frame
 /// (the swirl reads the same however it is rotated), 16x16 like its sheet.
 pub static ASH_TWISTER_SPRITE: SpriteDef = SpriteDef {
@@ -595,7 +618,7 @@ pub static TWINSCALE_SPRITE: SpriteDef = SpriteDef {
 };
 
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 56] {
+pub fn all() -> [&'static SpriteDef; 58] {
     [
         &PLAYER_SPRITE,
         &BOAT_SPRITE,
@@ -629,6 +652,8 @@ pub fn all() -> [&'static SpriteDef; 56] {
         &ORC_SLAM_SPRITE,
         &MINOTAUR_SPRITE,
         &MINOTAUR_ATTACK_SPRITE,
+        &GARGOYLE_SPRITE,
+        &GARGOYLE_ATTACK_SPRITE,
         &ASH_TWISTER_SPRITE,
         &ORC_MAGE_SPRITE,
         &ORC_MAGE_CAST_SPRITE,
@@ -700,6 +725,9 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         // timer; this walk sheet is its plodding hulk — and, sped up by the scene
         // builder when it charges, doubles as its head-down headbutt sprint.
         EntityKind::Minotaur => &MINOTAUR_SPRITE,
+        // A gargoyle's jump-slam pose is handled by the scene builder off its lunge
+        // timer; this hop sheet is its base (it never walks — it sits, then springs).
+        EntityKind::Gargoyle => &GARGOYLE_SPRITE,
         EntityKind::AshTwister => &ASH_TWISTER_SPRITE,
         // An orc mage's cast pose is handled by the scene builder off its lunge
         // timer; this standing frame is its idle/shepherding pose.

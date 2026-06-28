@@ -183,6 +183,10 @@ sprites!(
     // client when it barrels into a headbutt charge) plus a one-shot jump-slam pose.
     "minotaur" => [0, 1, 2, 3],
     "minotaur/attack" => [0, 1, 2, 3, 4, 5],
+    // The gargoyle: a five-frame hopping cycle (it never walks) plus a one-shot
+    // jump-slam pose it plays as it leaps at the player and crashes down.
+    "gargoyle" => [0, 1, 2, 3, 4],
+    "gargoyle/attack" => [0, 1, 2, 3, 4, 5],
     "ash_twister" => [0],
     "orc_mage" => [0],
     "orc_mage/cast" => [0],

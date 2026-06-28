@@ -84,6 +84,7 @@ nav:
       - Snake: entities/snake.md
       - Skeletons: entities/skeletons.md
       - Demons: entities/demons.md
+      - Gargoyle: entities/gargoyle.md
       - Orcs: entities/orcs.md
       - Necromancer & Skulls: entities/necromancer.md
       - Mage: entities/mage.md

@@ -55,6 +55,9 @@ pub const CHARRED_SKELETON_SIZE: (f32, f32) = (11.0, 16.0);
 /// Collision/draw size (width, height) in pixels of a demon — a small, hunched
 /// underworld fiend, shorter than a skeleton, matching its art's proportions.
 pub const DEMON_SIZE: (f32, f32) = (10.0, 15.0);
+/// Collision/draw size (width, height) in pixels of a gargoyle — a small, squat
+/// stone fiend, the same hunched build as the demon it once guarded a king beside.
+pub const GARGOYLE_SIZE: (f32, f32) = (10.0, 15.0);
 /// Collision/draw size (width, height) in pixels of an enchanted demon — a demon
 /// an [`EntityKind::OrcMage`] has empowered. Drawn from the same proportions as the
 /// ordinary demon, lit with the mage's purple glamour.
@@ -225,6 +228,15 @@ pub const DRAGON_ATTACK_TIME: f32 = 0.5;
 /// barrels in on its walk sheet, sped up by its speed) so it doesn't use this timer.
 pub const MINOTAUR_SLAM_TIME: f32 = 1.4;
 
+/// Seconds a gargoyle's **jump-slam** plays end to end: it gathers itself, leaps
+/// toward the player, and crashes down trying to land on them. Shared by both sides
+/// so the server's slam timing and the client's attack-animation playback agree. The
+/// blow lands when it touches down (see [`crate::server`]'s gargoyle handling). Rides
+/// on the [`Entity::lunge`] timer like the minotaur's slam, with [`Entity::lunge_dir`]
+/// doubling as a "landing already dealt" latch. A gargoyle's ordinary hopping takes no
+/// wind-up pose, so it doesn't use this timer.
+pub const GARGOYLE_SLAM_TIME: f32 = 1.0;
+
 /// Seconds a snake spends writhing through its death animation when killed,
 /// before it despawns. Shared by both sides so the server's despawn timing and
 /// the client's animation playback agree.
@@ -271,6 +283,11 @@ pub const CHARRED_SKELETON_MAX_HEALTH: i32 = 36;
 /// survives by keeping its distance and pelting the player with fireballs rather
 /// than wading into melee.
 pub const DEMON_MAX_HEALTH: i32 = 28;
+/// Maximum health of a gargoyle, in hit points. A touch sturdier than the demon it
+/// once stood guard beside — it is hewn from stone, after all — and, being stone, it
+/// can be cracked open only with a **pickaxe** (any other weapon glances off; see
+/// [`crate::block::is_pickaxe`]).
+pub const GARGOYLE_MAX_HEALTH: i32 = 32;
 /// Maximum health of an enchanted demon, in hit points. An [`EntityKind::OrcMage`]'s
 /// glamour makes it sturdier than the ordinary demon it was — and the enchant heals
 /// it to this new full as it is empowered.
@@ -667,6 +684,17 @@ pub enum EntityKind {
     /// scales, gold and tungsten) into an [`crate::block::ARENA_KEY`]. Server-simulated.
     /// Appended last so older saves and the wire format keep their variant indices.
     Minotaur,
+    /// A gargoyle: a squat **stone** fiend of the underworld. Hewn to guard the
+    /// [`EntityKind::DemonKing`], a roving few drifted off into the charred dark and
+    /// never returned to him. It moves **only by hopping** — there is no walk, it sits
+    /// then springs in short arcs — and it spawns in the charred expanse a little more
+    /// rarely than the [`EntityKind::Demon`]. When a player strays near it commits to a
+    /// **jump-slam**: it leaps toward them and crashes down, trying to **land on them**
+    /// for heavy damage. Being stone, it is **impervious to every weapon but a
+    /// pickaxe** — only mining tools chip it apart (see [`crate::block::is_pickaxe`]).
+    /// Server-simulated. Appended last so older saves and the wire format keep their
+    /// variant indices.
+    Gargoyle,
 }
 
 impl EntityKind {
@@ -711,6 +739,7 @@ impl EntityKind {
             EntityKind::Bullet | EntityKind::FriendlyBullet => BULLET_SIZE,
             EntityKind::Twinscale => TWINSCALE_SIZE,
             EntityKind::Minotaur => MINOTAUR_SIZE,
+            EntityKind::Gargoyle => GARGOYLE_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -881,6 +910,7 @@ impl EntityKind {
             EntityKind::Bullet | EntityKind::FriendlyBullet => 1,
             EntityKind::Twinscale => TWINSCALE_MAX_HEALTH,
             EntityKind::Minotaur => MINOTAUR_MAX_HEALTH,
+            EntityKind::Gargoyle => GARGOYLE_MAX_HEALTH,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }

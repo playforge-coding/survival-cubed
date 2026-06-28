@@ -1135,6 +1135,7 @@ impl App {
                             EntityKind::Dragon => crate::entity::DRAGON_ATTACK_TIME,
                             EntityKind::Twinscale => crate::entity::TWINSCALE_ATTACK_TIME,
                             EntityKind::Minotaur => crate::entity::MINOTAUR_SLAM_TIME,
+                            EntityKind::Gargoyle => crate::entity::GARGOYLE_SLAM_TIME,
                             _ => crate::entity::SNAKE_LUNGE_TIME,
                         };
                     }
@@ -3270,6 +3271,9 @@ impl App {
                             if ui.button("Demon").clicked() {
                                 spawn = Some(EntityKind::Demon);
                             }
+                            if ui.button("Gargoyle").clicked() {
+                                spawn = Some(EntityKind::Gargoyle);
+                            }
                             if ui.button("Orc").clicked() {
                                 spawn = Some(EntityKind::Orc);
                             }
@@ -3950,6 +3954,14 @@ impl App {
                 // leaps, hangs at the apex, then crashes down.
                 let d = &sprite::MINOTAUR_ATTACK_SPRITE;
                 let progress = 1.0 - (e.lunge / crate::entity::MINOTAUR_SLAM_TIME).clamp(0.0, 1.0);
+                let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
+                (d, frame)
+            } else if e.lunge > 0.0 && matches!(e.kind, EntityKind::Gargoyle) {
+                // A slamming gargoyle plays its one-shot jump-slam (frame stepped by the
+                // attack timer, which rides on the same `lunge` field): it gathers,
+                // springs toward the player, then crashes down on them.
+                let d = &sprite::GARGOYLE_ATTACK_SPRITE;
+                let progress = 1.0 - (e.lunge / crate::entity::GARGOYLE_SLAM_TIME).clamp(0.0, 1.0);
                 let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
                 (d, frame)
             } else if matches!(e.kind, EntityKind::Minotaur) {
