@@ -72,6 +72,7 @@ nav:
       - Overview: entities/index.md
       - The Player: entities/player.md
       - Chicken & Goat: entities/livestock.md
+      - Farmer: entities/farmer.md
       - Cat & Puppy: entities/pets.md
       - Horse: entities/horse.md
       - Knight: entities/knight.md

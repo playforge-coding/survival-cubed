@@ -93,6 +93,32 @@ const PUPPY_DAMAGE: i32 = 6;
 const PUPPY_ATTACK_INTERVAL: f32 = 0.8;
 /// Hit points a puppy recovers each time it eats a dropped piece of raw meat.
 const PUPPY_EAT_HEAL: i32 = 3;
+
+/// Ambling speed of a farmer going about its rounds, in pixels/second — a touch
+/// brisker than a goat as it crosses the plains between its quarry.
+const FARMER_SPEED: f32 = 30.0;
+/// Sprinting speed of a farmer bolting from a monster, in pixels/second — fast
+/// enough to outrun most of what hunts it, like a panicked chicken.
+const FARMER_FLEE_SPEED: f32 = 64.0;
+/// How far (px) a farmer notices a chicken or goat to hunt, or raw meat to collect.
+const FARMER_AGGRO: f32 = 200.0;
+/// How close (px) a monster must come before a farmer drops everything and flees it.
+/// Wider than its hunting range, so it spots danger before it spots dinner.
+const FARMER_FLEE_RANGE: f32 = 220.0;
+/// Maximum gap (px between AABBs) at which a farmer lands a blow on the animal it hunts.
+const FARMER_ATTACK_RANGE: f32 = 4.0;
+/// Maximum gap (px between AABBs) at which a farmer reaches a meat drop to collect it.
+const FARMER_EAT_REACH: f32 = 3.0;
+/// Damage a farmer deals per strike — enough to fell a chicken in two blows and a
+/// goat in three.
+const FARMER_DAMAGE: i32 = 6;
+/// Seconds a farmer waits between strikes.
+const FARMER_ATTACK_INTERVAL: f32 = 0.8;
+/// Hit points a farmer recovers each time it collects (and eats) a piece of raw meat.
+const FARMER_EAT_HEAL: i32 = 3;
+/// Percent chance that a fresh plains surface chunk seeds a wandering farmer — as
+/// rare a sight as the knights and musketeers that share the plains.
+const FARMER_CHUNK_CHANCE: u32 = 4;
 /// Shambling speed of a zombie, in pixels/second — noticeably slower than a
 /// slime, so a player can outrun one but is in trouble if cornered.
 const ZOMBIE_SPEED: f32 = 16.0;
@@ -2365,6 +2391,66 @@ impl Shared {
             self.broadcast_dim(dim, ServerMessage::EntitySpawn { entity });
         }
         self.send_inventory(id);
+    }
+
+    /// React to player `id` offering held item `held` to the friendly farmer `target`:
+    /// if it is an [`IRON_INGOT`](crate::block::IRON_INGOT) and the player is in reach,
+    /// spend one ingot and trade back a windfall of food — either **eight**
+    /// [apples](crate::block::APPLE) or **four** [cooked meat](crate::block::COOKED_MEAT),
+    /// picked at random (the farmer hands over whatever it feels like parting with). A
+    /// no-op (no ingot spent) if the target isn't a farmer in reach or the player holds
+    /// no ingot. Anything that doesn't fit the player's inventory is left behind.
+    fn try_trade_farmer(&self, id: EntityId, target: EntityId, held: BlockId, dim: Dimension) {
+        if held != crate::block::IRON_INGOT {
+            return;
+        }
+        let traded = {
+            let mut invs = self.inventories.lock();
+            let entities = self.entities(dim).lock();
+            // The target must still be a farmer within the trader's reach.
+            let in_reach = match (entities.get(id), entities.get(target)) {
+                (Some(a), Some(b)) => {
+                    b.kind.is_farmer()
+                        && aabb_gap(
+                            a.x,
+                            a.y,
+                            a.size().0,
+                            a.size().1,
+                            b.x,
+                            b.y,
+                            b.size().0,
+                            b.size().1,
+                        ) <= PLAYER_ATTACK_REACH
+                }
+                _ => false,
+            };
+            if !in_reach {
+                return;
+            }
+            // Spend one iron ingot; bail (without trading) if they hold none.
+            let Some(inv) = invs.get_mut(&id) else {
+                return;
+            };
+            if inv.count(crate::block::IRON_INGOT) == 0 {
+                return;
+            }
+            inv.remove(crate::block::IRON_INGOT, 1);
+            // Pick the farmer's offer at random. Determinism doesn't matter here, only
+            // cheap variety from trade to trade — so mix a freshly allocated id (which
+            // marches on with every spawn) rather than keep a live rng handle.
+            let mut r = self.alloc_id().wrapping_mul(2_654_435_761);
+            r ^= r >> 15;
+            let (item, count) = if r & 1 == 0 {
+                (crate::block::APPLE, 8)
+            } else {
+                (crate::block::COOKED_MEAT, 4)
+            };
+            inv.add(item, count);
+            true
+        };
+        if traded {
+            self.send_inventory(id);
+        }
     }
 
     /// React to player `id` clicking the *tamed* pet `target`: if `id` is the pet's
@@ -4853,6 +4939,45 @@ fn maybe_spawn_musketeers(shared: &Shared, cx: i32, cy: i32) {
     shared.broadcast_dim(Dimension::Overworld, ServerMessage::EntitySpawn { entity });
 }
 
+/// Possibly seed a wandering farmer onto a freshly generated **plains** chunk, the
+/// friendly folk that share the plains with the knights and horses but cull the
+/// livestock for a living (see [`FARMER_CHUNK_CHANCE`]). Deterministic per chunk via
+/// [`chunk_hash`] on its own salt range, so re-exploring the same terrain never
+/// double-spawns, and it runs independently of the other surface spawners.
+fn maybe_spawn_farmers(shared: &Shared, cx: i32, cy: i32) {
+    let world = shared.world(Dimension::Overworld).lock();
+    let seed = world.generator.seed();
+    if chunk_hash(seed, cx, cy, 680) % 100 >= FARMER_CHUNK_CHANCE {
+        return;
+    }
+
+    let base_x = cx * CHUNK_SIZE;
+    let chunk_top = cy * CHUNK_SIZE;
+    let chunk_bottom = chunk_top + CHUNK_SIZE;
+    let (_, h) = EntityKind::Farmer.size();
+
+    let lx = chunk_hash(seed, cx, cy, 681) % CHUNK_SIZE as u32;
+    let cell_x = base_x + lx as i32;
+    let surface = world.surface(cell_x);
+    if world.biome(cell_x) != Biome::Plains || surface < chunk_top || surface >= chunk_bottom {
+        return;
+    }
+    let id = shared.alloc_id();
+    let entity = Entity::new(
+        id,
+        EntityKind::Farmer,
+        cell_x as f32 * TILE_SIZE,
+        surface as f32 * TILE_SIZE - h,
+    );
+    drop(world);
+
+    shared
+        .entities(Dimension::Overworld)
+        .lock()
+        .insert(entity.clone());
+    shared.broadcast_dim(Dimension::Overworld, ServerMessage::EntitySpawn { entity });
+}
+
 /// Possibly seed snakes into a freshly generated chunk. Snakes are the desert's
 /// predators: they drop onto the sand of a **desert** surface chunk that actually
 /// holds this column's surface line, like the other surface critters. The
@@ -6266,14 +6391,16 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         .map(|e| e.id)
         .collect();
 
-    // Warriors — knights and musketeers, wild and recruited alike — as `(id, x, y, w, h)`,
-    // so hostile creatures can hunt a companion the same way they hunt a player. Snapped
-    // once up front: warriors that move later this tick (in their own loops) read a tick
-    // stale to the monster loops that run after, which is close enough for a chase
-    // heading and a reach check.
+    // The non-player prey monsters hunt, as `(id, x, y, w, h)`, so a hostile creature
+    // can chase one the same way it chases a player. This is the **warriors** — knights
+    // and musketeers, wild and recruited alike, which fight back — *and* the **farmers**,
+    // friendly bystanders that merely flee (their blows on monsters never come; they just
+    // make tempting quarry). Snapped once up front: anything that moves later this tick
+    // (in its own loop) reads a tick stale to the monster loops that run after, which is
+    // close enough for a chase heading and a reach check.
     let knight_boxes: Vec<(EntityId, f32, f32, f32, f32)> = entities
         .values()
-        .filter(|e| e.kind.is_warrior())
+        .filter(|e| e.kind.is_warrior() || e.kind.is_farmer())
         .map(|e| {
             let (w, h) = e.size();
             (e.id, e.x, e.y, w, h)
@@ -6979,6 +7106,173 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     }
     // Remove the raw-meat drops the puppies ate this tick.
     for mid in meat_eaten {
+        if entities.remove(mid).is_some() {
+            broadcasts.push(ServerMessage::EntityDespawn { id: mid });
+        }
+    }
+
+    // Farmers: friendly plains folk that make their living off the land's livestock.
+    // Each one flees the nearest monster if one is close (it's no fighter — monsters
+    // hunt it via the `knight_boxes` prey list, and it answers only with its legs),
+    // otherwise collects any raw meat that has dropped, otherwise hunts the nearest
+    // chicken or goat (charging in to strike it like a puppy hunts), and failing all
+    // that just ambles around its home patch like a goat.
+    //
+    // Snapshots taken before the loop so a farmer can pick a target without re-borrowing
+    // the entities map while one farmer is mutably held. (The livestock and monsters move
+    // later this tick, so their positions are a tick stale — close enough for a heading.)
+    let farmer_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Farmer))
+        .map(|e| e.id)
+        .collect();
+    let livestock: Vec<(EntityId, f32, f32, f32, f32)> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Chicken | EntityKind::Goat))
+        .map(|e| {
+            let (w, h) = e.size();
+            (e.id, e.x, e.y, w, h)
+        })
+        .collect();
+    let farmer_monsters: Vec<(EntityId, f32, f32, f32, f32)> = entities
+        .values()
+        .filter(|e| is_hostile(&e.kind))
+        .map(|e| {
+            let (w, h) = e.size();
+            (e.id, e.x, e.y, w, h)
+        })
+        .collect();
+    let farmer_meat: Vec<(EntityId, f32, f32, f32, f32)> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::DroppedItem { block, .. } if block == crate::block::RAW_MEAT))
+        .map(|e| {
+            let (w, h) = e.size();
+            (e.id, e.x, e.y, w, h)
+        })
+        .collect();
+    let mut farmer_meat_eaten: Vec<EntityId> = Vec::new();
+    for id in farmer_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+
+        // 1. Danger first: bolt away from the nearest monster within flee range, veering
+        //    the other way if an unclimbable wall blocks that escape (like a chicken).
+        if let Some((_, mx, _, mw, _)) = nearest_of(&farmer_monsters, scx, scy, FARMER_FLEE_RANGE) {
+            let away = if mx + mw * 0.5 < scx { 1.0 } else { -1.0 };
+            let dir = if blocked_ahead(&mut world, e.x, e.y, w, h, away) {
+                -away
+            } else {
+                away
+            };
+            let m = step_ground(
+                &mut world,
+                (e.x, e.y, w, h),
+                e.vy,
+                dir,
+                FARMER_FLEE_SPEED,
+                true,
+            );
+            e.x = m.x;
+            e.y = m.y;
+            e.vx = m.vx;
+            e.vy = m.vy;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: m.x,
+                y: m.y,
+                vx: m.vx,
+                vy: m.vy,
+            });
+            continue;
+        }
+
+        // 2. Collect raw meat on the ground: trot to it and gather it up (eating it for
+        //    its trouble, healing a little). Collected outright once within reach.
+        if let Some((mid, mx, my, mw, mh)) = nearest_of(&farmer_meat, scx, scy, FARMER_AGGRO) {
+            if aabb_gap(e.x, e.y, w, h, mx, my, mw, mh) <= FARMER_EAT_REACH {
+                farmer_meat_eaten.push(mid);
+                e.health = (e.health + FARMER_EAT_HEAL).min(e.max_health);
+                e.vx = 0.0;
+                broadcasts.push(ServerMessage::EntityHealth {
+                    id,
+                    health: e.health,
+                    max_health: e.max_health,
+                });
+                broadcasts.push(ServerMessage::EntityMoved {
+                    id,
+                    x: e.x,
+                    y: e.y,
+                    vx: 0.0,
+                    vy: e.vy,
+                });
+                continue;
+            }
+            let dir = if mx + mw * 0.5 < scx { -1.0 } else { 1.0 };
+            let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, FARMER_SPEED, true);
+            e.x = m.x;
+            e.y = m.y;
+            e.vx = m.vx;
+            e.vy = m.vy;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: m.x,
+                y: m.y,
+                vx: m.vx,
+                vy: m.vy,
+            });
+            continue;
+        }
+
+        // 3. Hunt the nearest chicken or goat: charge it and strike when in reach and off
+        //    cooldown (kicking off the swing animation on every client), felling it for
+        //    the meat it leaves behind.
+        if let Some((tid, tx, ty, tw, th)) = nearest_of(&livestock, scx, scy, FARMER_AGGRO) {
+            if e.attack_cd <= 0.0 && aabb_gap(e.x, e.y, w, h, tx, ty, tw, th) <= FARMER_ATTACK_RANGE
+            {
+                e.attack_cd = FARMER_ATTACK_INTERVAL;
+                let kdir = if tx + tw * 0.5 >= scx { 1.0 } else { -1.0 };
+                creature_hits.push((tid, (kdir * KNOCKBACK_X, -KNOCKBACK_Y), FARMER_DAMAGE));
+                broadcasts.push(ServerMessage::EntityLunging { id });
+            }
+            let dir = if tx + tw * 0.5 < scx { -1.0 } else { 1.0 };
+            let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, FARMER_SPEED, true);
+            e.x = m.x;
+            e.y = m.y;
+            e.vx = m.vx;
+            e.vy = m.vy;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: m.x,
+                y: m.y,
+                vx: m.vx,
+                vy: m.vy,
+            });
+            continue;
+        }
+
+        // 4. Nothing about: amble around the home patch like a goat.
+        let home = *e.home_x.get_or_insert(e.x);
+        let dir = wander_dir(scx, e.vx, home);
+        let m = step_ground(&mut world, (e.x, e.y, w, h), e.vy, dir, FARMER_SPEED, false);
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: m.vx,
+            vy: m.vy,
+        });
+    }
+    // Remove the raw-meat drops the farmers collected this tick.
+    for mid in farmer_meat_eaten {
         if entities.remove(mid).is_some() {
             broadcasts.push(ServerMessage::EntityDespawn { id: mid });
         }
@@ -11940,6 +12234,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                 maybe_spawn_horses(&shared, cx, cy);
                                 maybe_spawn_knights(&shared, cx, cy);
                                 maybe_spawn_musketeers(&shared, cx, cy);
+                                maybe_spawn_farmers(&shared, cx, cy);
                                 maybe_realize_structures(&shared, cx, cy);
                             }
                             Dimension::Underworld => {
@@ -12787,6 +13082,19 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                         .get(target)
                         .is_some_and(|e| matches!(e.kind, EntityKind::Gargoyle));
                     if is_gargoyle && !crate::block::is_pickaxe(held) {
+                        continue;
+                    }
+                    // A farmer is a friendly bystander: a swing never harms one. Offer it
+                    // an iron ingot instead and it trades back a windfall of food (apples
+                    // or cooked meat, its choice); any other swing simply does nothing.
+                    // Either way the damage path is skipped.
+                    let is_farmer = shared
+                        .entities(dim)
+                        .lock()
+                        .get(target)
+                        .is_some_and(|e| e.kind.is_farmer());
+                    if is_farmer {
+                        shared.try_trade_farmer(id, target, held, dim);
                         continue;
                     }
                     // Validate reach and, if good, compute the knockback shoving

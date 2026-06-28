@@ -43,6 +43,10 @@ A calm grazer of the **mountains**, where it shares the slopes with hostile
 [slimes](slime.md). Tougher than a chicken and worth twice the meat, but it won't
 run from you — it just wanders.
 
+!!! note "You aren't the only hunter"
+    The wandering [farmer](farmer.md) preys on chickens and goats too — it culls
+    them for their meat, so livestock near a farmer may not last long.
+
 ## Lore
 
 *To be written.*

@@ -23,6 +23,7 @@ Projectiles (bones, fireballs) are the exception, flying at 130–170 px/s.
 | ------------------------------ | ------ | --------------------------------- |
 | [The Player](player.md)        | 20     | You                               |
 | [Chicken & Goat](livestock.md) | 8 / 16 | Passive livestock — drop raw meat |
+| [Farmer](farmer.md)            | 20     | Hunts livestock; trades food for iron |
 | [Cat & Puppy](pets.md)         | 8 / 14 | Tameable pets                     |
 | [Horse](horse.md)              | 30     | Tameable mount                    |
 | [Knight](knight.md)            | 40     | Recruitable man-at-arms           |

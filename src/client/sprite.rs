@@ -68,6 +68,29 @@ pub static GOAT_SPRITE: SpriteDef = SpriteDef {
     fps: 6.0,
 };
 
+/// Farmer: a friendly plains humanoid that strides along on its walk cycle as it
+/// goes about culling the livestock — the same compact build as the knight.
+pub static FARMER_SPRITE: SpriteDef = SpriteDef {
+    name: "farmer",
+    frame_w: 10,
+    frame_h: 13,
+    frames: 5,
+    fps: 8.0,
+};
+
+/// Farmer attack: the one-shot swing played off the farmer's attack (lunge) timer
+/// when it strikes a chicken or goat. The swing sheet blooms a little beyond the
+/// collision box, so — like the knight — it is drawn centred on the farmer's box and
+/// resting on its feet. Lives in the `farmer/attack` subdirectory (its `name` is that
+/// path).
+pub static FARMER_ATTACK_SPRITE: SpriteDef = SpriteDef {
+    name: "farmer/attack",
+    frame_w: 13,
+    frame_h: 13,
+    frames: 3,
+    fps: 8.0,
+};
+
 /// Cat: a small forest critter that pads along, tail swaying, when it moves.
 pub static CAT_SPRITE: SpriteDef = SpriteDef {
     name: "cat",
@@ -618,13 +641,15 @@ pub static TWINSCALE_SPRITE: SpriteDef = SpriteDef {
 };
 
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 58] {
+pub fn all() -> [&'static SpriteDef; 60] {
     [
         &PLAYER_SPRITE,
         &BOAT_SPRITE,
         &SLIME_SPRITE,
         &CHICKEN_SPRITE,
         &GOAT_SPRITE,
+        &FARMER_SPRITE,
+        &FARMER_ATTACK_SPRITE,
         &CAT_SPRITE,
         &CAT_SIT_SPRITE,
         &PUPPY_SPRITE,
@@ -688,6 +713,9 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         EntityKind::Slime => &SLIME_SPRITE,
         EntityKind::Chicken => &CHICKEN_SPRITE,
         EntityKind::Goat => &GOAT_SPRITE,
+        // A farmer's swing pose is handled by the scene builder off its lunge timer;
+        // this walk sheet is its base, as it ambles its rounds.
+        EntityKind::Farmer => &FARMER_SPRITE,
         // A sitting cat shows its one-frame resting pose; otherwise the walk sheet.
         EntityKind::Cat { sitting: true, .. } => &CAT_SIT_SPRITE,
         EntityKind::Cat { .. } => &CAT_SPRITE,

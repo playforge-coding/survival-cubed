@@ -148,6 +148,10 @@ sprites!(
     "slime" => [0, 1, 2, 3],
     "chicken" => [0, 1, 2, 3],
     "goat" => [0, 1, 2, 3],
+    // The farmer: a five-frame walk cycle plus a one-shot swing it plays as it
+    // strikes the livestock it culls (in the `farmer/attack` subdirectory).
+    "farmer" => [0, 1, 2, 3, 4],
+    "farmer/attack" => [0, 1, 2],
     "cat" => [0, 1, 2, 3],
     "cat/sit" => [0],
     "puppy" => [0, 1, 2, 3],

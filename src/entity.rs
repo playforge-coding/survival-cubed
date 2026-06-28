@@ -39,6 +39,9 @@ pub const PUPPY_SIZE: (f32, f32) = (18.0, 13.0);
 /// Collision/draw size (width, height) in pixels of a horse — a tall, sturdy
 /// grazer a touch larger than a goat, matching its art's proportions.
 pub const HORSE_SIZE: (f32, f32) = (17.0, 14.0);
+/// Collision/draw size (width, height) in pixels of a farmer — a friendly plains
+/// humanoid, the same compact build as the [`KNIGHT_SIZE`] man-at-arms.
+pub const FARMER_SIZE: (f32, f32) = (10.0, 13.0);
 /// Collision/draw size (width, height) in pixels of a zombie.
 pub const ZOMBIE_SIZE: (f32, f32) = (14.0, 19.0);
 /// Collision/draw size (width, height) in pixels of a spider — low and wide.
@@ -197,6 +200,14 @@ pub const MAGE_CAST_TIME: f32 = 0.8;
 /// damage is dealt server-side on the [`Entity::attack_cd`] cadence.
 pub const KNIGHT_ATTACK_TIME: f32 = 0.45;
 
+/// Seconds a farmer's attack swing animation plays as it strikes an animal. Like the
+/// knight swing it rides on the [`Entity::lunge`] timer: the server kicks it off
+/// (broadcasting [`crate::protocol::ServerMessage::EntityLunging`]) each time the
+/// farmer lands a blow on a chicken or goat, and the client plays the attack sheet for
+/// this long. Purely cosmetic — the damage is dealt server-side on the
+/// [`Entity::attack_cd`] cadence.
+pub const FARMER_ATTACK_TIME: f32 = 0.45;
+
 /// Seconds a musketeer's (or dark musketeer's) firing animation plays. Like the
 /// knight swing it rides on the [`Entity::lunge`] timer: the server kicks it off
 /// (broadcasting [`crate::protocol::ServerMessage::EntityLunging`]) each time the
@@ -261,6 +272,10 @@ pub const PUPPY_MAX_HEALTH: i32 = 14;
 /// like the cat and puppy, a tamed horse that dies simply returns to its owner's
 /// respawn point rather than being gone for good.
 pub const HORSE_MAX_HEALTH: i32 = 30;
+/// Maximum health of a farmer, in hit points. A sturdy plains-dweller — hardier
+/// than the animals it culls, but no fighter: it flees monsters rather than
+/// trading blows, so it lives or dies by its legs.
+pub const FARMER_MAX_HEALTH: i32 = 20;
 /// Maximum health of a zombie, in hit points. Far tougher than anything else
 /// that walks the surface — it soaks up many hits before going down.
 pub const ZOMBIE_MAX_HEALTH: i32 = 40;
@@ -695,6 +710,18 @@ pub enum EntityKind {
     /// Server-simulated. Appended last so older saves and the wire format keep their
     /// variant indices.
     Gargoyle,
+    /// A farmer: a friendly humanoid that wanders the **plains** and makes its living
+    /// off the land's livestock. It hunts down nearby [`EntityKind::Chicken`]s and
+    /// [`EntityKind::Goat`]s — charging in to bite them like a [`EntityKind::Puppy`]
+    /// does — then trots over to the raw meat they drop and **collects** it. It is no
+    /// warrior, though: it has no quarrel with players (who can never strike it) and
+    /// **flees** from any monster that strays near, while monsters hunt it as they
+    /// would a player or a knight. Offer a farmer an **iron ingot** and it trades back
+    /// a windfall of food — either eight [apples](crate::block::APPLE) or four
+    /// [cooked meat](crate::block::COOKED_MEAT), whichever it feels like. Native to the
+    /// plains. Server-simulated. Appended last so older saves and the wire format keep
+    /// their variant indices.
+    Farmer,
 }
 
 impl EntityKind {
@@ -740,6 +767,7 @@ impl EntityKind {
             EntityKind::Twinscale => TWINSCALE_SIZE,
             EntityKind::Minotaur => MINOTAUR_SIZE,
             EntityKind::Gargoyle => GARGOYLE_SIZE,
+            EntityKind::Farmer => FARMER_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -809,6 +837,14 @@ impl EntityKind {
     /// exempt from distance despawn, following its owner, and rideable.
     pub fn is_white_dragon(&self) -> bool {
         matches!(self, EntityKind::WhiteDragon { .. })
+    }
+
+    /// Whether this is a farmer — the friendly plains humanoid that culls livestock
+    /// and trades food for iron. Like a pet it is sacrosanct to players (a swing never
+    /// harms one), but it is no companion: it has no owner, flees monsters rather than
+    /// fighting, and despawns for distance like the animals it hunts.
+    pub fn is_farmer(&self) -> bool {
+        matches!(self, EntityKind::Farmer)
     }
 
     /// Whether this is a tameable companion (a cat, a puppy, or a horse). Pets share
@@ -911,6 +947,7 @@ impl EntityKind {
             EntityKind::Twinscale => TWINSCALE_MAX_HEALTH,
             EntityKind::Minotaur => MINOTAUR_MAX_HEALTH,
             EntityKind::Gargoyle => GARGOYLE_MAX_HEALTH,
+            EntityKind::Farmer => FARMER_MAX_HEALTH,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }

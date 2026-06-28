@@ -1126,6 +1126,7 @@ impl App {
                             EntityKind::OrcMage => crate::entity::ORC_MAGE_CAST_TIME,
                             EntityKind::Mage { .. } => crate::entity::MAGE_CAST_TIME,
                             EntityKind::Knight { .. } => crate::entity::KNIGHT_ATTACK_TIME,
+                            EntityKind::Farmer => crate::entity::FARMER_ATTACK_TIME,
                             EntityKind::Musketeer { .. } | EntityKind::DarkMusketeer => {
                                 crate::entity::MUSKETEER_ATTACK_TIME
                             }
@@ -3235,6 +3236,9 @@ impl App {
                             if ui.button("Goat").clicked() {
                                 spawn = Some(EntityKind::Goat);
                             }
+                            if ui.button("Farmer").clicked() {
+                                spawn = Some(EntityKind::Farmer);
+                            }
                             if ui.button("Cat").clicked() {
                                 spawn = Some(EntityKind::Cat {
                                     owner: None,
@@ -3848,6 +3852,48 @@ impl App {
                 let frame = if attacking {
                     let progress =
                         1.0 - (e.lunge / crate::entity::MUSKETEER_ATTACK_TIME).clamp(0.0, 1.0);
+                    ((progress * def.frames as f32) as u32).min(def.frames - 1)
+                } else {
+                    sprite::frame_index(e.vx.abs() > 1.0, self.anim_time, def)
+                };
+                let (sw, sh) = (def.frame_w as f32, def.frame_h as f32);
+                let facing = g.facing.get(&e.id).copied().unwrap_or(true);
+                tiles.push(entity_instance(
+                    self.atlas.sprite_frame(def.name, frame),
+                    e.x + (w - sw) * 0.5,
+                    e.y + h - sh,
+                    sw,
+                    sh,
+                    facing,
+                    flash_tint(tint, e.hit_flash),
+                ));
+                if e.health < e.max_health && e.max_health > 0 {
+                    push_health_bar(
+                        &mut tiles,
+                        self.atlas.white(),
+                        e.x,
+                        e.y,
+                        w,
+                        e.health,
+                        e.max_health,
+                    );
+                }
+                continue;
+            }
+            // A farmer has two poses: walking, or mid-swing as it strikes an animal
+            // (its attack animation rides on the `lunge` timer). The swing sheet blooms
+            // a little beyond the collision box, so — like the knight — it is drawn
+            // centred on the farmer's box and resting on its feet.
+            if matches!(e.kind, EntityKind::Farmer) {
+                let attacking = e.lunge > 0.0;
+                let def = if attacking {
+                    &sprite::FARMER_ATTACK_SPRITE
+                } else {
+                    &sprite::FARMER_SPRITE
+                };
+                let frame = if attacking {
+                    let progress =
+                        1.0 - (e.lunge / crate::entity::FARMER_ATTACK_TIME).clamp(0.0, 1.0);
                     ((progress * def.frames as f32) as u32).min(def.frames - 1)
                 } else {
                     sprite::frame_index(e.vx.abs() > 1.0, self.anim_time, def)
