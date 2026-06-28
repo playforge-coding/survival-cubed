@@ -38,6 +38,9 @@ jobs:
       - name: Install Zensical
         run: pip install zensical==0.0.46
 
+      - name: Download self-hosted fonts
+        run: python scripts/fetch-fonts.py
+
       - name: Build site
         run: zensical build --strict
 
