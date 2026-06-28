@@ -975,6 +975,10 @@ pub struct RunningServer {
     /// [`RunningServer::advertise`]. Dropped (unregistering the service) when
     /// the server is.
     _discovery: Option<crate::discovery::LanAdvertiser>,
+    /// Live UPnP port forwarding, if this server opted in via
+    /// [`RunningServer::forward_port`]. Dropped (removing the router mapping)
+    /// when the server is.
+    _upnp: Option<crate::upnp::PortForward>,
 }
 
 impl RunningServer {
@@ -988,6 +992,15 @@ impl RunningServer {
             Ok(a) => self._discovery = Some(a),
             Err(e) => log::warn!("LAN discovery unavailable: {e:#}"),
         }
+    }
+
+    /// Ask the local router to forward this server's UDP port via UPnP, so it is
+    /// reachable from the internet without manual port forwarding. This exposes
+    /// the server publicly — see [`crate::upnp::SECURITY_WARNING`]. Best-effort
+    /// and asynchronous: the mapping is set up (and later renewed) on a
+    /// background thread, and removed when this handle is dropped.
+    pub fn forward_port(&mut self) {
+        self._upnp = Some(crate::upnp::PortForward::open(self.addr.port()));
     }
 }
 
@@ -4173,6 +4186,7 @@ pub fn start_server(
             _endpoint: endpoint,
             shared,
             _discovery: None,
+            _upnp: None,
         }),
         Err(e) => Err(e),
     }

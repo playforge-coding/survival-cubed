@@ -540,6 +540,10 @@ struct App {
     seed_input: String,
     /// Whether launching a world should also host it on the LAN.
     host_enabled: bool,
+    /// Whether a hosted server should also ask the router to forward its port
+    /// via UPnP, exposing it to the internet. Only meaningful with
+    /// [`Self::host_enabled`]; off by default given the security implications.
+    upnp_enabled: bool,
     /// Whether the "New world" form should create a creator-type server (every
     /// player may enter creator mode) rather than a survival one. Only meaningful
     /// when creating a brand-new world; ignored when loading an existing save.
@@ -564,6 +568,10 @@ struct App {
     /// Name of a saved world awaiting delete confirmation, set when the menu's
     /// "Delete" button is clicked and cleared once confirmed or cancelled.
     pending_delete: Option<String>,
+    /// Set when the player ticks the UPnP box: [`Self::upnp_enabled`] stays off
+    /// until they confirm the security warning in the modal, so the port is
+    /// never exposed without an explicit acknowledgement.
+    pending_upnp_confirm: bool,
     game: Option<GameState>,
     /// Background mDNS browser feeding the menu's LAN server list, if discovery
     /// could be started.
@@ -603,6 +611,7 @@ impl App {
             world_name_input: "world".to_string(),
             seed_input: String::new(),
             host_enabled: false,
+            upnp_enabled: false,
             host_creator_world: false,
             give_item_input: String::new(),
             give_item_count: 1,
@@ -613,6 +622,7 @@ impl App {
             server: None,
             pending_tofu: None,
             pending_delete: None,
+            pending_upnp_confirm: false,
             game: None,
             lan: match crate::discovery::browse() {
                 Ok(b) => Some(b),
@@ -732,6 +742,9 @@ impl App {
         ) {
             Ok(mut srv) => {
                 srv.advertise(&format!("Survival Cubed: {name} :{port}"));
+                if self.upnp_enabled {
+                    srv.forward_port();
+                }
                 let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
                 let handle = connect(
                     addr,
@@ -1411,6 +1424,11 @@ impl App {
             self.delete_confirmation_window(ui);
         }
 
+        // UPnP enable confirmation, shown over the menu.
+        if self.pending_upnp_confirm {
+            self.upnp_confirm_window(ui);
+        }
+
         match self.screen {
             Screen::Menu => self.menu_ui(ui),
             Screen::Connecting => {
@@ -1539,6 +1557,20 @@ impl App {
                                     .desired_width(80.0),
                             );
                         });
+                        let upnp =
+                            ui.checkbox(&mut self.upnp_enabled, "Forward port via UPnP (internet)");
+                        // Ticking it on only *requests* UPnP; it stays off until
+                        // the security warning is confirmed in the modal.
+                        if upnp.changed() && self.upnp_enabled {
+                            self.upnp_enabled = false;
+                            self.pending_upnp_confirm = true;
+                        }
+                        if self.upnp_enabled {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(0xE0, 0x90, 0x20),
+                                format!("\u{26A0} {}", crate::upnp::SECURITY_WARNING),
+                            );
+                        }
                     }
                     let create_label = if self.host_enabled {
                         "Create & host"
@@ -1652,6 +1684,42 @@ impl App {
             if !accept {
                 self.status = "Connection declined.".to_string();
             }
+        }
+    }
+
+    /// Modal shown when the player ticks "Forward port via UPnP": it spells out
+    /// the security implications and only flips [`Self::upnp_enabled`] on if they
+    /// explicitly accept, so the server is never exposed by a stray click.
+    fn upnp_confirm_window(&mut self, ui: &mut egui::Ui) {
+        // None = no decision yet, Some(true) = enable, Some(false) = cancel.
+        let mut decision: Option<bool> = None;
+
+        egui::Window::new("Enable UPnP port forwarding?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                ui.set_max_width(420.0);
+                ui.colored_label(
+                    egui::Color32::from_rgb(0xE0, 0x90, 0x20),
+                    format!("\u{26A0} {}", crate::upnp::SECURITY_WARNING),
+                );
+                ui.add_space(8.0);
+                ui.label("Expose this server to the internet?");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Enable UPnP").clicked() {
+                        decision = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        decision = Some(false);
+                    }
+                });
+            });
+
+        if let Some(enable) = decision {
+            self.pending_upnp_confirm = false;
+            self.upnp_enabled = enable;
         }
     }
 

@@ -35,6 +35,10 @@ rcgen = "0.14"
 # LAN discovery (mDNS / DNS-SD)
 mdns-sd = "0.20"
 
+# Optional UPnP-IGD port forwarding, so an internet host can open its port on a
+# home router without configuring it manually. Off by default; see src/upnp.rs.
+easy-upnp = "0.3"
+
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
 

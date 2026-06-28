@@ -20,8 +20,9 @@ and fortify against the creatures that come out at night.
   (zombies, skeletons, spiders, snakes, slimes) that hunt at night.
 - **Creatures & pets** — chickens, goats, and wild **cats** and **puppies** you
   can tame with cooked meat. Pets follow you, hunt, sit on command, and respawn.
-- **Multiplayer over QUIC** — host a dedicated server, auto-discover games on
-  your LAN, password-protected accounts, chat, and admin moderation.
+- **Multiplayer over QUIC** — host a dedicated server (with optional UPnP port
+  forwarding), auto-discover games on your LAN, password-protected accounts,
+  chat, and admin moderation.
 - **Creator mode** — flight, infinite blocks, time control, creature spawning,
   and a structure tool to save and paste your builds (`.scst` files).
 - **Persistent worlds** — chunks, players, creatures, and inventories are saved
@@ -44,15 +45,24 @@ This opens the graphical client, where you can start a **singleplayer** world,
 ### Host a dedicated server
 
 ```sh
-survival-cubed server [port] [creator]
+survival-cubed server [port] [creator] [upnp]
 ```
 
 - `port` — listening port (default `5000`).
 - `creator` — optional keyword; if present, every player may use creator mode.
   Omit it for a survival-only server.
+- `upnp` — optional keyword; if present, the server asks your router to forward
+  its port via UPnP so it's reachable from the internet. **This exposes the
+  server publicly** — only use it to host outside your LAN, and keep a strong
+  world password. `creator` and `upnp` are order-independent.
 
-The server prints its listen address and a certificate fingerprint, then runs
-until you press <kbd>Ctrl</kbd>+<kbd>C</kbd> (it saves the world on shutdown).
+The server prints its listen address, whether UPnP is on, and a certificate
+fingerprint, then runs until you press <kbd>Ctrl</kbd>+<kbd>C</kbd> (it saves the
+world on shutdown).
+
+When hosting from the graphical client instead, tick **Forward port via UPnP**
+under *Host on LAN* and confirm the security prompt. See
+[the multiplayer docs](docs/multiplayer.md#upnp-port-forwarding) for details.
 
 ## Building from source
 

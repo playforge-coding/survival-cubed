@@ -1,10 +1,12 @@
 //! Survival Cubed — a multiplayer-first 2D block game.
 //!
 //! Run with no arguments for the graphical client (with singleplayer/host/join
-//! from the menu). Run `survival-cubed server [port] [creator]` for a dedicated
-//! headless server that prints its certificate fingerprint for clients to verify.
-//! Pass `creator` to make it a creator-type server (every player may enter
-//! creator mode); omit it for a survival server.
+//! from the menu). Run `survival-cubed server [port] [creator] [upnp]` for a
+//! dedicated headless server that prints its certificate fingerprint for clients
+//! to verify. Pass `creator` to make it a creator-type server (every player may
+//! enter creator mode); omit it for a survival server. Pass `upnp` to forward
+//! the port on the local router via UPnP (exposes the server to the internet —
+//! see [`upnp::SECURITY_WARNING`]).
 
 mod assets;
 mod auth;
@@ -20,6 +22,7 @@ mod recipe;
 mod save;
 mod server;
 mod structure;
+mod upnp;
 mod world;
 mod worldgen;
 
@@ -35,9 +38,12 @@ fn main() -> anyhow::Result<()> {
     match args.next().as_deref() {
         Some("server") => {
             let port: u16 = args.next().and_then(|s| s.parse().ok()).unwrap_or(5000);
-            // An optional `creator` argument makes this a creator-type server.
-            let creator_world = args.next().as_deref() == Some("creator");
-            run_dedicated(port, creator_world)
+            // Remaining tokens are order-independent flags: `creator` makes this
+            // a creator-type server; `upnp` opens the port on the router.
+            let flags: Vec<String> = args.collect();
+            let creator_world = flags.iter().any(|f| f == "creator");
+            let upnp = flags.iter().any(|f| f == "upnp");
+            run_dedicated(port, creator_world, upnp)
         }
         Some(other) => {
             eprintln!("unknown command '{other}'. Usage: survival-cubed [server [port]]");
@@ -47,7 +53,7 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn run_dedicated(port: u16, creator_world: bool) -> anyhow::Result<()> {
+fn run_dedicated(port: u16, creator_world: bool, upnp: bool) -> anyhow::Result<()> {
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i32)
@@ -61,6 +67,12 @@ fn run_dedicated(port: u16, creator_world: bool) -> anyhow::Result<()> {
         creator_world,
     )?;
     srv.advertise(&format!("Survival Cubed :{port}"));
+    if upnp {
+        // Surface the warning before opening the port so an operator scanning
+        // the logs sees exactly what was exposed and why.
+        eprintln!("WARNING: UPnP enabled. {}", upnp::SECURITY_WARNING);
+        srv.forward_port();
+    }
     println!("Survival Cubed dedicated server");
     println!("  listening on : {}", srv.addr);
     println!("  world save   : {}", save_dir.display());
@@ -68,6 +80,7 @@ fn run_dedicated(port: u16, creator_world: bool) -> anyhow::Result<()> {
         "  mode         : {}",
         if creator_world { "creator" } else { "survival" }
     );
+    println!("  upnp         : {}", if upnp { "on" } else { "off" });
     println!(
         "  fingerprint  : {}",
         net::fingerprint_hex(&srv.fingerprint)

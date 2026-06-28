@@ -9,28 +9,62 @@ over an encrypted **QUIC** connection.
 ### From the client
 
 Choose **Host on LAN** in the menu. Your world is advertised over your local
-network so others can find and join it without typing an address.
+network so others can find and join it without typing an address. To also let
+players outside your network in, tick **Forward port via UPnP (internet)** — see
+[UPnP port forwarding](#upnp-port-forwarding) below.
 
 ### Dedicated server
 
 For an always-on server, run the headless `server` subcommand:
 
 ```sh
-survival-cubed server [port] [creator]
+survival-cubed server [port] [creator] [upnp]
 ```
 
 | Argument | Default | Meaning |
 |---|---|---|
 | `port` | `5000` | Port to listen on |
 | `creator` | *(off)* | If present, all players may use creator mode |
+| `upnp` | *(off)* | If present, forward the port on your router via UPnP |
+
+`creator` and `upnp` are order-independent flags, so
+`survival-cubed server 5000 upnp` and `survival-cubed server 5000 creator upnp`
+both work.
 
 The server binds to all network interfaces (`0.0.0.0`) so it's reachable from
-other machines. On startup it prints its address, save directory, mode, and a
-**certificate fingerprint**. Stop it cleanly with <kbd>Ctrl</kbd>+<kbd>C</kbd>
-(it saves on shutdown).
+other machines. On startup it prints its address, save directory, mode, whether
+UPnP is on, and a **certificate fingerprint**. Stop it cleanly with
+<kbd>Ctrl</kbd>+<kbd>C</kbd> (it saves on shutdown).
 
-To let players reach a server over the **internet**, forward the chosen port on
-your router/firewall and share your public address as `host:port`.
+### UPnP port forwarding
+
+To reach a server over the **internet**, the chosen port must be forwarded from
+your router to your machine. You can do this manually in your router's admin
+page, or let the game do it for you with **UPnP**:
+
+- **Client:** tick **Forward port via UPnP (internet)** under *Host on LAN*. A
+  dialog spells out the security implications and only enables forwarding once
+  you confirm.
+- **Dedicated server:** pass the `upnp` flag (the warning is printed to the log).
+
+When enabled, the game asks your router (over UPnP-IGD) to forward the game's
+**UDP** port, renews that mapping while the server runs, and removes it on
+shutdown. Then share your public address as `host:port`. It's best-effort: if
+your router lacks UPnP or has it disabled, hosting still works — you just have to
+forward the port manually.
+
+!!! warning "Security implications"
+
+    UPnP opens a hole in your router's firewall, exposing the server to the
+    **public internet**, not just your LAN, and it does so without any
+    authentication — any program on your network can request it, and some router
+    firmware handles such requests poorly. The world password still controls who
+    may *join*, but the listening socket itself becomes publicly reachable.
+
+    Only enable UPnP if you intend to host for people outside your network, keep
+    a **strong world password**, and turn it off (or disable UPnP on your router)
+    when you only play on the LAN. If you'd rather not rely on UPnP at all,
+    forward the port manually instead.
 
 ## Joining
 
