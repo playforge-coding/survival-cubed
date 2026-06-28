@@ -275,6 +275,18 @@ pub const BULLET: BlockId = 69;
 /// item (not placeable); five of them, alongside a clutch of [`DRAGON_SCALE`]s and a
 /// tungsten and gold ingot, are crafted into an [`ARENA_KEY`].
 pub const MINOTAUR_HORN: BlockId = 70;
+/// The dragon plate spellbook: the rarest of the world's spellbooks, dropped only by
+/// the post-game superboss [`crate::entity::EntityKind::Twinscale`] (and cloneable
+/// thereafter). An item (not placeable, stacks to one). Right-click while holding it
+/// to spend [`DRAGON_PLATE_SPELL_MANA_COST`] mana and wreath yourself in a scaled
+/// ward: for [`DRAGON_PLATE_BUFF_DURATION`] seconds your *defense* is raised to
+/// [`DRAGON_PLATE_DEFENSE`] — far higher than any forged suit (more even than
+/// tungsten) — turning aside the great bulk of every blow. The ward is pure magic,
+/// not metal: it ignores (and never wears down) any armor you carry, and it does not
+/// stack with it. When the eight minutes lapse the ward fades and you fall back on
+/// ordinary armor; recast to renew it. Reusable — casting never consumes the book,
+/// only mana.
+pub const DRAGON_PLATE_SPELL: BlockId = 71;
 
 /// Gold ingots consumed to reinforce a plain [`CHEST`] into a [`LOCKED_CHEST`].
 /// Shared by the server (which charges it) and the client (which shows the cost).
@@ -447,6 +459,10 @@ impl BlockRegistry {
         // A minotaur horn: a non-placeable item wrenched from a slain minotaur, crafted
         // (in fives, with dragon scales, gold and tungsten) into an arena key.
         r.register("minotaur_horn", false, true, false, 0.0);
+        // The dragon plate spellbook: a non-placeable artifact item, dropped only by
+        // Twinscale. Right-clicking it spends mana to ward the caster in a temporary
+        // scaled defense far stronger than tungsten, rather than placing a block.
+        r.register("dragon_plate_spell", false, true, false, 0.0);
         r
     }
 
@@ -516,7 +532,7 @@ pub fn max_stack(id: BlockId) -> u32 {
         // A suit of armor is a single bulky piece, so it never stacks.
         IRON_ARMOR | TUNGSTEN_ARMOR => 1,
         // A spellbook is a single bound tome, so it never stacks.
-        SUMMONER_SPELL | SUNBURST_SPELL | RESTORE_SPELL | DRAGONIAN_STEED => 1,
+        SUMMONER_SPELL | SUNBURST_SPELL | RESTORE_SPELL | DRAGONIAN_STEED | DRAGON_PLATE_SPELL => 1,
         _ => crate::inventory::STACK_MAX,
     }
 }
@@ -702,12 +718,33 @@ pub const RESTORE_SPELL_MANA_COST: i32 = 60;
 /// it summons a whole flying miniboss to fight at your side and carry you aloft.
 pub const DRAGONIAN_STEED_MANA_COST: i32 = 80;
 
+/// Mana spent casting the dragon plate spell once. The very dearest cast — a Twinscale
+/// drop that wraps the caster in a ward stronger than any armor for a few minutes.
+pub const DRAGON_PLATE_SPELL_MANA_COST: i32 = 100;
+
+/// Seconds the [`DRAGON_PLATE_SPELL`] ward lasts after a cast — eight minutes — before
+/// it lapses and the caster must recast to renew it. Shared by the server (which times
+/// it down) and any code that previews the buff.
+pub const DRAGON_PLATE_BUFF_DURATION: f32 = 8.0 * 60.0;
+
+/// The *defense* (percentage of incoming damage turned aside) granted by an active
+/// [`DRAGON_PLATE_SPELL`] ward — far higher than even [`TUNGSTEN_ARMOR`]'s `55`. While
+/// the ward holds it replaces (does not stack with) any worn armor's
+/// [`armor_defense`], and like armor a blow still always lands for at least 1.
+pub const DRAGON_PLATE_DEFENSE: i32 = 85;
+
+/// Melee damage an *empty hand* deals while an active [`DRAGON_PLATE_SPELL`] ward arms
+/// it — stronger than even a [`TUNGSTEN_AXE`] (`20`), the hardest-hitting forged weapon.
+/// Applies only to a bare-handed swing ([`AIR`]); a warded player holding a weapon still
+/// swings that weapon's own [`attack_damage`].
+pub const DRAGON_PLATE_FIST_DAMAGE: i32 = 30;
+
 /// Whether `item` is a spellbook — a magic tome cast (by right-clicking) at the
 /// cost of mana rather than placed or consumed.
 pub fn is_spellbook(item: BlockId) -> bool {
     matches!(
         item,
-        SUMMONER_SPELL | SUNBURST_SPELL | RESTORE_SPELL | DRAGONIAN_STEED
+        SUMMONER_SPELL | SUNBURST_SPELL | RESTORE_SPELL | DRAGONIAN_STEED | DRAGON_PLATE_SPELL
     )
 }
 
@@ -719,6 +756,7 @@ pub fn spell_mana_cost(item: BlockId) -> Option<i32> {
         SUNBURST_SPELL => Some(SUNBURST_SPELL_MANA_COST),
         RESTORE_SPELL => Some(RESTORE_SPELL_MANA_COST),
         DRAGONIAN_STEED => Some(DRAGONIAN_STEED_MANA_COST),
+        DRAGON_PLATE_SPELL => Some(DRAGON_PLATE_SPELL_MANA_COST),
         _ => None,
     }
 }
@@ -1102,6 +1140,7 @@ mod tests {
             (SUNBURST_SPELL, SUNBURST_SPELL_MANA_COST),
             (RESTORE_SPELL, RESTORE_SPELL_MANA_COST),
             (DRAGONIAN_STEED, DRAGONIAN_STEED_MANA_COST),
+            (DRAGON_PLATE_SPELL, DRAGON_PLATE_SPELL_MANA_COST),
         ] {
             assert!(is_spellbook(book));
             assert_eq!(spell_mana_cost(book), Some(cost));
@@ -1109,6 +1148,9 @@ mod tests {
         assert!(SUNBURST_SPELL_MANA_COST > SUMMONER_SPELL_MANA_COST);
         assert!(RESTORE_SPELL_MANA_COST > SUNBURST_SPELL_MANA_COST);
         assert!(DRAGONIAN_STEED_MANA_COST > RESTORE_SPELL_MANA_COST);
+        assert!(DRAGON_PLATE_SPELL_MANA_COST > DRAGONIAN_STEED_MANA_COST);
+        // The dragon plate ward is far stronger than the sturdiest forged armor.
+        assert!(DRAGON_PLATE_DEFENSE > armor_defense(TUNGSTEN_ARMOR));
         // A single bound tome: each never stacks, and is a plain (non-placeable)
         // item with an atlas tile for its inventory/dropped sprite.
         for book in [
@@ -1116,6 +1158,7 @@ mod tests {
             SUNBURST_SPELL,
             RESTORE_SPELL,
             DRAGONIAN_STEED,
+            DRAGON_PLATE_SPELL,
         ] {
             assert_eq!(max_stack(book), 1);
             assert!(reg.get(book).visible);

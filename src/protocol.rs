@@ -372,6 +372,14 @@ pub enum ClientMessage {
     /// it strikes). A no-op (with an inventory resync) if the slot doesn't hold a musket
     /// or the player is out of bullets.
     FireMusket { slot: u8, tx: f32, ty: f32 },
+    /// Spit a fireball from an empty hand toward world pixel `(tx, ty)` (the player's
+    /// cursor) — the offensive half of the [dragon plate](crate::block::DRAGON_PLATE_SPELL)
+    /// ward. The server checks the sender's ward is active and its breath cadence is
+    /// ready; on success it looses a friendly dragon fireball from the player at the
+    /// cursor (damaging monsters where it strikes). Costs no mana. The client cannot see
+    /// the server-only ward, so it always sends this on an empty-handed use-click and the
+    /// server simply ignores it when the player is unwarded or still on cadence.
+    EmptyHandBreath { tx: f32, ty: f32 },
 }
 
 /// Sent from server to client over the single bidirectional stream.

@@ -5365,6 +5365,22 @@ fn handle_block_actions(
         return;
     }
 
+    // Right-clicking with an empty hand spits a fireball toward the cursor — the
+    // offensive half of the dragon plate ward. The ward is server-only state we can't
+    // see, so we always send the request and let the server decide: it looses a fireball
+    // only while the player is warded and its cadence is ready, and otherwise does
+    // nothing. This sits after every cell interaction (chest, door, sign, forge…) so
+    // those keep priority, and before block placement (which an empty slot can't reach).
+    if input.placing && game.action_timer <= 0.0 && game.inventory.get(game.selected_slot).is_none()
+    {
+        let _ = net.commands.send(NetCommand::EmptyHandBreath {
+            tx: world.x,
+            ty: world.y,
+        });
+        game.action_timer = ACTION_COOLDOWN;
+        return;
+    }
+
     // Right button: place the selected hotbar slot's block on a fixed cooldown,
     // but only if that slot holds something to spend.
     if input.placing && game.action_timer <= 0.0 && (0..WORLD_HEIGHT).contains(&ty) {

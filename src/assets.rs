@@ -138,6 +138,7 @@ blocks!(
     "musket",
     "bullet",
     "minotaur_horn",
+    "dragon_plate_spell",
 );
 
 sprites!(

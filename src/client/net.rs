@@ -212,6 +212,14 @@ pub enum NetCommand {
         tx: f32,
         ty: f32,
     },
+    /// Spit a fireball from an empty hand toward world pixel `(tx, ty)` (the cursor) —
+    /// the dragon plate ward's offensive half. Sent on any empty-handed use-click; the
+    /// server looses a friendly dragon fireball only while the player's ward is active
+    /// and its cadence is ready, and ignores it otherwise.
+    EmptyHandBreath {
+        tx: f32,
+        ty: f32,
+    },
     /// Swing the door touching cell `(x, y)` open or shut (server flips both
     /// halves and resyncs).
     ToggleDoor {
@@ -547,6 +555,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
         NetCommand::CastSpell { slot, tx, ty } => ClientMessage::CastSpell { slot, tx, ty },
         NetCommand::DragonBreath { tx, ty } => ClientMessage::DragonBreath { tx, ty },
         NetCommand::FireMusket { slot, tx, ty } => ClientMessage::FireMusket { slot, tx, ty },
+        NetCommand::EmptyHandBreath { tx, ty } => ClientMessage::EmptyHandBreath { tx, ty },
         NetCommand::ToggleDoor { x, y } => ClientMessage::ToggleDoor { x, y },
         NetCommand::MoveItem { from, to } => ClientMessage::MoveItem { from, to },
         NetCommand::DropItem { slot, all, dir } => ClientMessage::DropItem { slot, all, dir },

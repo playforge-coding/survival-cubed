@@ -16,7 +16,7 @@ later when a challenger next steps into the arena room.
 | **Speed** | 60 px/s (flies) |
 | **Found in** | The **arena**, five days after the demon king falls — one per world |
 | **Activity** | Always active; never despawns |
-| **Drops** | 10 dragon scales, 6 gold ingots, 6 tungsten ingots where it falls |
+| **Drops** | 10 dragon scales, 6 gold ingots, 6 tungsten ingots, and the **[dragon plate spell](../magic.md#the-dragon-plate-spell)** where it falls |
 
 ## You need to fly
 

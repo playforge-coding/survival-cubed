@@ -45,6 +45,7 @@ server-authoritative, so the result is always consistent in multiplayer.
 | Clone Sunburst Spell | 1 Sunburst Spell + 12 Paper | 2 Sunburst Spell |
 | Clone Restore Spell | 1 Restore Spell + 12 Paper | 2 Restore Spell |
 | Clone Dragonian Steed Spell | 1 Dragonian Steed Spell + 12 Paper | 2 Dragonian Steed Spell |
+| Clone Dragon Plate Spell | 1 Dragon Plate Spell + 12 Paper | 2 Dragon Plate Spell |
 | Bucket | 3 Iron Ingot | 1 Bucket |
 | Boat | 5 Wood + 3 Stick | 1 Boat |
 | Door | 6 Wood | 1 Door |
@@ -134,6 +135,11 @@ remaining durability shows as a bar under its inventory icon.
 Tungsten armor can also be **looted** rather than crafted: the
 **[Demon King](entities/demon-king.md)** always leaves a suit in his chest, and a
 **[Dark Knight](entities/dark-knight.md)** rarely spills one.
+
+For defense beyond any forged suit, the **[dragon plate spell](magic.md#the-dragon-plate-spell)**
+— dropped by [Twinscale](entities/twinscale.md) — wraps you in a temporary ward worth
+**85%**, far above tungsten's 55%, though it lasts only 8 minutes per cast and replaces
+(rather than stacks with) your armor while it holds.
 
 ## Smelting
 

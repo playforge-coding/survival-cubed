@@ -1011,6 +1011,14 @@ pub struct Entity {
     pub control_dx: f32,
     #[serde(skip)]
     pub control_dy: f32,
+    /// Server-only: seconds left on this player's [dragon plate](crate::block::DRAGON_PLATE_SPELL)
+    /// ward. Set to [`crate::block::DRAGON_PLATE_BUFF_DURATION`] on a cast and counted
+    /// down each tick; while positive the player's defense is raised to
+    /// [`crate::block::DRAGON_PLATE_DEFENSE`], overriding any worn armor. `0.0` for
+    /// creatures and once the ward lapses. Never sent over the wire (defaults to `0.0`
+    /// on the client).
+    #[serde(skip)]
+    pub dragon_plate_timer: f32,
 }
 
 impl Entity {
@@ -1039,6 +1047,7 @@ impl Entity {
             controlling: None,
             control_dx: 0.0,
             control_dy: 0.0,
+            dragon_plate_timer: 0.0,
         }
     }
 

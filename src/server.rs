@@ -515,6 +515,10 @@ const FRIENDLY_DRAGON_FIREBALL_HIT_RANGE: f32 = 2.0;
 /// Seconds a friendly dragon fireball stays airborne before it burns out (reusing the
 /// `attack_cd` field as its life timer, like the other fireballs).
 const FRIENDLY_DRAGON_FIREBALL_LIFETIME: f32 = 2.4;
+/// Minimum seconds between fireballs spat by a [dragon plate](crate::block::DRAGON_PLATE_SPELL)
+/// warded player's empty hand — the cadence the server enforces (via the player's
+/// `attack_cd`) so the bare-handed breath can't be fired faster than this.
+const DRAGON_PLATE_BREATH_INTERVAL: f32 = 0.5;
 
 // --- Demon king (arena boss) ---------------------------------------------------
 /// How far (px) the demon king notices a player and gives chase. Generous — it
@@ -3361,6 +3365,10 @@ impl Shared {
                 self.cast_dragonian_steed(id, dim, caster);
                 true
             }
+            crate::block::DRAGON_PLATE_SPELL => {
+                self.cast_dragon_plate(id, dim);
+                true
+            }
             _ => false,
         };
         // The restore spell does nothing if the cursor isn't on a restorable creature;
@@ -3500,6 +3508,52 @@ impl Shared {
         };
         self.entities(dim).lock().insert(steed.clone());
         self.broadcast_dim(dim, ServerMessage::EntitySpawn { entity: steed });
+    }
+
+    /// Cast the dragon plate spell: wreath player `id` in a scaled ward, raising their
+    /// defense to [`crate::block::DRAGON_PLATE_DEFENSE`] for
+    /// [`crate::block::DRAGON_PLATE_BUFF_DURATION`] seconds (overriding any worn armor;
+    /// see the damage step in [`step_entities`]). Recasting simply refreshes the timer.
+    /// The ward is server-only state, so there is nothing to broadcast.
+    fn cast_dragon_plate(&self, id: EntityId, dim: Dimension) {
+        if let Some(p) = self.entities(dim).lock().get_mut(id) {
+            p.dragon_plate_timer = crate::block::DRAGON_PLATE_BUFF_DURATION;
+        }
+    }
+
+    /// Spit a fireball from player `id` toward world pixel `(tx, ty)` (the cursor) —
+    /// the offensive half of the [dragon plate](crate::block::DRAGON_PLATE_SPELL) ward.
+    /// A no-op unless the player's ward is active and their breath cadence (the player's
+    /// `attack_cd`, counted down in [`step_entities`]) is ready; the client cannot know
+    /// the ward state, so it always asks and the server gates here. On success it looses
+    /// a [`EntityKind::FriendlyDragonFireball`] — the same scorching bolt a white-dragon
+    /// steed breathes, harming monsters but never the player — costing no mana.
+    fn empty_hand_breath(&self, id: EntityId, tx: f32, ty: f32) {
+        let dim = self.dim_of(id);
+        let (fw, fh) = crate::entity::FRIENDLY_DRAGON_FIREBALL_SIZE;
+        let bolt = {
+            let mut entities = self.entities(dim).lock();
+            let Some(p) = entities.get_mut(id) else {
+                return;
+            };
+            if p.dragon_plate_timer <= 0.0 || p.attack_cd > 0.0 {
+                return;
+            }
+            p.attack_cd = DRAGON_PLATE_BREATH_INTERVAL;
+            let (pw, ph) = p.size();
+            let sx = p.x + pw * 0.5 - fw * 0.5;
+            let sy = p.y + ph * 0.3 - fh * 0.5;
+            let dx = tx - (sx + fw * 0.5);
+            let dy = ty - (sy + fh * 0.5);
+            let len = (dx * dx + dy * dy).sqrt().max(1.0);
+            let mut bolt = Entity::new(self.alloc_id(), EntityKind::FriendlyDragonFireball, sx, sy);
+            bolt.vx = dx / len * FIREBALL_SPEED;
+            bolt.vy = dy / len * FIREBALL_SPEED;
+            bolt.attack_cd = FRIENDLY_DRAGON_FIREBALL_LIFETIME; // reused as the airborne timer
+            bolt
+        };
+        self.entities(dim).lock().insert(bolt.clone());
+        self.broadcast_dim(dim, ServerMessage::EntitySpawn { entity: bolt });
     }
 
     /// Breathe a fireball from player `id`'s white-dragon steed toward world pixel
@@ -3823,12 +3877,14 @@ fn creature_mana(kind: &EntityKind) -> i32 {
 
 /// The hoard a slain [`EntityKind::Twinscale`] spills where it falls — a generous
 /// post-game reward (it flies, so it has no chest like the demon king): a clutch of
-/// dragon scales and a purse of refined metal.
+/// dragon scales, a purse of refined metal, and — found nowhere else — the
+/// [dragon plate spellbook](crate::block::DRAGON_PLATE_SPELL) (cloneable thereafter).
 fn twinscale_loot() -> Vec<(BlockId, u32)> {
     vec![
         (crate::block::DRAGON_SCALE, 10),
         (crate::block::GOLD_INGOT, 6),
         (crate::block::TUNGSTEN_INGOT, 6),
+        (crate::block::DRAGON_PLATE_SPELL, 1),
     ]
 }
 
@@ -5834,6 +5890,20 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
             _ => None,
         })
         .collect();
+
+    // Tick down each player's dragon plate ward; once its eight minutes are spent the
+    // timer reaches zero and the player's defense falls back to ordinary armor (the
+    // damage step reads this), until they recast to renew it. Also tick the player's
+    // `attack_cd`, which paces their warded empty-hand fireball breath — players run no
+    // per-kind AI step, so this is the one place it counts down for them.
+    for e in entities.values_mut() {
+        if e.kind.is_player() {
+            if e.dragon_plate_timer > 0.0 {
+                e.dragon_plate_timer = (e.dragon_plate_timer - TICK_DT).max(0.0);
+            }
+            e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        }
+    }
 
     // Snapshot of which horse each mounted player is riding, with the rider's
     // position, so the horse AI can glue a ridden horse beneath its rider without
@@ -10459,14 +10529,27 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         // Armor softens the blow: a worn suit turns aside a share of the damage,
         // but a hit always lands for at least 1 — armor never makes you invincible.
         // A suit that absorbs a blow takes a point of wear for it (applied below).
-        let armor = shared.worn_armor(pid);
-        let damage = match armor {
-            Some(a) => {
-                let defense = crate::block::armor_defense(a);
-                armor_wear.push((pid, a));
-                (damage - damage * defense / 100).max(1)
+        //
+        // An active dragon plate ward overrides all of this: while it holds, defense is
+        // the ward's (far higher than any suit), it replaces rather than stacks with
+        // armor, and — being magic, not metal — it wears no armor down. Once it lapses
+        // the player falls back on whatever suit they carry.
+        let warded = entities
+            .get(pid)
+            .is_some_and(|e| e.dragon_plate_timer > 0.0);
+        let damage = if warded {
+            let defense = crate::block::DRAGON_PLATE_DEFENSE;
+            (damage - damage * defense / 100).max(1)
+        } else {
+            let armor = shared.worn_armor(pid);
+            match armor {
+                Some(a) => {
+                    let defense = crate::block::armor_defense(a);
+                    armor_wear.push((pid, a));
+                    (damage - damage * defense / 100).max(1)
+                }
+                None => damage,
             }
-            None => damage,
         };
         let (msgs, respawn) = apply_damage(
             &mut entities,
@@ -12043,6 +12126,9 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 ClientMessage::FireMusket { slot, tx, ty } => {
                     shared.fire_musket(id, slot as usize, tx, ty);
                 }
+                ClientMessage::EmptyHandBreath { tx, ty } => {
+                    shared.empty_hand_breath(id, tx, ty);
+                }
                 ClientMessage::ToggleDoor { x, y } => {
                     let dim = shared.dim_of(id);
                     // Gated by the player's melee reach, the same limit governing
@@ -12465,16 +12551,23 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                             shared.knight_targets.lock().insert(id, target);
                         }
                         let respawn_target = shared.respawn_target(target);
+                        // A bare hand wrapped in an active dragon plate ward hits harder
+                        // than any forged weapon; otherwise the held item's own damage
+                        // applies (a warded player swinging a weapon uses the weapon).
+                        let warded_fist = held == crate::block::AIR
+                            && shared
+                                .entities(dim)
+                                .lock()
+                                .get(id)
+                                .is_some_and(|e| e.dragon_plate_timer > 0.0);
+                        let damage = if warded_fist {
+                            crate::block::DRAGON_PLATE_FIST_DAMAGE
+                        } else {
+                            crate::block::attack_damage(held)
+                        };
                         let (msgs, respawn) = {
                             let mut entities = shared.entities(dim).lock();
-                            apply_damage(
-                                &mut entities,
-                                target,
-                                crate::block::attack_damage(held),
-                                kb,
-                                dim,
-                                respawn_target,
-                            )
+                            apply_damage(&mut entities, target, damage, kb, dim, respawn_target)
                         };
                         for m in msgs {
                             shared.broadcast_dim(dim, m);

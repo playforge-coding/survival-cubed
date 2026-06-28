@@ -166,6 +166,49 @@ one at a time.
     [restore spell](#the-restore-spell) and the dragonian steed — so a single, hard-won
     victory in the arena arms you with the two rarest magics at once.
 
+## The dragon plate spell
+
+| Stat | Value |
+|---|---|
+| **Source** | Dropped only by **[Twinscale](entities/twinscale.md)**, the post-game superboss |
+| **Mana cost** | 100 per cast |
+| **Effect** | For 8 minutes: defense far above tungsten armor, fists stronger than a tungsten axe, and fireball breath from an empty hand |
+
+The rarest spellbook in the world, spilled by no one but **Twinscale** — the
+twin-headed dragon raised only after the demon king has fallen. Casting wraps you in a
+**scaled ward** for **8 minutes** that makes you a dragon in your own right — armored,
+hard-hitting, and fire-breathing all at once.
+
+**Defense.** Your **defense** is raised to **85%** — far higher than any forged suit,
+more even than **[tungsten armor](crafting.md#armor)**'s 55% — so the ward turns aside
+the great bulk of every blow. As with armor, a hit always lands for at least **1**: the
+ward softens you, it does not make you invincible. The ward is **magic, not metal**:
+while it holds it **replaces** (does not stack with) your armor's defense, and because no
+steel takes the blows, **none of your armor wears down** — you need wear no armor at all
+for it to protect you.
+
+**Dragon fists.** While the ward holds, your **empty hand** hits harder than any forged
+weapon — **30 damage** a swing, more even than a [tungsten axe](crafting.md#weapons)'s
+20. This applies only to **bare-handed** strikes; a warded hand holding a sword or axe
+still swings that weapon's own damage, so drop your weapon to your fists to make the most
+of it.
+
+**Fireball breath.** While the ward holds, **right-click with an empty hand** to **spit a
+fireball** toward your cursor — the same scorching bolt a [white dragon
+steed](#the-dragonian-steed-spell) breathes, harming monsters (and leaving a lick of
+fire) where it strikes, never you. It costs **no mana**, only a brief cadence between
+breaths. Like the dragon fists, this works only with an **empty hand**.
+
+**It is temporary.** After **8 minutes** the ward fades — defense falls back to whatever
+armor you carry, and your fists and breath go cold. Only **recasting the spell** renews
+it; casting again at any time refreshes the full 8 minutes.
+
+!!! danger "Watch the clock"
+    Unlike a suit of armor, the dragon plate ward gives no warning as it lapses — one
+    moment you shrug off blows and spit fire, the next you are back to bare armor and
+    bare fists. Recast well before the eight minutes are up if you mean to stay in the
+    thick of a fight.
+
 ## Cloning spellbooks
 
 Spellbooks are found, not crafted — but once you hold one you can **transcribe it
