@@ -89,6 +89,7 @@ nav:
       - Mage: entities/mage.md
       - Ash Twister: entities/ash-twister.md
       - Dragon: entities/dragon.md
+      - Minotaur: entities/minotaur.md
       - Demon King: entities/demon-king.md
       - Twinscale: entities/twinscale.md
   - Multiplayer: multiplayer.md

@@ -144,6 +144,12 @@ const WAYPOINT_REACHED_DIST: f32 = 24.0;
 /// dimension.
 const MINIBOSS_MUSIC_RANGE: f32 = 340.0;
 
+/// Reference horizontal speed (world px/s) at which a charging minotaur's walk sheet
+/// plays at its normal cadence; faster than this and the scene builder speeds the cycle
+/// up (up to 3×) so its head-down sprint reads as a blur, slower and it plods. Set
+/// between the minotaur's slow hulk pace and its much swifter headbutt-charge speed.
+const MINOTAUR_CHARGE_ANIM_REF: f32 = 50.0;
+
 /// Validate a user-entered world name, returning the trimmed name if it is safe
 /// to use as a directory. Restricting to letters, numbers, spaces, '-' and '_'
 /// keeps names readable and rules out path separators and traversal.
@@ -1128,6 +1134,7 @@ impl App {
                             }
                             EntityKind::Dragon => crate::entity::DRAGON_ATTACK_TIME,
                             EntityKind::Twinscale => crate::entity::TWINSCALE_ATTACK_TIME,
+                            EntityKind::Minotaur => crate::entity::MINOTAUR_SLAM_TIME,
                             _ => crate::entity::SNAKE_LUNGE_TIME,
                         };
                     }
@@ -1262,9 +1269,9 @@ impl App {
             }
         }
 
-        // Miniboss music: while a dragon is near in this dimension, swap to the
-        // miniboss theme; otherwise (it has been slain, has strayed far, or we've
-        // changed dimension — leaving no nearby dragon) fall back to the dimension's
+        // Miniboss music: while a dragon or minotaur is near in this dimension, swap to
+        // the miniboss theme; otherwise (it has been slain, has strayed far, or we've
+        // changed dimension — leaving no nearby miniboss) fall back to the dimension's
         // own music. `play_for`/`play_miniboss` are cheap no-ops when nothing changes.
         //
         // Exception: while Twinscale reigns, the flight of dragons it calls down at half
@@ -1276,7 +1283,7 @@ impl App {
             .any(|e| matches!(e.kind, EntityKind::Twinscale));
         let near_dragon = !twinscale_present
             && game.entities.values().any(|e| {
-                matches!(e.kind, EntityKind::Dragon)
+                matches!(e.kind, EntityKind::Dragon | EntityKind::Minotaur)
                     && Vec2::new(e.x, e.y).distance(game.pos) <= MINIBOSS_MUSIC_RANGE
             });
         let dim = game.dim;
@@ -1894,7 +1901,7 @@ impl App {
         let boss = twinscale.or(king).or_else(|| {
             g.entities
                 .values()
-                .filter(|e| matches!(e.kind, EntityKind::Dragon))
+                .filter(|e| matches!(e.kind, EntityKind::Dragon | EntityKind::Minotaur))
                 .filter(|e| Vec2::new(e.x, e.y).distance(g.pos) <= MINIBOSS_MUSIC_RANGE)
                 .min_by(|a, b| {
                     let da = Vec2::new(a.x, a.y).distance(g.pos);
@@ -1908,6 +1915,7 @@ impl App {
         let title = match boss.kind {
             EntityKind::Twinscale => "Twinscale",
             EntityKind::DemonKing => "The Demon King",
+            EntityKind::Minotaur => "Minotaur",
             _ => "Dragon",
         };
         let frac = if boss.max_health > 0 {
@@ -3292,6 +3300,9 @@ impl App {
                             if ui.button("Dragon").clicked() {
                                 spawn = Some(EntityKind::Dragon);
                             }
+                            if ui.button("Minotaur").clicked() {
+                                spawn = Some(EntityKind::Minotaur);
+                            }
                             if ui.button("Twinscale").clicked() {
                                 spawn = Some(EntityKind::Twinscale);
                             }
@@ -3932,6 +3943,28 @@ impl App {
                 let progress =
                     1.0 - (e.lunge / crate::entity::DEMON_KING_ATTACK_TIME).clamp(0.0, 1.0);
                 let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
+                (d, frame)
+            } else if e.lunge > 0.0 && matches!(e.kind, EntityKind::Minotaur) {
+                // A slamming minotaur plays its one-shot jump-slam (frame stepped by the
+                // attack timer, which rides on the same `lunge` field): it crouches,
+                // leaps, hangs at the apex, then crashes down.
+                let d = &sprite::MINOTAUR_ATTACK_SPRITE;
+                let progress = 1.0 - (e.lunge / crate::entity::MINOTAUR_SLAM_TIME).clamp(0.0, 1.0);
+                let frame = ((progress * d.frames as f32) as u32).min(d.frames - 1);
+                (d, frame)
+            } else if matches!(e.kind, EntityKind::Minotaur) {
+                // A minotaur hulks on its plain walk sheet, but when it locks into a
+                // headbutt charge it barrels in several times faster — so its legs blur.
+                // Scale the walk clock by its pace (it has no separate charge sheet), so
+                // the same cycle reads as a slow plod or a head-down sprint.
+                let d = sprite::sprite_for(&e.kind);
+                let moving = e.vx.abs() > 1.0;
+                let rate = (e.vx.abs() / MINOTAUR_CHARGE_ANIM_REF).clamp(1.0, 3.0);
+                let frame = if d.frames <= 1 || !moving {
+                    0
+                } else {
+                    ((self.anim_time * d.fps * rate) as u32) % d.frames
+                };
                 (d, frame)
             } else if matches!(e.kind, EntityKind::Puppy { sitting: true, .. }) {
                 // A sitting puppy loops its idle sheet off the shared clock even

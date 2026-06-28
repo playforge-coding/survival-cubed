@@ -137,6 +137,7 @@ blocks!(
     "paper",
     "musket",
     "bullet",
+    "minotaur_horn",
 );
 
 sprites!(
@@ -177,6 +178,10 @@ sprites!(
     "demon_king/attack" => [0, 1, 2, 3, 4, 5],
     "orc" => [0, 1, 2, 3, 4],
     "orc/slam" => [0, 1, 2, 3, 4, 5],
+    // The minotaur miniboss: a four-frame hulking/charging walk cycle (sped up by the
+    // client when it barrels into a headbutt charge) plus a one-shot jump-slam pose.
+    "minotaur" => [0, 1, 2, 3],
+    "minotaur/attack" => [0, 1, 2, 3, 4, 5],
     "ash_twister" => [0],
     "orc_mage" => [0],
     "orc_mage/cast" => [0],

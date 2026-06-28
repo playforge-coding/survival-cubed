@@ -77,6 +77,10 @@ pub const ORC_MAGE_SIZE: (f32, f32) = (10.0, 13.0);
 /// Collision/draw size (width, height) in pixels of an orc — a stocky underworld
 /// brute, broader than the lanky skeletons it shares the depths with.
 pub const ORC_SIZE: (f32, f32) = (12.0, 15.0);
+/// Collision/draw size (width, height) in pixels of a minotaur — the underworld's
+/// rare horned **miniboss**. A towering brute drawn as large as the demon king, far
+/// bigger than the orcs it shares the charred expanse with.
+pub const MINOTAUR_SIZE: (f32, f32) = (22.0, 30.0);
 /// Collision/draw size (width, height) in pixels of an ash twister — a tall,
 /// narrow column of whirling ash drawn from a 16x16 sheet.
 pub const ASH_TWISTER_SIZE: (f32, f32) = (12.0, 16.0);
@@ -211,6 +215,16 @@ pub const TWINSCALE_ATTACK_TIME: f32 = 1.0;
 /// this long. Purely cosmetic — the fireball is spawned server-side.
 pub const DRAGON_ATTACK_TIME: f32 = 0.5;
 
+/// Seconds a minotaur's **jump-slam** plays end to end: it crouches and leaps, hangs
+/// at the top of its arc, then crashes back to the ground. Shared by both sides so the
+/// server's slam timing and the client's attack-animation playback agree. The blow
+/// lands when it touches down (see [`crate::server`]'s minotaur handling), dealing area
+/// damage to anyone standing on the ground — a player who is **airborne** (mid-jump) as
+/// it lands is spared. Rides on the [`Entity::lunge`] timer like the orc slam; the
+/// minotaur's other attack, its headbutt charge, takes no wind-up pose (it simply
+/// barrels in on its walk sheet, sped up by its speed) so it doesn't use this timer.
+pub const MINOTAUR_SLAM_TIME: f32 = 1.4;
+
 /// Seconds a snake spends writhing through its death animation when killed,
 /// before it despawns. Shared by both sides so the server's despawn timing and
 /// the client's animation playback agree.
@@ -267,6 +281,11 @@ pub const ORC_MAGE_MAX_HEALTH: i32 = 30;
 /// Maximum health of an orc, in hit points. The toughest thing in the underworld —
 /// a slow brute that soaks up punishment and answers with a devastating slam.
 pub const ORC_MAX_HEALTH: i32 = 50;
+/// Maximum health of a minotaur, in hit points. A miniboss on a par with the
+/// [`DRAGON_MAX_HEALTH`] dragon: far tougher than the rank-and-file underworld
+/// brutes, so felling one is a genuine fight — its health drives the miniboss bar the
+/// client shows while a minotaur is near.
+pub const MINOTAUR_MAX_HEALTH: i32 = 220;
 /// Maximum health of an ash twister, in hit points. A whirling column of ash —
 /// frailer than the underworld's brawlers, since it threatens by flinging the
 /// player skyward (for a punishing fall) rather than by soaking up blows.
@@ -634,6 +653,20 @@ pub enum EntityKind {
     /// Server-simulated. Appended last so older saves and the wire format keep their
     /// variant indices.
     Twinscale,
+    /// A minotaur: the underworld's rare horned **miniboss**. It spawns about as rarely
+    /// as the [`EntityKind::Dragon`] in the charred expanse and is drawn as large as the
+    /// [`EntityKind::DemonKing`]. Where the dragon flies, the minotaur is a **ground**
+    /// brute: it normally **hulks slowly** after the player, but wields two telegraphed
+    /// attacks. Its **jump-slam** — it crouches, leaps high, hangs at the apex, and
+    /// crashes down — deals heavy **area** damage to anyone standing on the ground when
+    /// it lands (a player who is mid-jump as it touches down is spared). Its **headbutt
+    /// charge** — it locks onto the player and **runs in fast**, head down (its walk
+    /// sheet sped up) — gores anyone it reaches. Far tougher than the rank-and-file
+    /// underworld monsters, it raises its own miniboss music and health bar on the
+    /// client, and drops the **minotaur horns** crafted (in fives, alongside dragon
+    /// scales, gold and tungsten) into an [`crate::block::ARENA_KEY`]. Server-simulated.
+    /// Appended last so older saves and the wire format keep their variant indices.
+    Minotaur,
 }
 
 impl EntityKind {
@@ -677,6 +710,7 @@ impl EntityKind {
             EntityKind::DarkMusketeer => DARK_MUSKETEER_SIZE,
             EntityKind::Bullet | EntityKind::FriendlyBullet => BULLET_SIZE,
             EntityKind::Twinscale => TWINSCALE_SIZE,
+            EntityKind::Minotaur => MINOTAUR_SIZE,
             EntityKind::DroppedItem { .. } => ITEM_SIZE,
         }
     }
@@ -846,6 +880,7 @@ impl EntityKind {
             // max_health so no health bar shows and a stray swing can't "kill" it.
             EntityKind::Bullet | EntityKind::FriendlyBullet => 1,
             EntityKind::Twinscale => TWINSCALE_MAX_HEALTH,
+            EntityKind::Minotaur => MINOTAUR_MAX_HEALTH,
             // Items are inert; 1 keeps health == max_health so no health bar shows.
             EntityKind::DroppedItem { .. } => 1,
         }

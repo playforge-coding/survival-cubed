@@ -49,7 +49,7 @@ server-authoritative, so the result is always consistent in multiplayer.
 | Boat | 5 Wood + 3 Stick | 1 Boat |
 | Door | 6 Wood | 1 Door |
 | Fire Key | 1 Charred Rock + 1 Tungsten Ingot | 1 Fire Key |
-| Arena Key | 2 Tungsten Ingot + 2 Gold Ingot + 5 Dragon Scale | 1 Arena Key |
+| Arena Key | 2 Tungsten Ingot + 2 Gold Ingot + 5 Dragon Scale + 5 Minotaur Horn | 1 Arena Key |
 | Sign | 1 Wood + 1 Stick | 1 Sign |
 | Quest Board | 4 Wood + 2 Stick | 1 Quest Board |
 | Chest | 1 Iron Ingot + 8 Wood | 1 Chest |
@@ -188,9 +188,11 @@ Eat the food in your selected hotbar slot with <kbd>F</kbd>.
   tungsten first — see **[The World](world.md#the-underworld)**.
 - **Arena Key** — a reusable artifact that warps you into the **[arena](world.md#the-arena)**,
   the stone-brick boss plane. Right-click to enter; right-click again while inside
-  to return to exactly where you left from. Crafting one needs both tungsten and
-  gold, so it is late-game gear — and what it opens is the
-  **[Demon King](entities/demon-king.md)** boss fight.
+  to return to exactly where you left from. Crafting one needs tungsten and gold
+  plus the spoils of **both** underworld minibosses — five
+  **[dragon scales](entities/dragon.md)** and five
+  **[minotaur horns](entities/minotaur.md)** — so it is firmly late-game gear, and
+  what it opens is the **[Demon King](entities/demon-king.md)** boss fight.
 
 ## Materials reference
 
@@ -205,3 +207,5 @@ Eat the food in your selected hotbar slot with <kbd>F</kbd>.
 | Raw Gold / Gold Ingot | Gold ore → forge | Locking chests, arena keys |
 | Rope | Bark | Rope ladders |
 | Paper | Bark | Cloning spellbooks |
+| Dragon Scale | Slain [dragon](entities/dragon.md) | Arena keys |
+| Minotaur Horn | Slain [minotaur](entities/minotaur.md) | Arena keys |

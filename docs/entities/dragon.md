@@ -34,9 +34,10 @@ cavern** for it to fly in, so a dragon always appears aloft and in plain sight r
 than buried in rock. With 200 HP and relentless ranged fire, it's a genuine miniboss;
 pick your moment, use cover, and don't get cornered while it rains fire.
 
-Felling a dragon spills a single **Dragon Scale** — a shimmering plate that is the
-only source of the scales needed to craft an [Arena Key](../crafting.md), so reaching
-the boss arena means hunting down dragons first.
+Felling a dragon spills a single **Dragon Scale** — a shimmering plate needed to craft
+an [Arena Key](../crafting.md). The key also calls for five **[minotaur
+horns](minotaur.md)**, so reaching the boss arena means hunting down **both** of the
+underworld's minibosses, not just the dragons.
 
 You can also raise a **friendly** white dragon of your own — a peaceable twin of this
 one that fights for you and carries you aloft — with the **[Dragonian Steed

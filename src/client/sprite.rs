@@ -329,6 +329,30 @@ pub static ORC_SLAM_SPRITE: SpriteDef = SpriteDef {
     fps: 6.0,
 };
 
+/// Minotaur: the underworld's rare horned miniboss, drawn as large as the demon king.
+/// Its four-frame walk cycle is its plodding hulk after the player — and, sped up by the
+/// client, doubles as the head-down sprint of its headbutt charge (it has no separate
+/// charge sheet).
+pub static MINOTAUR_SPRITE: SpriteDef = SpriteDef {
+    name: "minotaur",
+    frame_w: 11,
+    frame_h: 14,
+    frames: 4,
+    fps: 4.0,
+};
+
+/// Minotaur jump-slam: the one-shot leap-and-crash the minotaur plays for its slam
+/// attack — it crouches, springs, hangs at the apex, then brings itself down on the
+/// ground — stepped by its attack (lunge) timer rather than the walk clock. Lives in the
+/// `minotaur/attack` subdirectory (its `name` doubles as that path).
+pub static MINOTAUR_ATTACK_SPRITE: SpriteDef = SpriteDef {
+    name: "minotaur/attack",
+    frame_w: 16,
+    frame_h: 15,
+    frames: 6,
+    fps: 6.0,
+};
+
 /// Ash twister: a whirling column of underworld ash. A single drifting frame
 /// (the swirl reads the same however it is rotated), 16x16 like its sheet.
 pub static ASH_TWISTER_SPRITE: SpriteDef = SpriteDef {
@@ -571,7 +595,7 @@ pub static TWINSCALE_SPRITE: SpriteDef = SpriteDef {
 };
 
 /// Every sprite the atlas needs to pack.
-pub fn all() -> [&'static SpriteDef; 54] {
+pub fn all() -> [&'static SpriteDef; 56] {
     [
         &PLAYER_SPRITE,
         &BOAT_SPRITE,
@@ -603,6 +627,8 @@ pub fn all() -> [&'static SpriteDef; 54] {
         &DEMON_KING_ATTACK_SPRITE,
         &ORC_SPRITE,
         &ORC_SLAM_SPRITE,
+        &MINOTAUR_SPRITE,
+        &MINOTAUR_ATTACK_SPRITE,
         &ASH_TWISTER_SPRITE,
         &ORC_MAGE_SPRITE,
         &ORC_MAGE_CAST_SPRITE,
@@ -670,6 +696,10 @@ pub fn sprite_for(kind: &EntityKind) -> &'static SpriteDef {
         // An orc's slam pose is handled by the scene builder off its lunge timer;
         // this walk sheet is its plodding stride.
         EntityKind::Orc => &ORC_SPRITE,
+        // A minotaur's jump-slam pose is handled by the scene builder off its lunge
+        // timer; this walk sheet is its plodding hulk — and, sped up by the scene
+        // builder when it charges, doubles as its head-down headbutt sprint.
+        EntityKind::Minotaur => &MINOTAUR_SPRITE,
         EntityKind::AshTwister => &ASH_TWISTER_SPRITE,
         // An orc mage's cast pose is handled by the scene builder off its lunge
         // timer; this standing frame is its idle/shepherding pose.

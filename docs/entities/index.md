@@ -48,9 +48,10 @@ Projectiles (bones, fireballs) are the exception, flying at 130–170 px/s.
 
 ## Minibosses
 
-| Entity                | HP  | Where                                            |
-| --------------------- | --- | ------------------------------------------------ |
-| [Dragon](dragon.md)   | 200 | Underworld charred expanse — very rare, **flies** |
+| Entity                  | HP  | Where                                            |
+| ----------------------- | --- | ------------------------------------------------ |
+| [Dragon](dragon.md)     | 200 | Underworld charred expanse — very rare, **flies** |
+| [Minotaur](minotaur.md) | 220 | Underworld charred expanse — very rare, ground brute |
 
 ## Bosses
 

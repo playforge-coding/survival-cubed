@@ -270,6 +270,11 @@ pub const MUSKET: BlockId = 68;
 /// [`IRON_INGOT`]. An item (not placeable). Firing a musket spends one bullet; a
 /// player out of bullets can't shoot.
 pub const BULLET: BlockId = 69;
+/// A minotaur horn: a great curved horn wrenched from a slain
+/// [`crate::entity::EntityKind::Minotaur`], the underworld's rare horned miniboss. An
+/// item (not placeable); five of them, alongside a clutch of [`DRAGON_SCALE`]s and a
+/// tungsten and gold ingot, are crafted into an [`ARENA_KEY`].
+pub const MINOTAUR_HORN: BlockId = 70;
 
 /// Gold ingots consumed to reinforce a plain [`CHEST`] into a [`LOCKED_CHEST`].
 /// Shared by the server (which charges it) and the client (which shows the cost).
@@ -439,6 +444,9 @@ impl BlockRegistry {
         // fires a bullet toward the cursor. Bullets: its non-placeable ammunition.
         r.register("musket", false, true, false, 0.0);
         r.register("bullet", false, true, false, 0.0);
+        // A minotaur horn: a non-placeable item wrenched from a slain minotaur, crafted
+        // (in fives, with dragon scales, gold and tungsten) into an arena key.
+        r.register("minotaur_horn", false, true, false, 0.0);
         r
     }
 

@@ -415,6 +415,71 @@ const DRAGON_SPAWN_CLEARANCE: i32 = 10;
 /// begins aloft in the open rather than perched on the rock.
 const DRAGON_SPAWN_HOVER: f32 = 6.0 * TILE_SIZE;
 
+// --- Minotaur (underworld horned miniboss) -------------------------------------
+/// How far (px) a minotaur notices a player and begins hunting. Generous like the
+/// dragon's, befitting a miniboss that commands its patch of the depths.
+const MINOTAUR_AGGRO: f32 = 360.0;
+/// Ground speed of a minotaur as it **hulks** after a player, in pixels/second —
+/// slower than even an orc, a ponderous brute until it commits to a charge.
+const MINOTAUR_HULK_SPEED: f32 = 22.0;
+/// Ground speed of a charging minotaur, in pixels/second — it lowers its head and
+/// barrels in far faster than a player can walk, so a headbutt charge must be dodged
+/// rather than outrun in a straight line.
+const MINOTAUR_CHARGE_SPEED: f32 = 168.0;
+/// Gap (px between AABBs) within which a minotaur, off cooldown, leaps into a **jump
+/// slam** rather than charging — the player is close enough to crush from above.
+const MINOTAUR_SLAM_RANGE: f32 = 48.0;
+/// Maximum gap (px between AABBs) at which a minotaur, off cooldown and with a clear
+/// line on the player, lowers its head and commits to a **headbutt charge** — beyond
+/// slam range but within this it picks the charge.
+const MINOTAUR_CHARGE_RANGE: f32 = 240.0;
+/// How far above/below the minotaur's own center (px) a target may be for a headbutt
+/// charge to make sense — a charge runs along the ground, so it only commits when the
+/// player is roughly level with it (otherwise it hulks closer or slams).
+const MINOTAUR_CHARGE_LEVEL: f32 = 36.0;
+/// Upward launch speed (px/s) of a minotaur's jump slam — a leap that carries it a few
+/// blocks clear of the ground so it hangs before crashing down. Paired with the reduced
+/// [`MINOTAUR_HANG_GRAVITY`], it rises to its apex roughly halfway through the rise/hang
+/// phase, then floats there before the drop.
+const MINOTAUR_JUMP_VY: f32 = -240.0;
+/// Gravity scale applied to a minotaur while it rises and **hangs** at the apex of its
+/// jump slam (a fraction of normal [`GRAVITY`]), so it floats menacingly before the
+/// drop rather than snapping straight back down.
+const MINOTAUR_HANG_GRAVITY: f32 = 0.32;
+/// Downward speed (px/s) a minotaur slams at once its jump enters the drop phase — it
+/// crashes back to earth far faster than it rose.
+const MINOTAUR_SLAM_VY: f32 = 620.0;
+/// Seconds of jump slam remaining (of [`crate::entity::MINOTAUR_SLAM_TIME`]) at which
+/// the leap gives way to the crashing **drop**: until then it rises and hangs, after
+/// which it plummets. A little past halfway, so the hang reads before the slam.
+const MINOTAUR_SLAM_DROP_TIME: f32 = crate::entity::MINOTAUR_SLAM_TIME * 0.45;
+/// Horizontal speed (px/s) a minotaur carries toward its target as it leaps, so a jump
+/// slam comes down roughly *on* the player rather than straight up and down.
+const MINOTAUR_LEAP_VX: f32 = 70.0;
+/// Radius (px, from the minotaur's center) within which a jump slam's shockwave catches
+/// a **grounded** target when it lands. Wide — the whole point of the slam is that it's
+/// an area attack you escape by being airborne, not by being a step away.
+const MINOTAUR_SLAM_RADIUS: f32 = 56.0;
+/// Damage a minotaur's jump slam deals to each grounded target caught in its landing.
+const MINOTAUR_SLAM_DAMAGE: i32 = 18;
+/// Damage a minotaur's headbutt charge deals to the target it gores.
+const MINOTAUR_HEADBUTT_DAMAGE: i32 = 16;
+/// Maximum gap (px between AABBs) at which a charging minotaur's headbutt connects.
+const MINOTAUR_HEADBUTT_REACH: f32 = 12.0;
+/// Seconds a headbutt charge runs before the minotaur gives up the rush (if it hasn't
+/// already gored its target or slammed into a wall) and returns to hulking.
+const MINOTAUR_CHARGE_TIME: f32 = 1.3;
+/// Seconds a minotaur waits between attacks (the recovery set when one finishes).
+const MINOTAUR_ATTACK_INTERVAL: f32 = 1.6;
+/// Permille (out of 1000) chance that a fresh underworld charred chunk seeds a
+/// minotaur — about as rare as a [`DRAGON_CHUNK_PERMILLE`] dragon, so meeting one is a
+/// genuine once-in-a-while event rather than ambient life.
+const MINOTAUR_CHUNK_PERMILLE: u32 = 12;
+/// Open (non-solid) cells a minotaur's spawn column must clear above its floor before
+/// it will seed one there — enough headroom for its great height and its jump slam, so
+/// it isn't wedged into a cramped tunnel.
+const MINOTAUR_SPAWN_CLEARANCE: i32 = 6;
+
 // --- White dragon (the dragonian steed companion) ------------------------------
 /// How far (px) a riderless white dragon notices a monster and wheels in to breathe
 /// fire at it. Generous like the hostile dragon's aggro, so the steed actively keeps
@@ -3748,6 +3813,7 @@ fn creature_mana(kind: &EntityKind) -> i32 {
         EntityKind::DarkKnight => 160,
         EntityKind::DarkMusketeer => 150,
         EntityKind::Dragon => 600,
+        EntityKind::Minotaur => 600,
         EntityKind::DemonKing => 1000,
         EntityKind::Twinscale => 2000,
         // Animals, companions, projectiles, items, players: no mana.
@@ -3787,6 +3853,7 @@ fn creature_loot(kind: &EntityKind) -> &'static [(BlockId, u32)] {
         EntityKind::Chicken => &[(crate::block::RAW_MEAT, 1)],
         EntityKind::Goat => &[(crate::block::RAW_MEAT, 2)],
         EntityKind::Dragon => &[(crate::block::DRAGON_SCALE, 1)],
+        EntityKind::Minotaur => &[(crate::block::MINOTAUR_HORN, 1)],
         _ => &[],
     }
 }
@@ -5048,6 +5115,59 @@ fn maybe_spawn_dragon(shared: &Shared, cx: i32, cy: i32) {
     shared.broadcast_dim(Dimension::Underworld, ServerMessage::EntitySpawn { entity });
 }
 
+/// Possibly seed a minotaur — the underworld's rare horned miniboss — into a freshly
+/// generated underworld chunk. Like the dragon it keeps to the main **charred** expanse
+/// (never the ash valleys) and is *extremely* rare: only about a dozen chunks in a
+/// thousand seed one. Being a **ground** brute (not a flier), it is placed standing on a
+/// charred-rock floor that has some open headroom above it (so it isn't wedged into a
+/// cramped tunnel and has room for its great height and its jump slam). Deterministic per
+/// chunk via [`chunk_hash`] on its own salt range, so re-exploring the same terrain never
+/// double-spawns, and it runs independently of the other underworld spawners.
+fn maybe_spawn_minotaur(shared: &Shared, cx: i32, cy: i32) {
+    let mut world = shared.world(Dimension::Underworld).lock();
+    let seed = world.generator.seed();
+    if chunk_hash(seed, cx, cy, 250) % 1000 >= MINOTAUR_CHUNK_PERMILLE {
+        return;
+    }
+
+    let base_x = cx * CHUNK_SIZE;
+    let chunk_top = cy * CHUNK_SIZE;
+    let chunk_bottom = chunk_top + CHUNK_SIZE;
+    let (_, h) = EntityKind::Minotaur.size();
+
+    let lx = chunk_hash(seed, cx, cy, 251) % CHUNK_SIZE as u32;
+    let cell_x = base_x + lx as i32;
+    // Minotaurs keep to the main charred expanse — bail if this column is an ash valley.
+    if world.generator.underworld_biome_at(cell_x) != crate::worldgen::UnderworldBiome::Charred {
+        return;
+    }
+    // Find a floor (open cell above solid rock) with open headroom above it, scanning
+    // from the chunk's bottom upward, so the brute stands in a roomy cavern.
+    let mut placed = None;
+    for ty in (chunk_top..chunk_bottom).rev() {
+        if !world.solid(cell_x, ty) && world.solid(cell_x, ty + 1) {
+            let clear = (1..=MINOTAUR_SPAWN_CLEARANCE)
+                .take_while(|&n| !world.solid(cell_x, ty - n + 1))
+                .count() as i32;
+            if clear >= MINOTAUR_SPAWN_CLEARANCE {
+                placed = Some((ty + 1) as f32 * TILE_SIZE - h);
+                break;
+            }
+        }
+    }
+    let Some(y) = placed else { return };
+
+    let id = shared.alloc_id();
+    let entity = Entity::new(id, EntityKind::Minotaur, cell_x as f32 * TILE_SIZE, y);
+    shared
+        .entities(Dimension::Underworld)
+        .lock()
+        .insert(entity.clone());
+    drop(world);
+
+    shared.broadcast_dim(Dimension::Underworld, ServerMessage::EntitySpawn { entity });
+}
+
 /// Possibly seed ash twisters into a freshly generated underworld chunk. Unlike the
 /// other underworld monsters they are native to the **ash valleys** alone, so a
 /// candidate spawn column is skipped unless it belongs to one (see
@@ -5846,6 +5966,11 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
     let orc_ids: Vec<EntityId> = entities
         .values()
         .filter(|e| matches!(e.kind, EntityKind::Orc))
+        .map(|e| e.id)
+        .collect();
+    let minotaur_ids: Vec<EntityId> = entities
+        .values()
+        .filter(|e| matches!(e.kind, EntityKind::Minotaur))
         .map(|e| e.id)
         .collect();
     let demon_king_ids: Vec<EntityId> = entities
@@ -8706,6 +8831,213 @@ fn step_entities(shared: &Shared, dim: Dimension) -> Step {
         });
     }
 
+    // Minotaurs: the underworld's rare horned miniboss. A ground brute that normally
+    // **hulks slowly** after the player, but commits — on a cooldown — to one of two
+    // telegraphed attacks. Its **jump slam**: it leaps (toward the player), hangs at the
+    // apex, then crashes down — the landing sends out a shockwave that damages anyone
+    // left standing on the ground, so a player who is airborne (mid-jump) when it lands
+    // is spared. Its **headbutt charge**: it lowers its head and barrels in fast along
+    // the ground to gore whoever it reaches. Active at all hours (the underworld is
+    // always dark). The slam rides the `lunge` timer (with `lunge_dir` doubling as a
+    // "landing already dealt" latch); the charge rides the `flee` timer (with `lunge_dir`
+    // holding its locked heading).
+    for id in minotaur_ids {
+        let Some(e) = entities.get_mut(id) else {
+            continue;
+        };
+        let (w, h) = e.size();
+        e.attack_cd = (e.attack_cd - TICK_DT).max(0.0);
+        let home = *e.home_x.get_or_insert(e.x);
+
+        // Mid jump-slam: a committed leap that plays out over MINOTAUR_SLAM_TIME. It
+        // rises and hangs under reduced gravity while the timer is high, then — once the
+        // timer crosses the drop threshold — slams straight down, the blow landing the
+        // tick it touches earth.
+        if e.lunge > 0.0 {
+            e.lunge = (e.lunge - TICK_DT).max(0.0);
+            let dropping = e.lunge <= MINOTAUR_SLAM_DROP_TIME;
+            if !dropping {
+                // Ascent/hang: float up (then drift down) under a fraction of gravity.
+                e.vy = (e.vy + GRAVITY * MINOTAUR_HANG_GRAVITY * TICK_DT).min(MAX_FALL);
+            } else if e.vy < MINOTAUR_SLAM_VY {
+                // Drop: commit to a hard crash downward.
+                e.vy = MINOTAUR_SLAM_VY;
+            }
+            // Fly the leap freely, each axis stopped independently by walls.
+            let (nx, _) = move_x(&mut world, e.x, e.y, w, h, e.vx * TICK_DT);
+            let (ny, on_ground) = move_y(&mut world, nx, e.y, w, h, e.vy * TICK_DT);
+            e.x = nx;
+            e.y = ny;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: nx,
+                y: ny,
+                vx: e.vx,
+                vy: e.vy,
+            });
+            // Land the slam once, the tick it touches down during the drop: a shockwave
+            // that catches every GROUNDED player (and any knight — they can't jump)
+            // within reach. `lunge_dir` latches so the blow lands a single time.
+            if dropping && on_ground && e.lunge_dir == 0.0 {
+                e.lunge_dir = 1.0;
+                e.vx = 0.0;
+                let scx = nx + w * 0.5;
+                let scy = ny + h * 0.5;
+                for &(pid, px, py) in &hostile_players {
+                    let (pw, ph) = PLAYER_SIZE;
+                    if grounded(&mut world, px, py, pw, ph) {
+                        let pcx = px + pw * 0.5;
+                        let pcy = py + ph * 0.5;
+                        if (pcx - scx).hypot(pcy - scy) <= MINOTAUR_SLAM_RADIUS {
+                            let kdir = if pcx >= scx { 1.0 } else { -1.0 };
+                            bites.push((
+                                pid,
+                                (kdir * KNOCKBACK_X, -KNOCKBACK_Y),
+                                MINOTAUR_SLAM_DAMAGE,
+                            ));
+                        }
+                    }
+                }
+                for &(kid, kx, ky, kw, kh) in &knight_boxes {
+                    let kcx = kx + kw * 0.5;
+                    let kcy = ky + kh * 0.5;
+                    if (kcx - scx).hypot(kcy - scy) <= MINOTAUR_SLAM_RADIUS {
+                        knight_hits.push((kid, MINOTAUR_SLAM_DAMAGE));
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Mid headbutt charge: barrel along the ground in the locked heading until it
+        // gores its target, slams into a wall, or the charge times out.
+        if e.flee > 0.0 {
+            e.flee = (e.flee - TICK_DT).max(0.0);
+            let dir = e.lunge_dir;
+            let prev_x = e.x;
+            let m = step_ground(
+                &mut world,
+                (e.x, e.y, w, h),
+                e.vy,
+                dir,
+                MINOTAUR_CHARGE_SPEED,
+                true,
+            );
+            e.x = m.x;
+            e.y = m.y;
+            // Report the full charge speed (signed by heading) so the client blurs its
+            // legs into a sprint; the actual position came from step_ground.
+            e.vx = dir * MINOTAUR_CHARGE_SPEED;
+            e.vy = m.vy;
+            broadcasts.push(ServerMessage::EntityMoved {
+                id,
+                x: m.x,
+                y: m.y,
+                vx: e.vx,
+                vy: m.vy,
+            });
+            // Gore the first target within reach, ending the charge.
+            let scx = m.x + w * 0.5;
+            let scy = m.y + h * 0.5;
+            if let Some(p) = nearest_prey(
+                &hostile_players,
+                &knight_boxes,
+                scx,
+                scy,
+                MINOTAUR_CHARGE_RANGE,
+            ) && aabb_gap(m.x, m.y, w, h, p.x, p.y, p.w, p.h) <= MINOTAUR_HEADBUTT_REACH
+            {
+                let kdir = if p.x + p.w * 0.5 >= scx { 1.0 } else { -1.0 };
+                hit_prey(
+                    &mut bites,
+                    &mut knight_hits,
+                    &p,
+                    (kdir * KNOCKBACK_X, -KNOCKBACK_Y),
+                    MINOTAUR_HEADBUTT_DAMAGE,
+                );
+                e.flee = 0.0;
+            }
+            // A charge that rammed a wall (made no horizontal headway) also ends.
+            if (m.x - prev_x).abs() < 0.5 {
+                e.flee = 0.0;
+            }
+            continue;
+        }
+
+        // Not mid-attack: decide whether to launch one, else hulk/wander.
+        let scx = e.x + w * 0.5;
+        let scy = e.y + h * 0.5;
+        let target = nearest_prey(&hostile_players, &knight_boxes, scx, scy, MINOTAUR_AGGRO);
+        if let Some(ref p) = target
+            && e.attack_cd <= 0.0
+            && grounded(&mut world, e.x, e.y, w, h)
+        {
+            let gap = aabb_gap(e.x, e.y, w, h, p.x, p.y, p.w, p.h);
+            let pcx = p.x + p.w * 0.5;
+            let pcy = p.y + p.h * 0.5;
+            let toward = if pcx >= scx { 1.0 } else { -1.0 };
+            if gap <= MINOTAUR_SLAM_RANGE {
+                // Jump slam: crouch and leap toward the player, hanging then crashing.
+                e.lunge = crate::entity::MINOTAUR_SLAM_TIME;
+                e.lunge_dir = 0.0;
+                e.attack_cd = MINOTAUR_ATTACK_INTERVAL + crate::entity::MINOTAUR_SLAM_TIME;
+                e.vy = MINOTAUR_JUMP_VY;
+                e.vx = toward * MINOTAUR_LEAP_VX;
+                broadcasts.push(ServerMessage::EntityLunging { id });
+                broadcasts.push(ServerMessage::EntityMoved {
+                    id,
+                    x: e.x,
+                    y: e.y,
+                    vx: e.vx,
+                    vy: e.vy,
+                });
+                continue;
+            } else if (pcy - scy).abs() <= MINOTAUR_CHARGE_LEVEL && gap <= MINOTAUR_CHARGE_RANGE {
+                // Headbutt charge: lock the heading and barrel in (no wind-up pose — the
+                // client reads the high reported speed and blurs its walk into a sprint).
+                e.flee = MINOTAUR_CHARGE_TIME;
+                e.lunge_dir = toward;
+                e.attack_cd = MINOTAUR_ATTACK_INTERVAL + MINOTAUR_CHARGE_TIME;
+                e.vx = toward * MINOTAUR_CHARGE_SPEED;
+                broadcasts.push(ServerMessage::EntityMoved {
+                    id,
+                    x: e.x,
+                    y: e.y,
+                    vx: e.vx,
+                    vy: e.vy,
+                });
+                continue;
+            }
+        }
+
+        // Otherwise lumber slowly toward the target, or wander its home patch.
+        let chasing = target.is_some();
+        let dir = match target {
+            Some(p) if p.x + p.w * 0.5 < scx => -1.0,
+            Some(_) => 1.0,
+            None => wander_dir(scx, e.vx, home),
+        };
+        let m = step_ground(
+            &mut world,
+            (e.x, e.y, w, h),
+            e.vy,
+            dir,
+            MINOTAUR_HULK_SPEED,
+            chasing,
+        );
+        e.x = m.x;
+        e.y = m.y;
+        e.vx = m.vx;
+        e.vy = m.vy;
+        broadcasts.push(ServerMessage::EntityMoved {
+            id,
+            x: m.x,
+            y: m.y,
+            vx: m.vx,
+            vy: m.vy,
+        });
+    }
+
     // Demon king: the arena boss. It opens the fight **on foot**, striding after the
     // player across the floor, and only once it is wounded past two-thirds health does
     // it take to the air — thereafter it FLIES after the player like an enchanted demon,
@@ -10444,6 +10776,7 @@ fn is_hostile(kind: &EntityKind) -> bool {
             | EntityKind::DarkKnight
             | EntityKind::DarkMusketeer
             | EntityKind::Dragon
+            | EntityKind::Minotaur
             | EntityKind::DemonKing
             | EntityKind::Twinscale
     )
@@ -11269,6 +11602,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                                 maybe_spawn_orcs(&shared, cx, cy);
                                 maybe_spawn_orc_mages(&shared, cx, cy);
                                 maybe_spawn_dragon(&shared, cx, cy);
+                                maybe_spawn_minotaur(&shared, cx, cy);
                                 maybe_spawn_ash_twisters(&shared, cx, cy);
                                 maybe_spawn_necromancers_ash(&shared, cx, cy);
                             }
