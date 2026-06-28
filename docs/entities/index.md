@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # Bestiary
 
 Every creature in Survival Cubed has its own page here, with a stat block and

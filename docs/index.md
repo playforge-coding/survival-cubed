@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # Survival Cubed
 
 **Survival Cubed** is a multiplayer-first 2D voxel survival game written in Rust.
@@ -14,59 +18,59 @@ so build walls, light a fire, and survive. When you're ready for rarer ore, craf
 
 - :material-rocket-launch: **[Getting Started](getting-started.md)**
 
-    Install or build the game and launch your first world.
+  Install or build the game and launch your first world.
 
 - :material-controller: **[Controls & HUD](controls.md)**
 
-    Every key, mouse button, and on-screen element.
+  Every key, mouse button, and on-screen element.
 
 - :material-heart-pulse: **[Gameplay & Survival](gameplay.md)**
 
-    Health, fall damage, swimming, the day/night cycle, and respawning.
+  Health, fall damage, swimming, the day/night cycle, and respawning.
 
 - :material-cube: **[Blocks](blocks.md)**
 
-    Every block, what it does, and how hard it is to break.
+  Every block, what it does, and how hard it is to break.
 
 - :material-hammer-wrench: **[Crafting & Tools](crafting.md)**
 
-    All recipes, tool tiers, smelting, and cooking.
+  All recipes, tool tiers, smelting, and cooking.
 
 - :material-earth: **[The World](world.md)**
 
-    Biomes, ores, caves, structures, and the underworld.
+  Biomes, ores, caves, structures, and the underworld.
 
 - :material-paw: **[Creatures](creatures.md)**
 
-    Passive animals, pets, hostile mobs, and combat.
+  Passive animals, pets, hostile mobs, and combat.
 
 - :material-lan: **[Multiplayer](multiplayer.md)**
 
-    Hosting, joining, accounts, chat, and moderation.
+  Hosting, joining, accounts, chat, and moderation.
 
 - :material-palette: **[Creator Mode](creator-mode.md)**
 
-    Flight, infinite blocks, and the structure tool.
+  Flight, infinite blocks, and the structure tool.
 
 - :material-content-save: **[Saves & Files](saves.md)**
 
-    Where worlds, screenshots, and credentials live.
+  Where worlds, screenshots, and credentials live.
 
 </div>
 
 ## At a glance
 
-| | |
-|---|---|
-| **Dimensions** | Overworld (surface) and the Underworld |
-| **Biomes** | Plains, Forest, Mountains, Desert, plus underworld zones |
-| **World size** | Infinite width, 256 cells tall, 16×16-cell chunks |
-| **Tool tiers** | Wood → Stone → Iron → Tungsten |
-| **Day length** | 20 minutes (real time) per full day/night cycle |
-| **Multiplayer** | QUIC, LAN auto-discovery, password accounts |
-| **Networking** | Encrypted (QUIC / TLS 1.3) with per-server certificates |
+|                 |                                                          |
+| --------------- | -------------------------------------------------------- |
+| **Dimensions**  | Overworld (surface) and the Underworld                   |
+| **Biomes**      | Plains, Forest, Mountains, Desert, plus underworld zones |
+| **World size**  | Infinite width, 256 cells tall, 16×16-cell chunks        |
+| **Tool tiers**  | Wood → Stone → Iron → Tungsten                           |
+| **Day length**  | 20 minutes (real time) per full day/night cycle          |
+| **Multiplayer** | QUIC, LAN auto-discovery, password accounts              |
+| **Networking**  | Encrypted (QUIC / TLS 1.3) with per-server certificates  |
 
 !!! tip "New here?"
-    Head to **[Getting Started](getting-started.md)** to launch the game, then
-    skim **[Controls & HUD](controls.md)** and **[Gameplay & Survival](gameplay.md)**
-    before your first night falls.
+Head to **[Getting Started](getting-started.md)** to launch the game, then
+skim **[Controls & HUD](controls.md)** and **[Gameplay & Survival](gameplay.md)**
+before your first night falls.

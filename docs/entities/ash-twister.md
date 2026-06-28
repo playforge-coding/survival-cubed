@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # Ash Twister
 
 A whirling column of ash that haunts the underworld's **ash valleys**. It barely

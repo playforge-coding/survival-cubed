@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # Twinscale
 
 The **post-game superboss** of the [arena](../world.md#the-arena) — a colossal

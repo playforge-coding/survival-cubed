@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # Musketeer
 
 A wandering marksman who roams the **plains** — the ranged twin of the

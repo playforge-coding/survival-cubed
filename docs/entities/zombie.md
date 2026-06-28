@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # Zombie
 
 The classic creature of the dark — slow, tough, and hard-hitting. Zombies belong

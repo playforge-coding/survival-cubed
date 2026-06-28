@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # Cat & Puppy
 
 Wild **cats** and **puppies** roam the forest. Both are a rare find — only about

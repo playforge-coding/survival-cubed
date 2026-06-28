@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # Demon King
 
 The **boss** of the [arena](../world.md#the-arena), and the only one of its kind in

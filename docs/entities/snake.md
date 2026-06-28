@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # Snake
 
 A desert **ambusher**. Rather than charge, the snake closes a little, **coils**,

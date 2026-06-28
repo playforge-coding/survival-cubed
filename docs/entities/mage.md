@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # Mage
 
 A robed spellcaster that fights with magic instead of steel. A mage is never born

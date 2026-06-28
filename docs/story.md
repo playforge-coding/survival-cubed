@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # The Story
 
 Long ago, before the night ever turned against the living, the **good king** ruled

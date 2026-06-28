@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # Skeletons
 
 Two undead archers-of-a-sort. The ordinary **skeleton** haunts the overworld

@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # Dark Knight
 
 A black-armoured warrior that stalks the **overworld night** in any biome — rare,

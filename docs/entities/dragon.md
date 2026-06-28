@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # Dragon
 
 The underworld's rare flying **miniboss**. A long, winged serpent that wheels

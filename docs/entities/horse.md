@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # Horse
 
 A tall, peaceable grazer that roams the **plains** — uncommon, found in about

@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # Necromancer & Skulls
 
 A hooded caster that never closes in — it kites you and lobs **summoner

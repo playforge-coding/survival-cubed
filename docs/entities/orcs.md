@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # Orcs
 
 Two very different foes share the orc name and the underworld's **charred**

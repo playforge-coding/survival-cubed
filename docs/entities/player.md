@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # The Player
 
 You are an entity like any other — but a *special* one. Your client drives your

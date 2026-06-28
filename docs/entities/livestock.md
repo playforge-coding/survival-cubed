@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # Chicken & Goat
 
 The world's passive livestock. Neither will ever hurt you; both drop **raw

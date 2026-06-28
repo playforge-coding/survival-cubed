@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # Demons
 
 The underworld's ranged threat. An ordinary **demon** keeps its distance and

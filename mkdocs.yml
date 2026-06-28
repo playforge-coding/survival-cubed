@@ -25,6 +25,7 @@ theme:
       toggle:
         icon: material/weather-sunny
         name: Switch to light mode
+  custom_dir: overrides
   features:
     - navigation.instant
     - navigation.tracking
@@ -68,28 +69,28 @@ nav:
   - Creatures: creatures.md
   - The Story: story.md
   - Bestiary:
-    - Overview: entities/index.md
-    - The Player: entities/player.md
-    - Chicken & Goat: entities/livestock.md
-    - Cat & Puppy: entities/pets.md
-    - Horse: entities/horse.md
-    - Knight: entities/knight.md
-    - Musketeer: entities/musketeer.md
-    - Slime: entities/slime.md
-    - Zombie: entities/zombie.md
-    - Dark Knight: entities/dark-knight.md
-    - Dark Musketeer: entities/dark-musketeer.md
-    - Spider: entities/spider.md
-    - Snake: entities/snake.md
-    - Skeletons: entities/skeletons.md
-    - Demons: entities/demons.md
-    - Orcs: entities/orcs.md
-    - Necromancer & Skulls: entities/necromancer.md
-    - Mage: entities/mage.md
-    - Ash Twister: entities/ash-twister.md
-    - Dragon: entities/dragon.md
-    - Demon King: entities/demon-king.md
-    - Twinscale: entities/twinscale.md
+      - Overview: entities/index.md
+      - The Player: entities/player.md
+      - Chicken & Goat: entities/livestock.md
+      - Cat & Puppy: entities/pets.md
+      - Horse: entities/horse.md
+      - Knight: entities/knight.md
+      - Musketeer: entities/musketeer.md
+      - Slime: entities/slime.md
+      - Zombie: entities/zombie.md
+      - Dark Knight: entities/dark-knight.md
+      - Dark Musketeer: entities/dark-musketeer.md
+      - Spider: entities/spider.md
+      - Snake: entities/snake.md
+      - Skeletons: entities/skeletons.md
+      - Demons: entities/demons.md
+      - Orcs: entities/orcs.md
+      - Necromancer & Skulls: entities/necromancer.md
+      - Mage: entities/mage.md
+      - Ash Twister: entities/ash-twister.md
+      - Dragon: entities/dragon.md
+      - Demon King: entities/demon-king.md
+      - Twinscale: entities/twinscale.md
   - Multiplayer: multiplayer.md
   - Creator Mode: creator-mode.md
   - Saves & Files: saves.md

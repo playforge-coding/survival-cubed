@@ -1,3 +1,7 @@
+---
+comments: true
+---
+
 # Slime
 
 The mildest of the monsters — a small bouncing blob that haunts the
