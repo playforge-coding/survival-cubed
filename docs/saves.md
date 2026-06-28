@@ -1,17 +1,36 @@
 # Saves & Files
 
-Survival Cubed stores worlds, screenshots, structures, and saved logins under
-your operating system's standard data and config directories. The examples below
-use the Linux paths; macOS and Windows use their platform equivalents.
+Survival Cubed stores worlds, screenshots, and structures under your operating
+system's standard **data** directory, and saved logins and trusted-host
+fingerprints under its standard **config** directory. Both are namespaced with a
+`survival-cubed/` subfolder. The two base directories resolve like this:
+
+| Platform | Data directory | Config directory |
+|---|---|---|
+| Linux | `$XDG_DATA_HOME`, else `~/.local/share` | `$XDG_CONFIG_HOME`, else `~/.config` |
+| macOS | `~/Library/Application Support` | `~/Library/Application Support` |
+| Windows | `%APPDATA%` (`C:\Users\<you>\AppData\Roaming`) | `%APPDATA%` (`C:\Users\<you>\AppData\Roaming`) |
+
+On macOS and Windows the data and config directories are the same folder, so
+everything below lands under a single `survival-cubed/` directory there. If no
+directory can be determined, paths fall back to the current working directory
+(e.g. `./saves/<world>`).
 
 ## Where things live
 
-| Path (Linux) | Contents |
-|---|---|
-| `~/.local/share/survival-cubed/saves/<world>/` | A singleplayer/host world |
-| `~/.local/share/survival-cubed/server-<port>/` | A dedicated server's world |
-| `~/.local/share/survival-cubed/structures/` | Saved `.scst` structures |
-| `~/.config/survival-cubed/credentials` | Remembered per-server logins |
+Each entry below is relative to the matching base directory above — for example,
+the data-directory `saves/<world>/` is `~/.local/share/survival-cubed/saves/<world>/`
+on Linux, `~/Library/Application Support/survival-cubed/saves/<world>/` on macOS,
+and `%APPDATA%\survival-cubed\saves\<world>\` on Windows.
+
+| Base | Path | Contents |
+|---|---|---|
+| Data | `survival-cubed/saves/<world>/` | A singleplayer/host world |
+| Data | `survival-cubed/server-<port>/` | A dedicated server's world |
+| Data | `survival-cubed/structures/` | Saved `.scst` structures |
+| Data | `survival-cubed/screenshots/` | <kbd>F2</kbd> screenshots (PNG + JPEG) |
+| Config | `survival-cubed/credentials` | Remembered per-server logins |
+| Config | `survival-cubed/known_hosts` | Trusted server fingerprints |
 
 ## What a world contains
 
@@ -54,7 +73,8 @@ a lossless **PNG** and a compressed **JPEG**.
 ## Saved logins
 
 To save retyping your credentials, the client can remember your **per-server**
-name and password in `~/.config/survival-cubed/credentials`. This file is stored
+name and password in the config directory's `survival-cubed/credentials` (e.g.
+`~/.config/survival-cubed/credentials` on Linux). This file is stored
 in plaintext for convenience, so treat it like any other local secret. The
 server only ever stores your password **hashed** — see
 [Multiplayer › Accounts](multiplayer.md#accounts).
