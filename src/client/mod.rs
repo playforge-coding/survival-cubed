@@ -498,9 +498,6 @@ const MAX_CHAT_LOG: usize = 100;
 const CHAT_VISIBLE_LINES: usize = 8;
 /// Longest chat line the input box accepts, matching the server's relay cap.
 const MAX_CHAT_INPUT_LEN: usize = 256;
-/// Entity sprite sheets exposed as `:name:` chat icons, alongside block/item
-/// names. (Dropped-item and zombie-death sheets are intentionally excluded.)
-const CHAT_ENTITY_ICONS: &[&str] = &["player", "slime", "chicken", "goat", "horse", "zombie"];
 
 struct App {
     window: Option<Arc<Window>>,
@@ -4356,10 +4353,14 @@ fn resolve_chat_icon(registry: &BlockRegistry, token: &str) -> Option<ChatIcon> 
     if let Some(def) = registry.iter().find(|d| d.visible && d.name == token) {
         return Some(ChatIcon::Block(def.id));
     }
-    CHAT_ENTITY_ICONS
-        .iter()
-        .find(|name| **name == token)
-        .map(|name| ChatIcon::Sprite(name))
+    // Every entity's base sprite is exposed as an icon, derived straight from the
+    // sprite table so a new creature gets a chat icon automatically. The combined
+    // "ridden" and per-pose sheets (attack/cast/slam/death/sit, whose names carry
+    // a `/`) are excluded, so `:dragon:` works but `:dragon/attack:` stays text.
+    sprite::all()
+        .into_iter()
+        .find(|def| !def.name.contains('/') && def.name == token)
+        .map(|def| ChatIcon::Sprite(def.name))
 }
 
 /// Draw one chat line: the sender's name (tinted by a stable per-name color),
@@ -6071,13 +6072,24 @@ mod tests {
             resolve_chat_icon(&reg, "iron_pickaxe"),
             Some(ChatIcon::Block(_))
         ));
-        // Entity sheets map to a sprite.
+        // Entity sheets map to a sprite — every base creature, not just a few.
         assert!(matches!(
             resolve_chat_icon(&reg, "zombie"),
             Some(ChatIcon::Sprite("zombie"))
         ));
+        assert!(matches!(
+            resolve_chat_icon(&reg, "dragon"),
+            Some(ChatIcon::Sprite("dragon"))
+        ));
+        assert!(matches!(
+            resolve_chat_icon(&reg, "gargoyle"),
+            Some(ChatIcon::Sprite("gargoyle"))
+        ));
+        // Per-pose and ridden sheets (named with a `/`) are not icons; with the
+        // colons stripped the token can't even name them, so they never resolve.
+        assert!(resolve_chat_icon(&reg, "dragon/attack").is_none());
         // Air is invisible and unknown tokens don't resolve (rendered as text).
         assert!(resolve_chat_icon(&reg, "air").is_none());
-        assert!(resolve_chat_icon(&reg, "dragon").is_none());
+        assert!(resolve_chat_icon(&reg, "unknownbeast").is_none());
     }
 }

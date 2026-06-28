@@ -68,6 +68,11 @@ to send (up to 256 characters). Messages are broadcast to everyone and labelled
 with your player name. Chat shows the most recent lines in the bottom-left
 overlay.
 
+A `:name:` token in a message is drawn as an inline 16px icon: any block or item
+(for example `:stone:` or `:iron_pickaxe:`) and any creature's base sprite (for
+example `:zombie:`, `:dragon:`, `:gargoyle:`). Hover an icon to see its name. A
+token that doesn't name something drawable is left as plain text.
+
 ## Admin commands
 
 The **host** holds an admin token (generated at server start and given only to
