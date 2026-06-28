@@ -42,9 +42,10 @@ Drag the **time-of-day slider**, or use the preset buttons — **Dawn**, **Noon*
 Buttons in the Creator Tools window spawn any creature at your location: Slime,
 Chicken, Goat, Cat, Puppy, Horse, Zombie, Spider, Snake, Skeleton, Charred
 Skeleton, Demon, Orc, Orc Mage, Enchanted Demon, Necromancer, Skull, Knight, Dark
-Knight, Dragon, Minotaur, and Twinscale. The row of buttons **scrolls horizontally**, so drag or scroll
-sideways to reach the ones off the edge. See **[Creatures](creatures.md)** for what
-each one does.
+Knight, Dragon, Minotaur, and Twinscale. The row of buttons **scrolls horizontally**:
+use the mouse wheel (it scrolls the row sideways even on a plain vertical wheel or a
+macOS trackpad), or drag the scrollbar, to reach the ones off the edge. See
+**[Creatures](creatures.md)** for what each one does.
 
 ## Giving items
 
