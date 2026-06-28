@@ -190,6 +190,14 @@ impl Credentials {
         self.entries.get(&Self::key(host, name)).map(String::as_str)
     }
 
+    /// Whether any saved login exists for player `name` on *any* server. The menu
+    /// uses this to hint that a returning player may leave the password blank (the
+    /// stored credential is supplied for them), rather than always demanding one.
+    pub fn has_any_for_name(&self, name: &str) -> bool {
+        let suffix = format!("\u{0}{name}");
+        self.entries.keys().any(|k| k.ends_with(&suffix))
+    }
+
     /// Remember `password` for `(host, name)` and persist the store. A password
     /// equal to one already stored is a no-op (avoids a pointless rewrite).
     pub fn add_and_save(&mut self, host: &str, name: &str, password: &str) -> Result<()> {

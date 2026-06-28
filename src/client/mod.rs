@@ -1508,13 +1508,22 @@ impl App {
                                 .hint_text("player"),
                         );
                     });
+                    // A returning player with a saved login may leave this blank
+                    // (the stored password is supplied for them), so only hint
+                    // "required" when no credential exists for the typed name.
+                    let has_saved = self.credentials.has_any_for_name(&self.player_name());
+                    let pw_hint = if has_saved {
+                        "saved (optional)"
+                    } else {
+                        "required"
+                    };
                     ui.horizontal(|ui| {
                         ui.label("Password:");
                         ui.add(
                             egui::TextEdit::singleline(&mut self.password_input)
                                 .desired_width(160.0)
                                 .password(true)
-                                .hint_text("required"),
+                                .hint_text(pw_hint),
                         );
                     });
                     ui.weak("Set on first join; remembered after that.");

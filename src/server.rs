@@ -1536,6 +1536,20 @@ impl Shared {
     }
 }
 
+/// Normalize and validate a submitted login password. Trims surrounding
+/// whitespace (matching what the client does) and rejects a blank or
+/// whitespace-only password, so the "a password is required" rule can't be
+/// bypassed by a modified client sending spaces. Returns the trimmed password to
+/// hash or verify; the trim never affects a legitimate login, which the official
+/// client already trims before sending.
+fn normalize_password(password: &str) -> Result<&str, String> {
+    let trimmed = password.trim();
+    if trimmed.is_empty() {
+        return Err("A password is required to join this server.".to_string());
+    }
+    Ok(trimmed)
+}
+
 impl Shared {
     fn broadcast_all(&self, msg: ServerMessage) {
         for h in self.clients.lock().values() {
@@ -1591,9 +1605,8 @@ impl Shared {
         if name.chars().count() > MAX_NAME_LEN {
             return Err(format!("Name is too long (max {MAX_NAME_LEN} characters)."));
         }
-        if password.is_empty() {
-            return Err("A password is required to join this server.".to_string());
-        }
+        // Normalize and require a real password before doing anything with it.
+        let password = normalize_password(password)?;
         // Refuse a name that someone is currently connected under.
         if self.find_player_by_name(name).is_some() {
             return Err("That name is already in use by another player.".to_string());
@@ -13458,6 +13471,19 @@ pub fn local_bind() -> SocketAddr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn password_normalization_requires_a_real_password() {
+        // A blank or whitespace-only password is rejected, so the "password
+        // required" gate can't be bypassed with spaces.
+        assert!(normalize_password("").is_err());
+        assert!(normalize_password("   ").is_err());
+        assert!(normalize_password("\t \n").is_err());
+        // A real password is accepted and returned trimmed, matching how the
+        // client sends it — so existing accounts still verify.
+        assert_eq!(normalize_password("hunter2").unwrap(), "hunter2");
+        assert_eq!(normalize_password("  hunter2  ").unwrap(), "hunter2");
+    }
 
     #[test]
     fn restore_turns_foes_into_allies() {
