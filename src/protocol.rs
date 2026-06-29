@@ -125,7 +125,7 @@ pub enum SlotRef {
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 25;
+pub const PROTOCOL_VERSION: u32 = 26;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -398,6 +398,11 @@ pub enum ServerMessage {
         /// [`crate::voice`]). `None` means voice is off: the client shows no voice
         /// UI and never opens a relay connection.
         voice: Option<crate::voice::VoiceInfo>,
+        /// The optional webcam-video relay, when the server owner enabled it. It is
+        /// a separate toggle from `voice` but shares the same relay endpoint, so
+        /// when both are on this carries the *same* port/cert as `voice`. `None`
+        /// means webcam is off: no webcam UI and no relay connection for video.
+        webcam: Option<crate::voice::VoiceInfo>,
     },
     /// Full contents of a chunk (row-major, `CHUNK_AREA` entries) in dimension
     /// `dim`. The client ignores chunks for a dimension it is no longer in.

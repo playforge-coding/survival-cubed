@@ -7,6 +7,7 @@ mod render;
 mod screenshot;
 mod sprite;
 mod voice;
+mod webcam;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -552,6 +553,10 @@ struct App {
     /// Whether a hosted server should run the optional voice-chat relay (see
     /// [`voice`]). Only meaningful with [`Self::host_enabled`]; off by default.
     host_voice_enabled: bool,
+    /// Whether a hosted server should offer the optional webcam video (see
+    /// [`webcam`]). A separate toggle from voice; shares the same relay/port.
+    /// Only meaningful with [`Self::host_enabled`]; off by default.
+    host_webcam_enabled: bool,
     /// Voice relay UDP port typed into the host form (default: game port + 1).
     voice_port_input: String,
     /// Item id or name typed into the creator-tools item giver.
@@ -587,6 +592,14 @@ struct App {
     /// Active voice-chat client, present only while connected to a server that
     /// enabled voice (see [`voice`]). Dropping it leaves voice / stops capture.
     voice: Option<voice::VoiceHandle>,
+    /// Active webcam-video client, present only while connected to a server that
+    /// enabled webcam (see [`webcam`]). Always receives; transmits only after the
+    /// camera is toggled on. Dropping it leaves video / stops capture.
+    webcam: Option<webcam::WebcamHandle>,
+    /// Per-player egui textures for the latest decoded webcam frame, keyed by
+    /// entity id; the paired `u64` is the frame sequence last uploaded, so the
+    /// overlay only re-uploads when a newer frame arrives. Pruned as players leave.
+    webcam_tex: HashMap<EntityId, (egui::TextureHandle, u64)>,
     /// Socket address of the server we last initiated a connection to, so a
     /// voice relay (advertised on the same host) can be reached. Set at each
     /// connect site, used when [`net::NetEvent::Connected`] carries voice info.
@@ -627,6 +640,7 @@ impl App {
             upnp_enabled: false,
             host_creator_world: false,
             host_voice_enabled: false,
+            host_webcam_enabled: false,
             voice_port_input: "5001".to_string(),
             give_item_input: String::new(),
             give_item_count: 1,
@@ -648,6 +662,8 @@ impl App {
             },
             music: audio::Music::new(),
             voice: None,
+            webcam: None,
+            webcam_tex: HashMap::new(),
             connect_addr: None,
             input: Input::default(),
             last_frame: Instant::now(),
@@ -763,16 +779,25 @@ impl App {
                 if self.upnp_enabled {
                     srv.forward_port();
                 }
+                // Voice and webcam share one relay on this port; either toggle
+                // starts it (the second is a no-op for the relay itself).
+                let relay_port = self
+                    .voice_port_input
+                    .trim()
+                    .parse()
+                    .unwrap_or(port.wrapping_add(1));
                 if self.host_voice_enabled {
-                    let voice_port = self
-                        .voice_port_input
-                        .trim()
-                        .parse()
-                        .unwrap_or(port.wrapping_add(1));
                     if let Err(e) =
-                        srv.enable_voice(server::host_bind(voice_port), self.upnp_enabled)
+                        srv.enable_voice(server::host_bind(relay_port), self.upnp_enabled)
                     {
                         log::warn!("voice chat failed to start: {e:#}");
+                    }
+                }
+                if self.host_webcam_enabled {
+                    if let Err(e) =
+                        srv.enable_webcam(server::host_bind(relay_port), self.upnp_enabled)
+                    {
+                        log::warn!("webcam video failed to start: {e:#}");
                     }
                 }
                 let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
@@ -880,6 +905,8 @@ impl App {
         self.net = None;
         self.server = None; // dropping closes the embedded server
         self.voice = None; // dropping leaves voice and stops capture
+        self.webcam = None; // dropping leaves webcam and stops capture
+        self.webcam_tex.clear();
         self.connect_addr = None;
         self.game = None;
         self.pending_tofu = None;
@@ -922,6 +949,7 @@ impl App {
                 spawn_y,
                 creator_allowed,
                 voice,
+                webcam,
             } => {
                 // The login was accepted: remember the password for this server so
                 // it needn't be retyped next time.
@@ -946,6 +974,13 @@ impl App {
                     let relay = std::net::SocketAddr::new(server.ip(), info.port);
                     self.voice = Some(voice::connect(relay, info.cert_hash, entity_id));
                     self.status = "Voice chat: hold V to talk".to_string();
+                }
+                // If the server enabled webcam video, connect to the (same) relay
+                // so we can *receive* video. Capture stays off until the player
+                // presses K, so the camera is never on without consent.
+                if let (Some(info), Some(server)) = (webcam, self.connect_addr) {
+                    let relay = std::net::SocketAddr::new(server.ip(), info.port);
+                    self.webcam = Some(webcam::connect(relay, info.cert_hash, entity_id));
                 }
                 // Players spawn in the overworld; start its music. A following
                 // EnterDimension would switch it if the server moves them.
@@ -1287,6 +1322,8 @@ impl App {
                 self.net = None;
                 self.server = None;
                 self.voice = None;
+                self.webcam = None;
+                self.webcam_tex.clear();
                 self.connect_addr = None;
                 self.game = None;
                 if let Some(m) = &mut self.music {
@@ -1503,6 +1540,7 @@ impl App {
                 self.selection_overlay(ui);
                 self.spectate_overlay(ui);
                 self.voice_overlay(ui);
+                self.webcam_overlay(ui);
                 self.chat_ui(ui);
                 if self.game.as_ref().is_some_and(|g| g.inventory_open) {
                     self.inventory_window(ui);
@@ -1630,9 +1668,13 @@ impl App {
                             &mut self.host_voice_enabled,
                             "Enable voice chat (push-to-talk)",
                         );
-                        if self.host_voice_enabled {
+                        ui.checkbox(
+                            &mut self.host_webcam_enabled,
+                            "Enable webcam video (press K)",
+                        );
+                        if self.host_voice_enabled || self.host_webcam_enabled {
                             ui.horizontal(|ui| {
-                                ui.label("Voice port:");
+                                ui.label("Relay port:");
                                 ui.add(
                                     egui::TextEdit::singleline(&mut self.voice_port_input)
                                         .desired_width(80.0),
@@ -2278,6 +2320,131 @@ impl App {
                         }
                     });
             });
+    }
+
+    /// Draw each remote player's webcam thumbnail floating above their sprite.
+    /// Uploads/refreshes a per-player egui texture only when a newer frame has
+    /// decoded, and prunes textures for players who have left or stopped sending.
+    /// No-op when the server has no webcam relay or no video has arrived.
+    fn webcam_overlay(&mut self, ui: &mut egui::Ui) {
+        let Some(webcam) = self.webcam.as_ref() else {
+            return;
+        };
+        let Some(game) = self.game.as_ref() else {
+            return;
+        };
+        let ctx = ui.ctx();
+        let screen = ctx.content_rect();
+        let scale = game.zoom / ctx.pixels_per_point();
+        let player_center = game.pos + Vec2::new(PLAYER_W * 0.5, PLAYER_H * 0.5);
+        let center_pt = screen.center();
+        // World pixel -> screen point, matching the camera the tiles are drawn with
+        // (same transform as the selection/boss overlays).
+        let to_screen = |wx: f32, wy: f32| {
+            center_pt
+                + egui::vec2(
+                    (wx - player_center.x) * scale,
+                    (wy - player_center.y) * scale,
+                )
+        };
+        // A fixed on-screen thumbnail size (4:3), so it stays legible at any zoom.
+        let disp = egui::vec2(64.0, 48.0);
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("webcam_overlay"),
+        ));
+
+        // A small self-indicator while our own camera is transmitting, so we know
+        // it's live (and learn quickly if no camera was found).
+        if webcam.is_capturing() {
+            let (text, color) = if webcam.has_capture() {
+                ("📷 On air", egui::Color32::from_rgb(0x6C, 0xE0, 0x6C))
+            } else {
+                (
+                    "📷 No camera found",
+                    egui::Color32::from_rgb(0xE0, 0x90, 0x20),
+                )
+            };
+            egui::Area::new(egui::Id::new("webcam_self"))
+                .anchor(egui::Align2::RIGHT_TOP, [-12.0, 44.0])
+                .show(ctx, |ui| {
+                    egui::Frame::NONE
+                        .fill(egui::Color32::from_black_alpha(160))
+                        .inner_margin(egui::Margin::symmetric(10, 5))
+                        .corner_radius(egui::CornerRadius::same(4))
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new(text).color(color));
+                        });
+                });
+        }
+
+        let own_id = game.entity_id;
+        let mut live: HashSet<EntityId> = HashSet::new();
+        for e in game.entities.values() {
+            if !matches!(e.kind, EntityKind::Player { .. }) || e.id == own_id {
+                continue;
+            }
+            // Skip players with no live stream: never sent video, or stopped (so
+            // the thumbnail disappears shortly after they turn their camera off,
+            // rather than freezing on the last frame). Their texture is pruned
+            // below because they're left out of `live`.
+            let Some((seq, fresh)) = webcam.frame_meta(e.id) else {
+                continue;
+            };
+            if !fresh {
+                continue;
+            }
+            live.insert(e.id);
+
+            // Refresh the texture only when a newer frame has decoded.
+            let cached_seq = self.webcam_tex.get(&e.id).map(|(_, s)| *s).unwrap_or(0);
+            if seq > cached_seq
+                && let Some(frame) = webcam.frame_if_newer(e.id, cached_seq)
+            {
+                let img = egui::ColorImage::from_rgba_unmultiplied(
+                    [frame.width, frame.height],
+                    &frame.rgba,
+                );
+                match self.webcam_tex.get_mut(&e.id) {
+                    Some((handle, cached)) => {
+                        handle.set(img, egui::TextureOptions::LINEAR);
+                        *cached = frame.seq;
+                    }
+                    None => {
+                        let handle = ctx.load_texture(
+                            format!("webcam_{}", e.id),
+                            img,
+                            egui::TextureOptions::LINEAR,
+                        );
+                        self.webcam_tex.insert(e.id, (handle, frame.seq));
+                    }
+                }
+            }
+
+            // Paint the thumbnail just above the player's head, if we have one.
+            if let Some((handle, _)) = self.webcam_tex.get(&e.id) {
+                let head = to_screen(e.x + PLAYER_W * 0.5, e.y);
+                let rect = egui::Rect::from_center_size(
+                    egui::pos2(head.x, head.y - disp.y * 0.5 - 6.0),
+                    disp,
+                );
+                // A dark plate behind the image gives it a clean border.
+                painter.rect_filled(
+                    rect.expand(2.0),
+                    egui::CornerRadius::same(3),
+                    egui::Color32::from_black_alpha(180),
+                );
+                painter.image(
+                    handle.id(),
+                    rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
+        }
+
+        // Drop textures for players who left or whose stream went stale.
+        self.webcam_tex.retain(|id, _| live.contains(id));
     }
 
     fn chat_ui(&mut self, ui: &mut egui::Ui) {
@@ -6105,6 +6272,10 @@ impl App {
             // G toggles voice chat on/off locally (muting both transmit and
             // playback) without leaving the server.
             KeyCode::KeyG if pressed => self.toggle_voice(),
+            // K toggles your webcam transmission on/off. Receiving others' video
+            // is always on; this controls only whether your camera transmits. No
+            // effect unless the server enabled webcam.
+            KeyCode::KeyK if pressed => self.toggle_webcam(),
             // M drops a personal waypoint at the player's feet; N removes the one
             // nearest to them.
             KeyCode::KeyM if pressed => self.add_waypoint(),
@@ -6182,6 +6353,23 @@ impl App {
             }
         } else {
             "Voice chat muted".to_string()
+        };
+    }
+
+    /// Toggle webcam transmission on or off, surfacing the new state in the status
+    /// line. Receiving others' video is unaffected; this controls only our own
+    /// camera. A no-op (beyond the message) when the server has no webcam relay.
+    fn toggle_webcam(&mut self) {
+        let Some(w) = &self.webcam else {
+            self.status = "Webcam video is off on this server".to_string();
+            return;
+        };
+        let on = !w.is_capturing();
+        w.set_capturing(on);
+        self.status = if on {
+            "Webcam on (press K to turn off)".to_string()
+        } else {
+            "Webcam off".to_string()
         };
     }
 

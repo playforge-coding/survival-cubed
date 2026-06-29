@@ -54,6 +54,40 @@ pub fn entity_from_path(path: &str) -> Option<EntityId> {
     path.strip_prefix(BROADCAST_PREFIX)?.parse().ok()
 }
 
+/// Webcam frame width in pixels. Deliberately tiny: software AV1 encode/decode is
+/// CPU-heavy, and the image is only ever shown as a small thumbnail above a
+/// player's head, so a low resolution keeps many simultaneous cameras affordable.
+pub const VIDEO_WIDTH: usize = 128;
+
+/// Webcam frame height in pixels (4:3 with [`VIDEO_WIDTH`]).
+pub const VIDEO_HEIGHT: usize = 96;
+
+/// Target webcam frame rate. The capture/encode thread paces itself to this; the
+/// codec is told the same so its rate control matches.
+pub const VIDEO_FPS: u32 = 10;
+
+/// Name of the single AV1 track inside every player's webcam broadcast, mirroring
+/// [`AUDIO_TRACK`]. Both publisher and subscriber hard-code it.
+pub const VIDEO_TRACK: &str = "video";
+
+/// Path prefix under which the relay announces each player's webcam broadcast,
+/// kept distinct from [`BROADCAST_PREFIX`] so the voice and webcam subscribers on
+/// the shared relay ignore each other's announces.
+pub const VIDEO_PREFIX: &str = "video/";
+
+/// The MOQ broadcast path for the webcam of the player with `entity_id`:
+/// `video/<id>`. Parallels [`broadcast_path`] but on the video prefix.
+pub fn video_broadcast_path(entity_id: EntityId) -> String {
+    format!("{VIDEO_PREFIX}{entity_id}")
+}
+
+/// Parse the [`EntityId`] back out of a [`video_broadcast_path`], or `None` if the
+/// path isn't a webcam broadcast. Subscribers use it to attach the frame to the
+/// right player.
+pub fn video_entity_from_path(path: &str) -> Option<EntityId> {
+    path.strip_prefix(VIDEO_PREFIX)?.parse().ok()
+}
+
 /// What the server tells a joining client about its optional voice relay, carried
 /// in [`crate::protocol::ServerMessage::Welcome`]. `None` there means the owner
 /// left voice disabled, so the client shows no voice UI and never opens a relay

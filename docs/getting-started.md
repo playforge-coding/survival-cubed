@@ -30,13 +30,28 @@ git lfs pull
 cargo run --release
 ```
 
+The voice- and webcam-chat codecs are compiled from source, so the build also
+needs a few native build tools on **every** platform:
+
+- **[NASM](https://nasm.us/)** — assembles the AV1 codec's SIMD routines (webcam
+  video). Without it the build fails to compile `rav1e`/`rav1d`.
+- A **C compiler** and **[CMake](https://cmake.org/)** — build the bundled Opus
+  library (voice chat).
+- **Clang / `libclang`** — generates the camera (V4L2) bindings on Linux.
+
+Install these from your package manager (e.g. `brew install nasm cmake` on macOS,
+or `choco install nasm cmake llvm` on Windows); the Linux packages are listed
+below.
+
 ### Linux build dependencies
 
-The client needs the system windowing and input libraries:
+The client needs the system windowing and input libraries, plus the native build
+tools above (NASM, CMake, a C compiler, and `libclang`):
 
 ```sh
 sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev \
-  libxcursor-dev libxi-dev libxrandr-dev libasound2-dev
+  libxcursor-dev libxi-dev libxrandr-dev libasound2-dev \
+  nasm cmake clang build-essential
 ```
 
 ## Launching the game

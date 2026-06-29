@@ -13,14 +13,15 @@ network so others can find and join it without typing an address. To also let
 players outside your network in, tick **Forward port via UPnP (internet)** — see
 [UPnP port forwarding](#upnp-port-forwarding) below. Tick **Enable voice chat
 (push-to-talk)** to let connected players talk to each other — see
-[Voice chat](#voice-chat).
+[Voice chat](#voice-chat) — and/or **Enable webcam video (press K)** to let them
+show their cameras above their characters — see [Webcam video](#webcam-video).
 
 ### Dedicated server
 
 For an always-on server, run the headless `server` subcommand:
 
 ```sh
-survival-cubed server [port] [creator] [upnp] [voice] [voice-port=N]
+survival-cubed server [port] [creator] [upnp] [voice] [webcam] [voice-port=N]
 ```
 
 | Argument | Default | Meaning |
@@ -29,16 +30,19 @@ survival-cubed server [port] [creator] [upnp] [voice] [voice-port=N]
 | `creator` | *(off)* | If present, all players may use creator mode |
 | `upnp` | *(off)* | If present, forward the port on your router via UPnP |
 | `voice` | *(off)* | If present, enable [voice chat](#voice-chat) over a MOQ relay |
-| `voice-port=N` | `port + 1` | UDP port for the voice relay (only with `voice`) |
+| `webcam` | *(off)* | If present, enable [webcam video](#webcam-video) over the same relay |
+| `voice-port=N` | `port + 1` | UDP port for the voice/webcam relay (with `voice` or `webcam`) |
 
-`creator`, `upnp`, and `voice` are order-independent flags, so
-`survival-cubed server 5000 upnp` and `survival-cubed server 5000 creator voice`
-both work.
+`creator`, `upnp`, `voice`, and `webcam` are order-independent flags, so
+`survival-cubed server 5000 upnp` and
+`survival-cubed server 5000 creator voice webcam` both work. Voice and webcam are
+**independent toggles** that share one relay on the voice port, so enabling both
+adds no second port.
 
 The server binds to all network interfaces (`0.0.0.0`) so it's reachable from
 other machines. On startup it prints its address, save directory, mode, whether
-UPnP is on, whether voice is on, and a **certificate fingerprint**. Stop it
-cleanly with <kbd>Ctrl</kbd>+<kbd>C</kbd> (it saves on shutdown).
+UPnP is on, whether voice and webcam are on, and a **certificate fingerprint**.
+Stop it cleanly with <kbd>Ctrl</kbd>+<kbd>C</kbd> (it saves on shutdown).
 
 ### UPnP port forwarding
 
@@ -163,12 +167,44 @@ For hosts:
 - The relay only forwards audio between connected players — it never records or
   mixes anything server-side.
 
+## Webcam video
+
+Webcam video is **optional and controlled by the server owner**, and is a
+**separate toggle from [voice chat](#voice-chat)** — a server can offer either,
+both, or neither. Turn it on by ticking **Enable webcam video** when hosting from
+the client, or by passing the `webcam` flag to a dedicated server. Clients show no
+webcam UI and open no camera unless the server they joined offers it.
+
+It rides the **same [MOQ](https://moq.dev) relay** as voice (the same voice port),
+so enabling both features needs no extra port. Each player who turns their camera
+on publishes a tiny **AV1** video stream (128×96, ~10 fps); everyone subscribes to
+everyone else's and sees a small live thumbnail floating above that player's
+character.
+
+For players:
+
+- **<kbd>K</kbd>** turns your camera on and off. It starts **off** — your camera
+  is never opened until you press <kbd>K</kbd> (and its light stays off until then).
+- A **📷 On air** marker appears while your camera transmits.
+- You always *receive* others' video even without a camera of your own.
+
+For hosts:
+
+- Webcam shares the voice port and the same auto-pinned relay certificate, so the
+  same reachability/forwarding notes as [voice chat](#voice-chat) apply.
+- The relay only forwards video between connected players — it never records or
+  transcodes anything server-side.
+- Software AV1 encode/decode costs CPU; the tiny 128×96 ~10 fps preset keeps a
+  handful of simultaneous cameras affordable.
+
 ## Under the hood
 
 - **Transport:** QUIC over UDP, encrypted with TLS 1.3 — lower latency than TCP
   and secure by default.
 - **Voice:** a separate MOQ-over-QUIC relay (see [Voice chat](#voice-chat)) on its
   own port, carrying Opus audio; entirely optional and off by default.
+- **Webcam:** [AV1](#webcam-video) video over the *same* relay (a separate toggle
+  from voice), carrying tiny 128×96 thumbnails; also optional and off by default.
 - **Certificates:** each machine has a single stable self-signed certificate,
   stored in the user config dir and shared by every world it hosts; clients pin
   it on first connection or auto-trust it via LAN discovery.

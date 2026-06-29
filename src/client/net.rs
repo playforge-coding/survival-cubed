@@ -39,6 +39,9 @@ pub enum NetEvent {
         creator_allowed: bool,
         /// The optional voice-chat relay, when the server owner enabled it.
         voice: Option<crate::voice::VoiceInfo>,
+        /// The optional webcam relay, when the server owner enabled it (separate
+        /// toggle from `voice`, same relay endpoint).
+        webcam: Option<crate::voice::VoiceInfo>,
     },
     Chunk {
         dim: Dimension,
@@ -628,12 +631,14 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
             spawn_y,
             creator_allowed,
             voice,
+            webcam,
         } => NetEvent::Connected {
             entity_id,
             spawn_x,
             spawn_y,
             creator_allowed,
             voice,
+            webcam,
         },
         ServerMessage::Chunk {
             dim,

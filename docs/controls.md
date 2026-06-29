@@ -75,9 +75,10 @@ show while you're in that same world — they won't haunt you across dimensions.
 | <kbd>P</kbd> | Mute / unmute the background music |
 | <kbd>V</kbd> (hold) | **Push-to-talk** — transmit your microphone, when the server has [voice chat](multiplayer.md#voice-chat) enabled |
 | <kbd>G</kbd> | Turn **voice chat** on / off locally (mutes both your mic and everyone you hear) |
+| <kbd>K</kbd> | Turn your **webcam** on / off, when the server has [webcam video](multiplayer.md#webcam-video) enabled |
 
 Chat messages are up to 256 characters. See **[Multiplayer](multiplayer.md)** for
-chat, voice, and admin commands.
+chat, voice, webcam, and admin commands.
 
 ## Screenshots
 
@@ -105,6 +106,19 @@ in the top-right; each other player you can hear is listed there as **🔊 *name
 
 No microphone is required to *listen*, and voice never starts unless the server
 offers it. See **[Multiplayer → Voice chat](multiplayer.md#voice-chat)** for how a
+host turns it on.
+
+## Webcam video
+
+When the server owner has **enabled webcam video** — a separate toggle from voice
+chat — press <kbd>K</kbd> to turn your camera on and off. Your camera starts
+**off** and is never opened until you press <kbd>K</kbd>; a **📷 On air** marker
+shows in the top-right while it transmits. Each player with their camera on appears
+as a small live thumbnail floating above their character. You always *receive*
+others' video even without a camera of your own.
+
+Video is tiny **AV1** (128×96, ~10 fps) and never starts unless the server offers
+it. See **[Multiplayer → Webcam video](multiplayer.md#webcam-video)** for how a
 host turns it on.
 
 ## The HUD

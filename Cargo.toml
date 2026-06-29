@@ -64,6 +64,20 @@ url = "2"
 # FuturesUnordered, to multiplex reads across all remote voice tracks on one task.
 futures = "0.3"
 
+# Webcam video chat (AV1 over the same MOQ relay). Optional at runtime; a separate
+# toggle from voice. `nokhwa` captures the camera, `rav1e` encodes AV1, `rav1d`
+# decodes it (Rust port of dav1d), and `yuvutils-rs` converts between the camera's
+# RGB and the codecs' I420. `asm` is on (nasm is available) for faster software
+# encode/decode; we drop rav1e's default `binaries`/`signal_support` features since
+# we only use it as a library.
+nokhwa = { version = "0.10", features = ["input-native"] }
+rav1e = { version = "0.8", default-features = false, features = ["asm", "threading"] }
+rav1d = "1"
+yuvutils-rs = "0.5"
+# rav1d exposes only the dav1d C ABI (returning negative errno codes); `libc`
+# gives us the `EAGAIN` value to recognise "decoder needs more data".
+libc = "0.2"
+
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
 

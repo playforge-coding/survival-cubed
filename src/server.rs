@@ -979,13 +979,18 @@ pub struct RunningServer {
     /// [`RunningServer::forward_port`]. Dropped (removing the router mapping)
     /// when the server is.
     _upnp: Option<crate::upnp::PortForward>,
-    /// The voice-chat MOQ relay, if the owner enabled it via
-    /// [`RunningServer::enable_voice`]. Kept alive so the relay keeps accepting
-    /// and forwarding; dropped (stopping it) when the server is.
-    _voice: Option<crate::voice_relay::VoiceRelay>,
-    /// UPnP forwarding for the voice port, opened by [`RunningServer::enable_voice`]
-    /// when both voice and UPnP are on. Separate from [`Self::_upnp`] because each
-    /// mapping covers a single port.
+    /// The shared MOQ relay, started once when the owner enables voice and/or
+    /// webcam (see [`RunningServer::enable_voice`] / [`RunningServer::enable_webcam`]).
+    /// Both features ride this single relay, so it is started at most once. Kept
+    /// alive so it keeps accepting and forwarding; dropped (stopping it) when the
+    /// server is.
+    _relay: Option<crate::voice_relay::VoiceRelay>,
+    /// The running relay's coordinates (port + cert), cached so a second
+    /// `enable_*` call reuses the existing relay instead of starting another.
+    relay_info: Option<crate::voice::VoiceInfo>,
+    /// UPnP forwarding for the relay port, opened the first time a feature is
+    /// enabled with `upnp` set. Separate from [`Self::_upnp`] because each mapping
+    /// covers a single port.
     _voice_upnp: Option<crate::upnp::PortForward>,
 }
 
@@ -1011,29 +1016,54 @@ impl RunningServer {
         self._upnp = Some(crate::upnp::PortForward::open(self.addr.port()));
     }
 
-    /// Start the optional voice-chat MOQ relay on `bind`, so connected players can
-    /// talk to each other (see [`crate::voice`]). Off unless the owner calls this:
-    /// it stands up a separate QUIC endpoint with its own self-signed certificate,
-    /// records the relay's port and certificate fingerprint in [`Shared::voice`]
-    /// (handed to each joining client via [`ServerMessage::Welcome`]), and — when
-    /// `upnp` is set — forwards the voice port on the router too.
-    ///
-    /// Returns the actual bound port (useful when `bind` used port 0). Errors if
-    /// the relay endpoint can't be created (e.g. the port is taken); the rest of
-    /// the server keeps running regardless.
-    pub fn enable_voice(&mut self, bind: SocketAddr, upnp: bool) -> Result<u16> {
-        // enable_voice is called from the main thread, outside any runtime; run the
-        // relay setup on the server's own runtime so its QUIC endpoint and accept
-        // loop live there.
+    /// Start the shared media relay on `bind` if it isn't already running, and
+    /// return its coordinates. Both voice and webcam ride one relay, so the first
+    /// `enable_*` call stands up a separate QUIC endpoint (with its own self-signed
+    /// certificate) and — when `upnp` is set — forwards its port on the router;
+    /// later calls reuse it and ignore `bind`/`upnp`.
+    fn ensure_relay(&mut self, bind: SocketAddr, upnp: bool) -> Result<crate::voice::VoiceInfo> {
+        if let Some(info) = &self.relay_info {
+            return Ok(info.clone());
+        }
+        // Called from the main thread, outside any runtime; run the relay setup on
+        // the server's own runtime so its QUIC endpoint and accept loop live there.
         let (relay, info) = self
             .rt_handle()
             .block_on(crate::voice_relay::VoiceRelay::start(bind))?;
+        if upnp {
+            self._voice_upnp = Some(crate::upnp::PortForward::open(info.port));
+        }
+        self._relay = Some(relay);
+        self.relay_info = Some(info.clone());
+        Ok(info)
+    }
+
+    /// Enable the optional voice chat, so connected players can talk to each other
+    /// (see [`crate::voice`]). Off unless the owner calls this: it starts the shared
+    /// media relay (if not already up) and records its port and certificate
+    /// fingerprint in [`Shared::voice`], handed to each joining client via
+    /// [`ServerMessage::Welcome`].
+    ///
+    /// Returns the actual bound relay port (useful when `bind` used port 0). Errors
+    /// if the relay endpoint can't be created (e.g. the port is taken); the rest of
+    /// the server keeps running regardless.
+    pub fn enable_voice(&mut self, bind: SocketAddr, upnp: bool) -> Result<u16> {
+        let info = self.ensure_relay(bind, upnp)?;
         let port = info.port;
         *self.shared.voice.lock() = Some(info);
-        if upnp {
-            self._voice_upnp = Some(crate::upnp::PortForward::open(port));
-        }
-        self._voice = Some(relay);
+        Ok(port)
+    }
+
+    /// Enable the optional webcam video, a separate toggle from voice that shares
+    /// the same relay (see [`crate::voice::video_broadcast_path`]). Starts the
+    /// shared media relay if voice didn't already, and records its coordinates in
+    /// [`Shared::webcam`] so joining clients learn to connect for video.
+    ///
+    /// Returns the actual bound relay port. Errors as [`Self::enable_voice`] does.
+    pub fn enable_webcam(&mut self, bind: SocketAddr, upnp: bool) -> Result<u16> {
+        let info = self.ensure_relay(bind, upnp)?;
+        let port = info.port;
+        *self.shared.webcam.lock() = Some(info);
         Ok(port)
     }
 
@@ -1297,6 +1327,11 @@ struct Shared {
     /// [`ServerMessage::Welcome`] so joining clients learn where the relay is and
     /// which certificate to trust. `None` means voice is off.
     voice: Mutex<Option<crate::voice::VoiceInfo>>,
+    /// The optional webcam relay's coordinates, present only while the owner has
+    /// enabled webcam via [`RunningServer::enable_webcam`]. Shares the relay with
+    /// [`Self::voice`] (so when both are on the coordinates match), but is a
+    /// separate toggle. `None` means webcam is off.
+    webcam: Mutex<Option<crate::voice::VoiceInfo>>,
     /// Handle to the server's own tokio runtime, captured at startup. Lets
     /// [`RunningServer::enable_voice`] — called from the main thread, outside any
     /// runtime — spin up the MOQ relay's QUIC endpoint and accept loop on this
@@ -4250,7 +4285,8 @@ pub fn start_server(
             shared,
             _discovery: None,
             _upnp: None,
-            _voice: None,
+            _relay: None,
+            relay_info: None,
             _voice_upnp: None,
         }),
         Err(e) => Err(e),
@@ -4554,6 +4590,7 @@ fn build_endpoint(
         musket_cd: Mutex::new(HashMap::new()),
         shutdown: AtomicBool::new(false),
         voice: Mutex::new(None),
+        webcam: Mutex::new(None),
         // Safe: build_endpoint runs inside the server's tokio runtime (via
         // `setup`'s `block_on`), so a runtime handle is current here.
         rt: tokio::runtime::Handle::current(),
@@ -12151,6 +12188,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
         spawn_y: sy,
         creator_allowed,
         voice: shared.voice.lock().clone(),
+        webcam: shared.webcam.lock().clone(),
     });
     // Tell the owner its starting health (its own avatar is never mirrored via
     // EntitySpawn) and the current time of day.
