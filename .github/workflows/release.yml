@@ -47,9 +47,28 @@ jobs:
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
+        # The windowing/input libraries the client links, plus the native build
+        # tools the voice/webcam codecs compile from source: NASM (AV1 SIMD),
+        # CMake + a C compiler (bundled Opus), and clang/libclang (camera V4L2
+        # bindings). CMake and clang are preinstalled on the runner but pinned
+        # here so the build doesn't silently depend on the image.
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev libasound2-dev
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev libasound2-dev nasm cmake clang build-essential
+
+      - name: Install NASM (macOS)
+        if: runner.os == 'macOS'
+        # Assembles the AV1 codec's SIMD routines (CMake/clang ship with the image).
+        run: brew install nasm
+
+      - name: Install NASM (Windows)
+        if: runner.os == 'Windows'
+        # Assembles the AV1 codec's SIMD routines; add it to PATH for the build
+        # (CMake ships with the image). choco installs to Program Files\NASM.
+        shell: pwsh
+        run: |
+          choco install nasm -y
+          echo "C:\Program Files\NASM" >> $env:GITHUB_PATH
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
