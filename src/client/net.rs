@@ -37,6 +37,8 @@ pub enum NetEvent {
         spawn_y: f32,
         /// Whether this client may enter creator mode on this server.
         creator_allowed: bool,
+        /// The optional voice-chat relay, when the server owner enabled it.
+        voice: Option<crate::voice::VoiceInfo>,
     },
     Chunk {
         dim: Dimension,
@@ -625,11 +627,13 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
             spawn_x,
             spawn_y,
             creator_allowed,
+            voice,
         } => NetEvent::Connected {
             entity_id,
             spawn_x,
             spawn_y,
             creator_allowed,
+            voice,
         },
         ServerMessage::Chunk {
             dim,

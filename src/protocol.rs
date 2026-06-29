@@ -125,7 +125,7 @@ pub enum SlotRef {
 /// clear "version mismatch" message instead of the cryptic bincode
 /// `invalid value: integer N, expected variant index 0 <= i < K`
 /// deserialization error that a mis-aligned enum tag produces.
-pub const PROTOCOL_VERSION: u32 = 24;
+pub const PROTOCOL_VERSION: u32 = 25;
 
 /// ALPN protocol identifier negotiated during the QUIC/TLS handshake. The
 /// trailing number is a coarse guard bumped only for changes deep enough to
@@ -394,6 +394,10 @@ pub enum ServerMessage {
         /// Whether this connection may enter creator mode: always true for the
         /// admin (host), and true for everyone on a creator-type server.
         creator_allowed: bool,
+        /// The optional voice-chat relay, when the server owner enabled it (see
+        /// [`crate::voice`]). `None` means voice is off: the client shows no voice
+        /// UI and never opens a relay connection.
+        voice: Option<crate::voice::VoiceInfo>,
     },
     /// Full contents of a chunk (row-major, `CHUNK_AREA` entries) in dimension
     /// `dim`. The client ignores chunks for a dimension it is no longer in.

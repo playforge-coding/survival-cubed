@@ -39,6 +39,31 @@ mdns-sd = "0.20"
 # home router without configuring it manually. Off by default; see src/upnp.rs.
 easy-upnp = "0.3"
 
+# Voice chat (Media over QUIC). Optional at runtime; the server owner enables it.
+# `moq-native` configures quinn endpoints, `moq-lite` carries the broadcasts/tracks,
+# and `hang` frames Opus audio. `cpal` captures the microphone (rodio can't capture)
+# and `audiopus` encodes/decodes Opus (bundling libopus, so no system dependency).
+# Only the quinn QUIC backend is needed; drop the default websocket/tcp/uds
+# transports. `provider()` honours the process-wide rustls provider, which
+# `main` installs as ring, so the compiled-in aws-lc-rs is never selected.
+moq-native = { version = "0.17", default-features = false, features = ["quinn", "aws-lc-rs"] }
+moq-net = "0.1"
+hang = "0.19"
+# Pinned to the same cpal as `rodio` above: two cpal versions would both try to
+# link the native `alsa` library, which Cargo forbids (one `links` value per graph).
+cpal = "0.15"
+# Opus encode/decode. We use the 0.3 line because it pulls `audiopus_sys` 0.2,
+# which builds a vendored libopus with CMake — no system libopus / autotools
+# needed (only a C compiler + cmake). `audiopus`'s own "default" feature is
+# misnamed upstream, so we enable `coder` (encoder + decoder) explicitly, and we
+# pin `audiopus_sys` with `static` so libopus links into the binary.
+audiopus = { version = "0.3.0-rc.0", default-features = false, features = ["coder"] }
+audiopus_sys = { version = "0.2.2", default-features = false, features = ["static"] }
+# moq-native's connect() takes a url::Url.
+url = "2"
+# FuturesUnordered, to multiplex reads across all remote voice tracks on one task.
+futures = "0.3"
+
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
 

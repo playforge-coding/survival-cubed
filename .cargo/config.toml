@@ -1,0 +1,8 @@
+# The voice-chat Opus codec (audiopus_sys) builds a vendored libopus with CMake.
+# That bundled libopus still declares `cmake_minimum_required(VERSION 3.x)` below
+# 3.5, which CMake 4.x rejects unless an explicit policy minimum is provided.
+# Setting it here (Cargo applies `[env]` to every build script) lets a fresh
+# checkout build the audio stack with only a C compiler + CMake installed — no
+# system libopus and no autotools required.
+[env]
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"

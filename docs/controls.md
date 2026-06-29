@@ -73,9 +73,11 @@ show while you're in that same world — they won't haunt you across dimensions.
 | <kbd>Esc</kbd> | Close an open menu (inventory/forge/campfire/sign/quest board/chest); otherwise leave the world |
 | <kbd>F2</kbd> | Take a screenshot (world only — no HUD) |
 | <kbd>P</kbd> | Mute / unmute the background music |
+| <kbd>V</kbd> (hold) | **Push-to-talk** — transmit your microphone, when the server has [voice chat](multiplayer.md#voice-chat) enabled |
+| <kbd>G</kbd> | Turn **voice chat** on / off locally (mutes both your mic and everyone you hear) |
 
 Chat messages are up to 256 characters. See **[Multiplayer](multiplayer.md)** for
-chat and admin commands.
+chat, voice, and admin commands.
 
 ## Screenshots
 
@@ -91,6 +93,19 @@ Press <kbd>P</kbd> to mute or unmute it — a "Music muted" / "Music unmuted"
 status message confirms the change. The setting sticks across track and
 dimension changes (and across leaving and re-entering a world) until you toggle
 it back.
+
+## Voice chat
+
+When the server owner has **enabled voice chat**, you can talk to everyone else
+on the server. Hold <kbd>V</kbd> to transmit (push-to-talk) and release it to go
+quiet; <kbd>G</kbd> turns voice off and on locally without leaving the world.
+Audio is **global** — everyone hears everyone — and uses your default
+microphone and speakers. While you're transmitting, a **🎤 Talking** marker shows
+in the top-right; each other player you can hear is listed there as **🔊 *name***.
+
+No microphone is required to *listen*, and voice never starts unless the server
+offers it. See **[Multiplayer → Voice chat](multiplayer.md#voice-chat)** for how a
+host turns it on.
 
 ## The HUD
 

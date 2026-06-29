@@ -6,6 +6,7 @@ mod net;
 mod render;
 mod screenshot;
 mod sprite;
+mod voice;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -548,6 +549,11 @@ struct App {
     /// player may enter creator mode) rather than a survival one. Only meaningful
     /// when creating a brand-new world; ignored when loading an existing save.
     host_creator_world: bool,
+    /// Whether a hosted server should run the optional voice-chat relay (see
+    /// [`voice`]). Only meaningful with [`Self::host_enabled`]; off by default.
+    host_voice_enabled: bool,
+    /// Voice relay UDP port typed into the host form (default: game port + 1).
+    voice_port_input: String,
     /// Item id or name typed into the creator-tools item giver.
     give_item_input: String,
     /// How many of the item the creator-tools item giver hands over per click.
@@ -578,6 +584,13 @@ struct App {
     lan: Option<LanBrowser>,
     /// Background music player, if an audio device was available at startup.
     music: Option<audio::Music>,
+    /// Active voice-chat client, present only while connected to a server that
+    /// enabled voice (see [`voice`]). Dropping it leaves voice / stops capture.
+    voice: Option<voice::VoiceHandle>,
+    /// Socket address of the server we last initiated a connection to, so a
+    /// voice relay (advertised on the same host) can be reached. Set at each
+    /// connect site, used when [`net::NetEvent::Connected`] carries voice info.
+    connect_addr: Option<std::net::SocketAddr>,
 
     input: Input,
     last_frame: Instant,
@@ -613,6 +626,8 @@ impl App {
             host_enabled: false,
             upnp_enabled: false,
             host_creator_world: false,
+            host_voice_enabled: false,
+            voice_port_input: "5001".to_string(),
             give_item_input: String::new(),
             give_item_count: 1,
             structure_name_input: String::new(),
@@ -632,6 +647,8 @@ impl App {
                 }
             },
             music: audio::Music::new(),
+            voice: None,
+            connect_addr: None,
             input: Input::default(),
             last_frame: Instant::now(),
             anim_time: 0.0,
@@ -719,6 +736,7 @@ impl App {
                     Some(srv.fingerprint),
                     Some(srv.creator_token),
                 );
+                self.connect_addr = Some(srv.addr);
                 self.server = Some(srv);
                 self.net = Some(handle);
                 self.screen = Screen::Connecting;
@@ -745,6 +763,18 @@ impl App {
                 if self.upnp_enabled {
                     srv.forward_port();
                 }
+                if self.host_voice_enabled {
+                    let voice_port = self
+                        .voice_port_input
+                        .trim()
+                        .parse()
+                        .unwrap_or(port.wrapping_add(1));
+                    if let Err(e) =
+                        srv.enable_voice(server::host_bind(voice_port), self.upnp_enabled)
+                    {
+                        log::warn!("voice chat failed to start: {e:#}");
+                    }
+                }
                 let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
                 let handle = connect(
                     addr,
@@ -754,6 +784,7 @@ impl App {
                     Some(srv.fingerprint),
                     Some(srv.creator_token),
                 );
+                self.connect_addr = Some(addr);
                 self.server = Some(srv);
                 self.net = Some(handle);
                 self.screen = Screen::Connecting;
@@ -815,6 +846,7 @@ impl App {
             None,
             None,
         );
+        self.connect_addr = Some(addr);
         self.net = Some(handle);
         self.screen = Screen::Connecting;
         self.status = format!("Connecting to {label}...");
@@ -835,6 +867,7 @@ impl App {
             server.fingerprint,
             None,
         );
+        self.connect_addr = Some(server.addr);
         self.net = Some(handle);
         self.screen = Screen::Connecting;
         self.status = format!("Connecting to {}...", server.name);
@@ -846,6 +879,8 @@ impl App {
         }
         self.net = None;
         self.server = None; // dropping closes the embedded server
+        self.voice = None; // dropping leaves voice and stops capture
+        self.connect_addr = None;
         self.game = None;
         self.pending_tofu = None;
         self.pending_credential = None;
@@ -886,6 +921,7 @@ impl App {
                 spawn_x,
                 spawn_y,
                 creator_allowed,
+                voice,
             } => {
                 // The login was accepted: remember the password for this server so
                 // it needn't be retyped next time.
@@ -904,6 +940,13 @@ impl App {
                 self.game = Some(game);
                 self.screen = Screen::InGame;
                 self.status.clear();
+                // If the server enabled voice chat, connect to its relay (same
+                // host, advertised port) and pin the certificate it reported.
+                if let (Some(info), Some(server)) = (voice, self.connect_addr) {
+                    let relay = std::net::SocketAddr::new(server.ip(), info.port);
+                    self.voice = Some(voice::connect(relay, info.cert_hash, entity_id));
+                    self.status = "Voice chat: hold V to talk".to_string();
+                }
                 // Players spawn in the overworld; start its music. A following
                 // EnterDimension would switch it if the server moves them.
                 if let Some(m) = &mut self.music {
@@ -1243,6 +1286,8 @@ impl App {
                 self.status = format!("Disconnected: {reason}");
                 self.net = None;
                 self.server = None;
+                self.voice = None;
+                self.connect_addr = None;
                 self.game = None;
                 if let Some(m) = &mut self.music {
                     m.stop();
@@ -1457,6 +1502,7 @@ impl App {
                 self.boss_bar_overlay(ui);
                 self.selection_overlay(ui);
                 self.spectate_overlay(ui);
+                self.voice_overlay(ui);
                 self.chat_ui(ui);
                 if self.game.as_ref().is_some_and(|g| g.inventory_open) {
                     self.inventory_window(ui);
@@ -1579,6 +1625,19 @@ impl App {
                                 egui::Color32::from_rgb(0xE0, 0x90, 0x20),
                                 format!("\u{26A0} {}", crate::upnp::SECURITY_WARNING),
                             );
+                        }
+                        ui.checkbox(
+                            &mut self.host_voice_enabled,
+                            "Enable voice chat (push-to-talk)",
+                        );
+                        if self.host_voice_enabled {
+                            ui.horizontal(|ui| {
+                                ui.label("Voice port:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.voice_port_input)
+                                        .desired_width(80.0),
+                                );
+                            });
                         }
                     }
                     let create_label = if self.host_enabled {
@@ -2163,6 +2222,60 @@ impl App {
                             ))
                             .color(egui::Color32::WHITE),
                         );
+                    });
+            });
+    }
+
+    /// Small HUD indicator for voice chat: a microphone marker while we're
+    /// transmitting, plus the names of any remote players currently talking.
+    /// Hidden entirely when voice is off, muted, or no one is speaking.
+    fn voice_overlay(&self, ui: &mut egui::Ui) {
+        let Some(v) = &self.voice else { return };
+        if !v.is_enabled() {
+            return;
+        }
+        let Some(game) = self.game.as_ref() else {
+            return;
+        };
+
+        let transmitting = v.transmitting();
+        let talking = v.talking();
+        if !transmitting && talking.is_empty() {
+            return;
+        }
+
+        // Resolve speaking entity ids to player names where we know them.
+        let mut speakers: Vec<String> = game
+            .entities
+            .values()
+            .filter(|e| talking.contains(&e.id))
+            .filter_map(|e| match &e.kind {
+                EntityKind::Player { name } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        speakers.sort();
+
+        egui::Area::new(egui::Id::new("voice_overlay"))
+            .anchor(egui::Align2::RIGHT_TOP, [-12.0, 12.0])
+            .show(ui.ctx(), |ui| {
+                egui::Frame::NONE
+                    .fill(egui::Color32::from_black_alpha(160))
+                    .inner_margin(egui::Margin::symmetric(10, 5))
+                    .corner_radius(egui::CornerRadius::same(4))
+                    .show(ui, |ui| {
+                        if transmitting {
+                            ui.label(
+                                egui::RichText::new("🎤 Talking")
+                                    .color(egui::Color32::from_rgb(0x6C, 0xE0, 0x6C)),
+                            );
+                        }
+                        for name in &speakers {
+                            ui.label(
+                                egui::RichText::new(format!("🔊 {name}"))
+                                    .color(egui::Color32::WHITE),
+                            );
+                        }
                     });
             });
     }
@@ -5981,6 +6094,17 @@ impl App {
             // control of one's own steed, switching the controls to fly and fight it
             // (and back). No effect without a steed of one's own nearby.
             KeyCode::KeyC if pressed => self.toggle_dragon_control(),
+            // V is push-to-talk for voice chat: held, it transmits the microphone
+            // to the server's relay; released, it goes quiet. No effect unless the
+            // server enabled voice (so there's a relay to talk to).
+            KeyCode::KeyV => {
+                if let Some(v) = &self.voice {
+                    v.set_ptt(pressed);
+                }
+            }
+            // G toggles voice chat on/off locally (muting both transmit and
+            // playback) without leaving the server.
+            KeyCode::KeyG if pressed => self.toggle_voice(),
             // M drops a personal waypoint at the player's feet; N removes the one
             // nearest to them.
             KeyCode::KeyM if pressed => self.add_waypoint(),
@@ -6038,6 +6162,27 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Toggle voice chat on or off locally (muting both transmit and playback),
+    /// surfacing the new state in the status line. A no-op (beyond the message)
+    /// when the server has no voice relay.
+    fn toggle_voice(&mut self) {
+        let Some(v) = &self.voice else {
+            self.status = "Voice chat is off on this server".to_string();
+            return;
+        };
+        let on = !v.is_enabled();
+        v.set_enabled(on);
+        self.status = if on {
+            if v.has_input() {
+                "Voice chat on (hold V to talk)".to_string()
+            } else {
+                "Voice chat on (no microphone found — listen only)".to_string()
+            }
+        } else {
+            "Voice chat muted".to_string()
+        };
     }
 
     /// Mute or unmute the background music, surfacing the new state in the status

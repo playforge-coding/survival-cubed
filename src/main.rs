@@ -1,12 +1,15 @@
 //! Survival Cubed — a multiplayer-first 2D block game.
 //!
 //! Run with no arguments for the graphical client (with singleplayer/host/join
-//! from the menu). Run `survival-cubed server [port] [creator] [upnp]` for a
+//! from the menu). Run
+//! `survival-cubed server [port] [creator] [upnp] [voice] [voice-port=N]` for a
 //! dedicated headless server that prints its certificate fingerprint for clients
 //! to verify. Pass `creator` to make it a creator-type server (every player may
 //! enter creator mode); omit it for a survival server. Pass `upnp` to forward
 //! the port on the local router via UPnP (exposes the server to the internet —
-//! see [`upnp::SECURITY_WARNING`]).
+//! see [`upnp::SECURITY_WARNING`]). Pass `voice` to enable voice chat over a MOQ
+//! relay (see [`voice`]); `voice-port=N` overrides its UDP port (default: game
+//! port + 1).
 
 mod assets;
 mod auth;
@@ -23,6 +26,8 @@ mod save;
 mod server;
 mod structure;
 mod upnp;
+mod voice;
+mod voice_relay;
 mod world;
 mod worldgen;
 
@@ -43,7 +48,14 @@ fn main() -> anyhow::Result<()> {
             let flags: Vec<String> = args.collect();
             let creator_world = flags.iter().any(|f| f == "creator");
             let upnp = flags.iter().any(|f| f == "upnp");
-            run_dedicated(port, creator_world, upnp)
+            // `voice` enables the optional voice-chat relay; `voice-port=N`
+            // overrides its port (default: game port + 1).
+            let voice = flags.iter().any(|f| f == "voice");
+            let voice_port = flags
+                .iter()
+                .find_map(|f| f.strip_prefix("voice-port=").and_then(|s| s.parse().ok()))
+                .unwrap_or(port.wrapping_add(1));
+            run_dedicated(port, creator_world, upnp, voice, voice_port)
         }
         Some(other) => {
             eprintln!("unknown command '{other}'. Usage: survival-cubed [server [port]]");
@@ -53,7 +65,13 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn run_dedicated(port: u16, creator_world: bool, upnp: bool) -> anyhow::Result<()> {
+fn run_dedicated(
+    port: u16,
+    creator_world: bool,
+    upnp: bool,
+    voice: bool,
+    voice_port: u16,
+) -> anyhow::Result<()> {
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i32)
@@ -73,6 +91,19 @@ fn run_dedicated(port: u16, creator_world: bool, upnp: bool) -> anyhow::Result<(
         eprintln!("WARNING: UPnP enabled. {}", upnp::SECURITY_WARNING);
         srv.forward_port();
     }
+    // Optional voice-chat relay. Failure is non-fatal: the game server keeps
+    // running without voice.
+    let voice_status = if voice {
+        match srv.enable_voice(server::host_bind(voice_port), upnp) {
+            Ok(p) => format!("on (port {p})"),
+            Err(e) => {
+                eprintln!("WARNING: voice chat failed to start: {e:#}");
+                "failed".to_string()
+            }
+        }
+    } else {
+        "off".to_string()
+    };
     println!("Survival Cubed dedicated server");
     println!("  listening on : {}", srv.addr);
     println!("  world save   : {}", save_dir.display());
@@ -81,6 +112,7 @@ fn run_dedicated(port: u16, creator_world: bool, upnp: bool) -> anyhow::Result<(
         if creator_world { "creator" } else { "survival" }
     );
     println!("  upnp         : {}", if upnp { "on" } else { "off" });
+    println!("  voice        : {voice_status}");
     println!(
         "  fingerprint  : {}",
         net::fingerprint_hex(&srv.fingerprint)

@@ -979,6 +979,14 @@ pub struct RunningServer {
     /// [`RunningServer::forward_port`]. Dropped (removing the router mapping)
     /// when the server is.
     _upnp: Option<crate::upnp::PortForward>,
+    /// The voice-chat MOQ relay, if the owner enabled it via
+    /// [`RunningServer::enable_voice`]. Kept alive so the relay keeps accepting
+    /// and forwarding; dropped (stopping it) when the server is.
+    _voice: Option<crate::voice_relay::VoiceRelay>,
+    /// UPnP forwarding for the voice port, opened by [`RunningServer::enable_voice`]
+    /// when both voice and UPnP are on. Separate from [`Self::_upnp`] because each
+    /// mapping covers a single port.
+    _voice_upnp: Option<crate::upnp::PortForward>,
 }
 
 impl RunningServer {
@@ -1001,6 +1009,37 @@ impl RunningServer {
     /// background thread, and removed when this handle is dropped.
     pub fn forward_port(&mut self) {
         self._upnp = Some(crate::upnp::PortForward::open(self.addr.port()));
+    }
+
+    /// Start the optional voice-chat MOQ relay on `bind`, so connected players can
+    /// talk to each other (see [`crate::voice`]). Off unless the owner calls this:
+    /// it stands up a separate QUIC endpoint with its own self-signed certificate,
+    /// records the relay's port and certificate fingerprint in [`Shared::voice`]
+    /// (handed to each joining client via [`ServerMessage::Welcome`]), and — when
+    /// `upnp` is set — forwards the voice port on the router too.
+    ///
+    /// Returns the actual bound port (useful when `bind` used port 0). Errors if
+    /// the relay endpoint can't be created (e.g. the port is taken); the rest of
+    /// the server keeps running regardless.
+    pub fn enable_voice(&mut self, bind: SocketAddr, upnp: bool) -> Result<u16> {
+        // enable_voice is called from the main thread, outside any runtime; run the
+        // relay setup on the server's own runtime so its QUIC endpoint and accept
+        // loop live there.
+        let (relay, info) = self
+            .rt_handle()
+            .block_on(crate::voice_relay::VoiceRelay::start(bind))?;
+        let port = info.port;
+        *self.shared.voice.lock() = Some(info);
+        if upnp {
+            self._voice_upnp = Some(crate::upnp::PortForward::open(port));
+        }
+        self._voice = Some(relay);
+        Ok(port)
+    }
+
+    /// The server's tokio runtime handle (captured at startup in [`Shared`]).
+    fn rt_handle(&self) -> tokio::runtime::Handle {
+        self.shared.rt.clone()
     }
 }
 
@@ -1252,6 +1291,17 @@ struct Shared {
     /// Set when the owning [`RunningServer`] is dropped, to stop the autosave
     /// loop.
     shutdown: AtomicBool,
+    /// The optional voice-chat relay's coordinates (port + certificate
+    /// fingerprint), present only while the owner has enabled voice via
+    /// [`RunningServer::enable_voice`]. Read when building each
+    /// [`ServerMessage::Welcome`] so joining clients learn where the relay is and
+    /// which certificate to trust. `None` means voice is off.
+    voice: Mutex<Option<crate::voice::VoiceInfo>>,
+    /// Handle to the server's own tokio runtime, captured at startup. Lets
+    /// [`RunningServer::enable_voice`] — called from the main thread, outside any
+    /// runtime — spin up the MOQ relay's QUIC endpoint and accept loop on this
+    /// runtime.
+    rt: tokio::runtime::Handle,
     /// IP addresses barred from connecting. Checked at handshake time (a banned
     /// peer is closed out before it joins) and added to by an admin's `/ban`.
     /// Persisted to [`BANS_FILE`] under the save dir so bans outlive a restart.
@@ -4200,6 +4250,8 @@ pub fn start_server(
             shared,
             _discovery: None,
             _upnp: None,
+            _voice: None,
+            _voice_upnp: None,
         }),
         Err(e) => Err(e),
     }
@@ -4501,6 +4553,10 @@ fn build_endpoint(
         knight_targets: Mutex::new(HashMap::new()),
         musket_cd: Mutex::new(HashMap::new()),
         shutdown: AtomicBool::new(false),
+        voice: Mutex::new(None),
+        // Safe: build_endpoint runs inside the server's tokio runtime (via
+        // `setup`'s `block_on`), so a runtime handle is current here.
+        rt: tokio::runtime::Handle::current(),
         banned_ips: Mutex::new(banned_ips),
         bans_path,
         spectate_return: Mutex::new(HashMap::new()),
@@ -12094,6 +12150,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
         spawn_x: sx,
         spawn_y: sy,
         creator_allowed,
+        voice: shared.voice.lock().clone(),
     });
     // Tell the owner its starting health (its own avatar is never mirrored via
     // EntitySpawn) and the current time of day.

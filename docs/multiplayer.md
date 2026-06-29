@@ -11,14 +11,16 @@ over an encrypted **QUIC** connection.
 Choose **Host on LAN** in the menu. Your world is advertised over your local
 network so others can find and join it without typing an address. To also let
 players outside your network in, tick **Forward port via UPnP (internet)** — see
-[UPnP port forwarding](#upnp-port-forwarding) below.
+[UPnP port forwarding](#upnp-port-forwarding) below. Tick **Enable voice chat
+(push-to-talk)** to let connected players talk to each other — see
+[Voice chat](#voice-chat).
 
 ### Dedicated server
 
 For an always-on server, run the headless `server` subcommand:
 
 ```sh
-survival-cubed server [port] [creator] [upnp]
+survival-cubed server [port] [creator] [upnp] [voice] [voice-port=N]
 ```
 
 | Argument | Default | Meaning |
@@ -26,15 +28,17 @@ survival-cubed server [port] [creator] [upnp]
 | `port` | `5000` | Port to listen on |
 | `creator` | *(off)* | If present, all players may use creator mode |
 | `upnp` | *(off)* | If present, forward the port on your router via UPnP |
+| `voice` | *(off)* | If present, enable [voice chat](#voice-chat) over a MOQ relay |
+| `voice-port=N` | `port + 1` | UDP port for the voice relay (only with `voice`) |
 
-`creator` and `upnp` are order-independent flags, so
-`survival-cubed server 5000 upnp` and `survival-cubed server 5000 creator upnp`
+`creator`, `upnp`, and `voice` are order-independent flags, so
+`survival-cubed server 5000 upnp` and `survival-cubed server 5000 creator voice`
 both work.
 
 The server binds to all network interfaces (`0.0.0.0`) so it's reachable from
 other machines. On startup it prints its address, save directory, mode, whether
-UPnP is on, and a **certificate fingerprint**. Stop it cleanly with
-<kbd>Ctrl</kbd>+<kbd>C</kbd> (it saves on shutdown).
+UPnP is on, whether voice is on, and a **certificate fingerprint**. Stop it
+cleanly with <kbd>Ctrl</kbd>+<kbd>C</kbd> (it saves on shutdown).
 
 ### UPnP port forwarding
 
@@ -127,10 +131,44 @@ spectating, a banner reads **"👁 Spectating *player* — /spectate to stop"**.
 Bans are stored in a `bans.txt` file in the world's save directory (one IP per
 line), read on startup and rewritten whenever you ban or unban.
 
+## Voice chat
+
+Voice chat is **optional and controlled by the server owner**. It is off unless
+the host turns it on — tick **Enable voice chat** when hosting from the client, or
+pass the `voice` flag to a dedicated server. Clients show no voice UI and open no
+microphone unless the server they joined offers it.
+
+When enabled, the server runs a small in-process **[MOQ](https://moq.dev)** (Media
+over QUIC) relay on its own UDP port (the **voice port**, default game port + 1).
+Each player publishes their microphone as a single **Opus** stream and subscribes
+to everyone else's, so audio is **global** — everyone hears everyone, at full
+volume.
+
+For players:
+
+- **Hold <kbd>V</kbd>** to talk (push-to-talk); release to go quiet.
+- **<kbd>G</kbd>** turns voice off and on locally (mutes your mic *and* playback).
+- A **🎤 Talking** marker appears while you transmit; everyone you can hear is
+  listed as **🔊 *name*** in the top-right.
+- No microphone is needed to listen. If none is found you can still hear others.
+
+For hosts:
+
+- The voice port is **separate** from the game port and must also be reachable.
+  When you host with both **UPnP** and **voice** on, the voice port is forwarded
+  too; otherwise forward it yourself the same way as the game port.
+- The relay uses its own self-signed certificate, generated at start-up. Its
+  fingerprint is sent to each client inside the normal join handshake, so the
+  voice connection is pinned automatically with no extra prompt.
+- The relay only forwards audio between connected players — it never records or
+  mixes anything server-side.
+
 ## Under the hood
 
 - **Transport:** QUIC over UDP, encrypted with TLS 1.3 — lower latency than TCP
   and secure by default.
+- **Voice:** a separate MOQ-over-QUIC relay (see [Voice chat](#voice-chat)) on its
+  own port, carrying Opus audio; entirely optional and off by default.
 - **Certificates:** each machine has a single stable self-signed certificate,
   stored in the user config dir and shared by every world it hosts; clients pin
   it on first connection or auto-trust it via LAN discovery.
