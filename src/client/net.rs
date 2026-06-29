@@ -296,6 +296,8 @@ pub enum NetCommand {
     PlayerMove {
         x: f32,
         y: f32,
+        vx: f32,
+        vy: f32,
     },
     RequestChunk {
         dim: Dimension,
@@ -575,7 +577,7 @@ fn to_client_message(cmd: NetCommand) -> ClientMessage {
             count,
             fuel,
         },
-        NetCommand::PlayerMove { x, y } => ClientMessage::PlayerMove { x, y },
+        NetCommand::PlayerMove { x, y, vx, vy } => ClientMessage::PlayerMove { x, y, vx, vy },
         NetCommand::RequestChunk { dim, cx, cy } => ClientMessage::RequestChunk { dim, cx, cy },
         NetCommand::Attack { target, held } => ClientMessage::Attack { target, held },
         NetCommand::Repair { item } => ClientMessage::Repair { item },

@@ -210,7 +210,9 @@ For hosts:
   it on first connection or auto-trust it via LAN discovery.
 - **Authority:** the server simulates the world, creatures, health, damage, and
   crafting, so results stay consistent for everyone. Your own movement is driven
-  by your client and synced out to others.
+  by your client and synced out to others — each update carries your position
+  *and* velocity, so others see your avatar face the way you're moving and play
+  its walk cycle rather than freezing in one pose.
 
 There is no fixed player cap and no team/guild system — chat is global, and the
 server is built to scale with the host's resources.

@@ -327,6 +327,11 @@ struct GameState {
     musket_timer: f32,
     move_send_timer: f32,
     last_sent: Vec2,
+    /// Velocity reported in the last [`NetCommand::PlayerMove`]. A change here
+    /// (e.g. starting or stopping) forces an update even when the position has
+    /// barely moved, so remote clients see the avatar's facing and walk cycle
+    /// flip promptly instead of freezing on the last moving frame.
+    last_sent_vel: Vec2,
     /// Local player health, authoritative on the server but mirrored here for
     /// the HUD.
     health: i32,
@@ -460,6 +465,7 @@ impl GameState {
             musket_timer: 0.0,
             move_send_timer: 0.0,
             last_sent: spawn,
+            last_sent_vel: Vec2::ZERO,
             health: PLAYER_MAX_HEALTH,
             max_health: PLAYER_MAX_HEALTH,
             mana: 0,
@@ -1465,16 +1471,24 @@ impl App {
             game.death = None;
         }
 
-        // Throttle position updates to the server.
+        // Throttle position updates to the server. Send when the avatar has moved
+        // a little, or when its velocity changed (e.g. it just started or stopped)
+        // so remote clients flip its facing and walk cycle without waiting for the
+        // next positional delta.
         game.move_send_timer -= dt;
-        if game.move_send_timer <= 0.0 && game.pos.distance(game.last_sent) > 0.25 {
+        let moved = game.pos.distance(game.last_sent) > 0.25;
+        let vel_changed = game.vel != game.last_sent_vel;
+        if game.move_send_timer <= 0.0 && (moved || vel_changed) {
             if let Some(net) = &self.net {
                 let _ = net.commands.send(NetCommand::PlayerMove {
                     x: game.pos.x,
                     y: game.pos.y,
+                    vx: game.vel.x,
+                    vy: game.vel.y,
                 });
             }
             game.last_sent = game.pos;
+            game.last_sent_vel = game.vel;
             game.move_send_timer = 0.05;
         }
     }

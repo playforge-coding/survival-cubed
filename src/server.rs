@@ -12929,11 +12929,13 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                 } => {
                     shared.cook(id, x, y, recipe as usize, count);
                 }
-                ClientMessage::PlayerMove { x, y } => {
+                ClientMessage::PlayerMove { x, y, vx, vy } => {
                     let dim = shared.dim_of(id);
                     if let Some(e) = shared.entities(dim).lock().get_mut(id) {
                         e.x = x;
                         e.y = y;
+                        e.vx = vx;
+                        e.vy = vy;
                     }
                     // Falling off the bottom of the overworld (or climbing out the
                     // top of the underworld) moves the player across dimensions; a
@@ -12941,16 +12943,12 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
                     if shared.maybe_transition(id, dim, x, y) {
                         continue;
                     }
+                    // Pass the reported velocity through so remote clients flip the
+                    // avatar to the right facing (`vx`'s sign) and play its walk cycle.
                     shared.broadcast_dim_except(
                         dim,
                         id,
-                        ServerMessage::EntityMoved {
-                            id,
-                            x,
-                            y,
-                            vx: 0.0,
-                            vy: 0.0,
-                        },
+                        ServerMessage::EntityMoved { id, x, y, vx, vy },
                     );
                 }
                 ClientMessage::SetBoating { on } => {

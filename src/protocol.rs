@@ -249,8 +249,11 @@ pub enum ClientMessage {
     /// Remove the personal waypoint nearest to world pixel `(x, y)`. The server
     /// resyncs the list via [`ServerMessage::Waypoints`].
     RemoveWaypoint { x: f32, y: f32 },
-    /// Report the owning player entity's position (pixels, world space).
-    PlayerMove { x: f32, y: f32 },
+    /// Report the owning player entity's position (pixels, world space) and
+    /// current velocity (pixels/s). The server rebroadcasts the velocity in the
+    /// resulting [`ServerMessage::EntityMoved`] so remote clients can flip the
+    /// avatar to the right facing (from `vx`'s sign) and play its walk cycle.
+    PlayerMove { x: f32, y: f32, vx: f32, vy: f32 },
     /// Set whether this player is riding a boat. The server records it on the
     /// player entity and resyncs that entity to everyone (via
     /// [`ServerMessage::EntitySpawn`]) so remote clients draw the rider in their
