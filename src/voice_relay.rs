@@ -80,6 +80,7 @@ impl VoiceRelay {
 /// shared `origin` so broadcasts fan out between all participants.
 async fn accept_loop(mut server: moq_native::Server, origin: OriginProducer) {
     while let Some(request) = server.accept().await {
+        log::debug!("voice relay: incoming connection, completing handshake");
         let origin = origin.clone();
         tokio::spawn(async move {
             // Publish *to* this peer everything in the shared origin, and route
@@ -96,9 +97,11 @@ async fn accept_loop(mut server: moq_native::Server, origin: OriginProducer) {
                     return;
                 }
             };
+            log::debug!("voice session accepted");
             // Hold the session until the peer disconnects; dropping it would tear
             // the connection down immediately.
             let _ = session.closed().await;
+            log::debug!("voice session closed");
         });
     }
 }

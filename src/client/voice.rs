@@ -227,7 +227,11 @@ async fn session_main(
         .with_publish(publish.consume())
         .with_consume(consume.clone());
 
-    let url = format!("moql://{}", state.relay_addr);
+    // Use the WebTransport (https) scheme rather than raw QUIC (moql): the relay
+    // is addressed by IP, and TLS omits SNI for IP server names, which moq-native's
+    // raw-QUIC accept path rejects (MissingServerName). WebTransport has no such
+    // check, and the certificate is pinned by fingerprint regardless of host.
+    let url = format!("https://{}", state.relay_addr);
     let url = url::Url::parse(&url)?;
     let session = client.connect(url).await?;
     log::info!("voice connected to relay at {}", state.relay_addr);
