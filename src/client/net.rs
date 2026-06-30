@@ -511,49 +511,68 @@ async fn client_main(
     )
     .await?;
 
-    loop {
-        tokio::select! {
-            msg = read_msg::<ServerMessage>(&mut recv) => {
-                let msg = match msg {
-                    Ok(msg) => msg,
-                    // If the server closed the stream with a reason (e.g. a
-                    // version mismatch), report that rather than the low-level
-                    // read error it manifests as on our end.
-                    Err(e) => match connection.close_reason() {
-                        Some(quinn::ConnectionError::ApplicationClosed(close))
-                            if !close.reason.is_empty() =>
-                        {
-                            return Err(anyhow::anyhow!(
-                                "{}",
-                                String::from_utf8_lossy(&close.reason)
-                            ));
-                        }
-                        _ => return Err(e),
-                    },
-                };
-                if dispatch(msg, ev_tx).is_break() {
-                    break;
-                }
-            }
-            cmd = cmd_rx.recv() => {
-                match cmd {
-                    Some(NetCommand::Disconnect) | None => {
-                        let _ = send.finish();
-                        connection.close(0u32.into(), b"bye");
-                        break;
+    // Reading and writing run as two independent, long-lived loops joined by a
+    // single top-level `select!`. The reader must NOT be a per-iteration branch of
+    // a `select!` that also services outbound commands: [`read_msg`] awaits more
+    // than once (length prefix, then body), and `select!` cancels its losing branch
+    // the instant the other is ready — so a command arriving mid-message would drop
+    // the reader future and discard the bytes it had already consumed, desyncing the
+    // framing. Every subsequent read then mis-decodes, surfacing as a spurious
+    // "malformed message" disconnect even though nothing is actually wrong (a fresh
+    // reconnect works fine). Keeping the reader in its own future means it only ever
+    // yields at an await point between whole messages, never partway through one.
+    let reader = async {
+        loop {
+            let msg = match read_msg::<ServerMessage>(&mut recv).await {
+                Ok(msg) => msg,
+                // If the server closed the stream with a reason (e.g. a version
+                // mismatch), report that rather than the low-level read error it
+                // manifests as on our end.
+                Err(e) => match connection.close_reason() {
+                    Some(quinn::ConnectionError::ApplicationClosed(close))
+                        if !close.reason.is_empty() =>
+                    {
+                        return Err(anyhow::anyhow!(
+                            "{}",
+                            String::from_utf8_lossy(&close.reason)
+                        ));
                     }
-                    Some(cmd) => {
-                        write_msg(&mut send, &to_client_message(cmd)).await?;
-                    }
-                }
+                    _ => return Err(e),
+                },
+            };
+            if dispatch(msg, ev_tx).is_break() {
+                return Ok(());
             }
         }
-    }
+    };
 
-    let _ = ev_tx.send(NetEvent::Disconnected {
-        reason: "connection closed".to_string(),
-    });
-    Ok(())
+    let writer = async {
+        while let Some(cmd) = cmd_rx.recv().await {
+            match cmd {
+                NetCommand::Disconnect => break,
+                cmd => write_msg(&mut send, &to_client_message(cmd)).await?,
+            }
+        }
+        // A `Disconnect` command or a dropped handle (channel closed): close the
+        // connection cleanly.
+        let _ = send.finish();
+        connection.close(0u32.into(), b"bye");
+        Ok(())
+    };
+
+    // Whichever loop ends first ends the session; the other is cancelled (safe — we
+    // are tearing down). Only a clean end emits the "connection closed" event; an
+    // error is propagated so the caller can report it.
+    let outcome = tokio::select! {
+        r = reader => r,
+        r = writer => r,
+    };
+    if outcome.is_ok() {
+        let _ = ev_tx.send(NetEvent::Disconnected {
+            reason: "connection closed".to_string(),
+        });
+    }
+    outcome
 }
 
 fn to_client_message(cmd: NetCommand) -> ClientMessage {

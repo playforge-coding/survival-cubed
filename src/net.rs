@@ -55,11 +55,10 @@ pub async fn read_msg<T: DeserializeOwned>(recv: &mut RecvStream) -> Result<T> {
     }
     let mut buf = vec![0u8; len];
     recv.read_exact(&mut buf).await?;
-    // A decode failure here almost always means the peer serialized a different
-    // wire layout (i.e. a version mismatch the handshake somehow let through),
-    // so surface that rather than the raw bincode error.
-    bincode::deserialize(&buf)
-        .map_err(|e| anyhow!("malformed message ({e}); client and server versions may differ"))
+    // The [`PROTOCOL_VERSION`] handshake already rejected version-skewed peers
+    // before any message was read, so a decode failure here is a corrupt/truncated
+    // frame on the wire, not a version mismatch — don't mislead the user about that.
+    bincode::deserialize(&buf).map_err(|e| anyhow!("protocol error decoding message: {e}"))
 }
 
 /// SHA-256 of a certificate's DER encoding.
