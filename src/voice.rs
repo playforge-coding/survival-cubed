@@ -88,6 +88,29 @@ pub fn video_entity_from_path(path: &str) -> Option<EntityId> {
     path.strip_prefix(VIDEO_PREFIX)?.parse().ok()
 }
 
+/// Name of the single track inside every player's map broadcast, carrying
+/// position and explored-chunk updates (see [`crate::client::map`]). Mirrors
+/// [`AUDIO_TRACK`]/[`VIDEO_TRACK`]; both ends hard-code it.
+pub const MAP_TRACK: &str = "map";
+
+/// Path prefix under which the relay announces each player's live-map broadcast,
+/// kept distinct from the voice and video prefixes so each subscriber on the
+/// shared relay ignores the others' announces.
+pub const MAP_PREFIX: &str = "map/";
+
+/// The MOQ broadcast path for the live map of the player with `entity_id`:
+/// `map/<id>`. Parallels [`broadcast_path`] but on the map prefix.
+pub fn map_broadcast_path(entity_id: EntityId) -> String {
+    format!("{MAP_PREFIX}{entity_id}")
+}
+
+/// Parse the [`EntityId`] back out of a [`map_broadcast_path`], or `None` if the
+/// path isn't a map broadcast. Subscribers use it to attach updates to the right
+/// player.
+pub fn map_entity_from_path(path: &str) -> Option<EntityId> {
+    path.strip_prefix(MAP_PREFIX)?.parse().ok()
+}
+
 /// What the server tells a joining client about its optional voice relay, carried
 /// in [`crate::protocol::ServerMessage::Welcome`]. `None` there means the owner
 /// left voice disabled, so the client shows no voice UI and never opens a relay

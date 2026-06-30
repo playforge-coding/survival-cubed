@@ -121,6 +121,15 @@ fn run_dedicated(
     } else {
         "off".to_string()
     };
+    // The live map rides the same relay and is always on, so connected players can
+    // always see each other and the explored world on their in-game map.
+    let map_status = match srv.enable_map(server::host_bind(voice_port), upnp) {
+        Ok(p) => format!("on (port {p})"),
+        Err(e) => {
+            eprintln!("WARNING: live map failed to start: {e:#}");
+            "failed".to_string()
+        }
+    };
     println!("Survival Cubed dedicated server");
     println!("  listening on : {}", srv.addr);
     println!("  world save   : {}", save_dir.display());
@@ -131,6 +140,7 @@ fn run_dedicated(
     println!("  upnp         : {}", if upnp { "on" } else { "off" });
     println!("  voice        : {voice_status}");
     println!("  webcam       : {webcam_status}");
+    println!("  map          : {map_status}");
     println!(
         "  fingerprint  : {}",
         net::fingerprint_hex(&srv.fingerprint)

@@ -58,6 +58,10 @@ pub struct Atlas {
     pub height: u32,
     /// UV rect per block id (invisible blocks get [`UvRect::ZERO`]).
     block_uv: Vec<UvRect>,
+    /// Alpha-weighted average colour per block id, for the map (see
+    /// [`Atlas::avg_color`]). Fully-transparent blocks (air, invisible) get the
+    /// sentinel `[0,0,0,0]`, which the map renderer draws as empty/paper.
+    avg_color: Vec<[u8; 4]>,
     /// Solid-white cell, for tinted flat quads.
     white_uv: UvRect,
     /// Per-frame UV rects, keyed by [`SpriteDef::name`].
@@ -112,10 +116,14 @@ impl Atlas {
 
         let mut pixels = vec![0u8; (width * height * 4) as usize];
         let mut block_uv = vec![UvRect::ZERO; reg.len()];
+        let mut avg_color = vec![[0u8; 4]; reg.len()];
         let mut white_uv = UvRect::ZERO;
         let mut sprite_uv: HashMap<&'static str, Vec<UvRect>> = HashMap::new();
 
         for ((key, w, h, buf), (px, py)) in items.iter().zip(&placements) {
+            if let AtlasKey::Block(id) = key {
+                avg_color[*id as usize] = average_color(buf);
+            }
             for y in 0..*h {
                 for x in 0..*w {
                     let src = ((y * *w + x) * 4) as usize;
@@ -142,9 +150,17 @@ impl Atlas {
             width,
             height,
             block_uv,
+            avg_color,
             white_uv,
             sprite_uv,
         }
+    }
+
+    /// Alpha-weighted average colour of a block id's tile, opaque (`a == 255`).
+    /// Fully-transparent blocks (air, invisible) return the sentinel `[0,0,0,0]`,
+    /// which the map renderer treats as empty and paints with the paper colour.
+    pub fn avg_color(&self, id: BlockId) -> [u8; 4] {
+        self.avg_color.get(id as usize).copied().unwrap_or([0; 4])
     }
 
     /// UV rect of the solid-white cell, for tinted flat quads (e.g. the
@@ -224,6 +240,25 @@ fn load_sheet(def: &SpriteDef) -> Vec<Vec<u8>> {
             }
         })
         .collect()
+}
+
+/// Alpha-weighted average colour of an RGBA buffer, returned opaque. Pixels
+/// contribute in proportion to their alpha, so a sprite's transparent border
+/// doesn't drag the colour toward black. A buffer with no opaque pixels (e.g.
+/// air) returns the sentinel `[0,0,0,0]`, read as "empty" by the map.
+fn average_color(buf: &[u8]) -> [u8; 4] {
+    let (mut r, mut g, mut b, mut a) = (0u64, 0u64, 0u64, 0u64);
+    for px in buf.chunks_exact(4) {
+        let alpha = px[3] as u64;
+        r += px[0] as u64 * alpha;
+        g += px[1] as u64 * alpha;
+        b += px[2] as u64 * alpha;
+        a += alpha;
+    }
+    if a == 0 {
+        return [0, 0, 0, 0];
+    }
+    [(r / a) as u8, (g / a) as u8, (b / a) as u8, 255]
 }
 
 /// Obvious magenta/black checker for missing or broken textures.
@@ -310,6 +345,33 @@ mod tests {
         // Visible blocks resolve to a non-empty UV rect.
         let stone = atlas.block(crate::block::STONE);
         assert!(stone.max[0] > stone.min[0]);
+    }
+
+    #[test]
+    fn average_color_is_alpha_weighted_and_opaque() {
+        // Two opaque red pixels + one fully transparent (any colour): the
+        // transparent pixel must not drag the average, and the result is opaque.
+        let buf = [
+            255, 0, 0, 255, // red, opaque
+            255, 0, 0, 255, // red, opaque
+            0, 255, 0, 0, // green, fully transparent — ignored
+        ];
+        assert_eq!(average_color(&buf), [255, 0, 0, 255]);
+
+        // A buffer with no opaque pixels (e.g. air) is the empty sentinel.
+        let clear = [10, 20, 30, 0, 40, 50, 60, 0];
+        assert_eq!(average_color(&clear), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn block_avg_colors_are_opaque_for_visible_blocks() {
+        let reg = BlockRegistry::new();
+        let atlas = Atlas::build(&reg);
+        // Stone is a solid, fully-opaque tile, so its map colour is opaque and not
+        // the empty sentinel.
+        assert_eq!(atlas.avg_color(crate::block::STONE)[3], 255);
+        // Air has no tile, so it stays the empty sentinel (drawn as paper).
+        assert_eq!(atlas.avg_color(crate::block::AIR), [0, 0, 0, 0]);
     }
 }
 

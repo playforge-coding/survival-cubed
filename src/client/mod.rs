@@ -2,6 +2,7 @@
 //! physics, and the bridge to the networking thread.
 
 mod audio;
+mod map;
 mod net;
 mod render;
 mod screenshot;
@@ -31,7 +32,7 @@ use crate::net::Credentials;
 use crate::protocol::{BlockId, PASSWORD_MAX_LEN, SlotRef, Waypoint};
 use crate::server::{self, RunningServer};
 use crate::structure::Structure;
-use crate::world::{CHUNK_SIZE, Dimension, TILE_SIZE, WORLD_HEIGHT, World, to_chunk};
+use crate::world::{CHUNK_SIZE, ChunkCoord, Dimension, TILE_SIZE, WORLD_HEIGHT, World, to_chunk};
 
 /// Which creator-mode interaction the left/right mouse buttons drive.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -125,6 +126,26 @@ const ACTION_COOLDOWN: f32 = 0.12;
 const MUSKET_COOLDOWN: f32 = 1.4;
 /// Extra chunks loaded beyond the screen edges.
 const CHUNK_MARGIN: i32 = 1;
+
+/// Vanilla-paper colour for the map background: unloaded chunks, air, and any
+/// cell no one has revealed are drawn this parchment tone, so the map reads as
+/// ink (blocks) on paper.
+const MAP_PAPER: [u8; 4] = [222, 210, 180, 255];
+
+/// Minimum gap between map-texture rebuilds. The map is comparatively costly to
+/// rasterise, and it doesn't need per-frame freshness, so we throttle to a few
+/// rebuilds a second.
+const MAP_REBUILD: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// How many world blocks across the minimap spans (half-extent from the player).
+const MINIMAP_RADIUS_BLOCKS: i32 = 80;
+/// On-screen size of the (square) minimap, in egui points.
+const MINIMAP_SIZE: f32 = 270.0;
+
+/// Per frame, at most this many freshly-loaded chunks are shared over the relay,
+/// plus this many already-shared chunks re-broadcast on the catch-up rotor.
+const MAP_SHARE_PER_FRAME: usize = 8;
+const MAP_ROTOR_PER_FRAME: usize = 2;
 /// Falls shorter than this (in tiles) are harmless.
 const SAFE_FALL_TILES: f32 = 10.0;
 /// Hit points lost per tile fallen beyond [`SAFE_FALL_TILES`].
@@ -272,6 +293,8 @@ struct GameState {
     inventory: Inventory,
     /// Whether the full inventory management screen is open.
     inventory_open: bool,
+    /// Whether the corner minimap (`H`) is shown.
+    minimap_open: bool,
     /// Slot picked as the source of a pending move on the inventory screen.
     move_from: Option<usize>,
     /// Whether the forge smelting GUI is open, and which forge cell it belongs
@@ -438,6 +461,7 @@ impl GameState {
             selected_slot: 0,
             inventory: Inventory::new(),
             inventory_open: false,
+            minimap_open: false,
             move_from: None,
             forge_open: false,
             forge_cell: None,
@@ -606,6 +630,25 @@ struct App {
     /// entity id; the paired `u64` is the frame sequence last uploaded, so the
     /// overlay only re-uploads when a newer frame arrives. Pruned as players leave.
     webcam_tex: HashMap<EntityId, (egui::TextureHandle, u64)>,
+    /// Active live-map client, present while connected to a server (the relay is
+    /// enabled for every hosted server; see [`map`]). Streams our position and
+    /// explored chunks and receives the other players'. `None` in single-player,
+    /// where the map still works from local chunks.
+    map: Option<map::MapHandle>,
+    /// Cached egui texture for the rendered minimap, rebuilt at a throttled rate
+    /// (see [`MAP_REBUILD`]) from block colours.
+    minimap_tex: Option<egui::TextureHandle>,
+    /// When the minimap texture was last rebuilt, to throttle the (costly) redraw.
+    minimap_built: Instant,
+    /// Chunks already shared over the map relay this session. The set dedups new
+    /// chunks; the ordered list drives a rolling re-broadcast cursor
+    /// ([`Self::map_rotor`]) so players who joined later eventually receive every
+    /// chunk (MOQ subscribers only get future frames).
+    map_shared: HashSet<(Dimension, ChunkCoord)>,
+    map_share_order: Vec<(Dimension, ChunkCoord)>,
+    map_rotor: usize,
+    /// Steady cadence for sending our own position over the map relay.
+    map_pos_timer: f32,
     /// Socket address of the server we last initiated a connection to, so a
     /// voice relay (advertised on the same host) can be reached. Set at each
     /// connect site, used when [`net::NetEvent::Connected`] carries voice info.
@@ -670,6 +713,13 @@ impl App {
             voice: None,
             webcam: None,
             webcam_tex: HashMap::new(),
+            map: None,
+            minimap_tex: None,
+            minimap_built: Instant::now(),
+            map_shared: HashSet::new(),
+            map_share_order: Vec::new(),
+            map_rotor: 0,
+            map_pos_timer: 0.0,
             connect_addr: None,
             input: Input::default(),
             last_frame: Instant::now(),
@@ -806,6 +856,11 @@ impl App {
                         log::warn!("webcam video failed to start: {e:#}");
                     }
                 }
+                // The live map always rides the same relay so it works in every
+                // multiplayer game, starting the relay if voice/webcam didn't.
+                if let Err(e) = srv.enable_map(server::host_bind(relay_port), self.upnp_enabled) {
+                    log::warn!("live map failed to start: {e:#}");
+                }
                 let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
                 let handle = connect(
                     addr,
@@ -913,6 +968,8 @@ impl App {
         self.voice = None; // dropping leaves voice and stops capture
         self.webcam = None; // dropping leaves webcam and stops capture
         self.webcam_tex.clear();
+        self.map = None; // dropping leaves the map relay
+        self.reset_map_sharing();
         self.connect_addr = None;
         self.game = None;
         self.pending_tofu = None;
@@ -956,6 +1013,7 @@ impl App {
                 creator_allowed,
                 voice,
                 webcam,
+                map,
             } => {
                 // The login was accepted: remember the password for this server so
                 // it needn't be retyped next time.
@@ -987,6 +1045,13 @@ impl App {
                 if let (Some(info), Some(server)) = (webcam, self.connect_addr) {
                     let relay = std::net::SocketAddr::new(server.ip(), info.port);
                     self.webcam = Some(webcam::connect(relay, info.cert_hash, entity_id));
+                }
+                // The live map rides the same relay (enabled for every hosted
+                // server): connect so we stream our position/explored chunks and
+                // receive the other players'.
+                if let (Some(info), Some(server)) = (map, self.connect_addr) {
+                    let relay = std::net::SocketAddr::new(server.ip(), info.port);
+                    self.map = Some(map::connect(relay, info.cert_hash, entity_id));
                 }
                 // Players spawn in the overworld; start its music. A following
                 // EnterDimension would switch it if the server moves them.
@@ -1330,6 +1395,8 @@ impl App {
                 self.voice = None;
                 self.webcam = None;
                 self.webcam_tex.clear();
+                self.map = None;
+                self.reset_map_sharing();
                 self.connect_addr = None;
                 self.game = None;
                 if let Some(m) = &mut self.music {
@@ -1491,6 +1558,59 @@ impl App {
             game.last_sent_vel = game.vel;
             game.move_send_timer = 0.05;
         }
+
+        // Feed the live map: stream our position at a steady cadence so our marker
+        // stays fresh on everyone's map, share freshly-loaded chunks, and slowly
+        // re-broadcast already-shared ones so players who joined later catch up.
+        if let Some(map) = self.map.as_ref() {
+            self.map_pos_timer -= dt;
+            if self.map_pos_timer <= 0.0 {
+                map.send_pos(game.dim, game.pos.x, game.pos.y);
+                self.map_pos_timer = 0.2;
+            }
+
+            let dim = game.dim;
+            let mut fresh = 0;
+            for (coord, chunk) in game.world.loaded_chunks() {
+                if fresh >= MAP_SHARE_PER_FRAME {
+                    break;
+                }
+                if self.map_shared.insert((dim, coord)) {
+                    self.map_share_order.push((dim, coord));
+                    map.send_tile(dim, coord, &chunk.blocks[..]);
+                    fresh += 1;
+                }
+            }
+
+            // Catch-up rotor: walk the shared list, re-sending current blocks for
+            // chunks still loaded in this dimension (skipping any from a dimension
+            // we've since left), so late joiners and post-edit changes propagate.
+            if !self.map_share_order.is_empty() {
+                let mut sent = 0;
+                let mut scanned = 0;
+                let total = self.map_share_order.len();
+                while sent < MAP_ROTOR_PER_FRAME && scanned < total {
+                    let (kdim, coord) = self.map_share_order[self.map_rotor % total];
+                    self.map_rotor = (self.map_rotor + 1) % total;
+                    scanned += 1;
+                    if kdim == dim
+                        && let Some(chunk) = game.world.get_chunk(coord)
+                    {
+                        map.send_tile(dim, coord, &chunk.blocks[..]);
+                        sent += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Forget which chunks we've streamed over the map relay, on disconnect so a
+    /// later session re-shares from scratch.
+    fn reset_map_sharing(&mut self) {
+        self.map_shared.clear();
+        self.map_share_order.clear();
+        self.map_rotor = 0;
+        self.map_pos_timer = 0.0;
     }
 
     // --- egui UI ---
@@ -1555,6 +1675,7 @@ impl App {
                 self.spectate_overlay(ui);
                 self.voice_overlay(ui);
                 self.webcam_overlay(ui);
+                self.minimap_overlay(ui);
                 self.chat_ui(ui);
                 if self.game.as_ref().is_some_and(|g| g.inventory_open) {
                     self.inventory_window(ui);
@@ -2459,6 +2580,163 @@ impl App {
 
         // Drop textures for players who left or whose stream went stale.
         self.webcam_tex.retain(|id, _| live.contains(id));
+    }
+
+    /// Map colour of one world cell `(bx, by)`: the block's average colour if its
+    /// chunk is loaded locally or has been revealed by another player over the
+    /// relay; otherwise (and for air or out-of-world cells) the paper colour, so
+    /// unexplored space and sky read as blank parchment.
+    fn map_cell_color(
+        &self,
+        g: &GameState,
+        dim: Dimension,
+        bx: i32,
+        by: i32,
+        shared: Option<&map::MapShared>,
+    ) -> [u8; 4] {
+        if !crate::world::in_bounds(bx, by) {
+            return MAP_PAPER;
+        }
+        let (coord, (lx, ly)) = to_chunk(bx, by);
+        let id = if g.world.has_chunk(coord) {
+            g.world.get_block(bx, by)
+        } else if let Some(blocks) = shared.and_then(|s| s.tile(dim, coord)) {
+            blocks[(ly * CHUNK_SIZE + lx) as usize]
+        } else {
+            return MAP_PAPER; // no one has revealed this chunk
+        };
+        if id == crate::block::AIR {
+            return MAP_PAPER;
+        }
+        let c = self.atlas.avg_color(id);
+        if c[3] == 0 { MAP_PAPER } else { c }
+    }
+
+    /// Rasterise a square map image, one pixel per world block, spanning
+    /// `center ± half` cells. Pixels come from local chunks, then relay-shared
+    /// chunks, then paper. Locks the relay's shared state once for the whole image.
+    fn build_map_image(&self, g: &GameState, center: (i32, i32), half: i32) -> egui::ColorImage {
+        let side = (half * 2).max(1) as usize;
+        let dim = g.dim;
+        let mut bytes = vec![0u8; side * side * 4];
+        let mut fill = |shared: Option<&map::MapShared>| {
+            for iy in 0..side {
+                for ix in 0..side {
+                    let bx = center.0 - half + ix as i32;
+                    let by = center.1 - half + iy as i32;
+                    let c = self.map_cell_color(g, dim, bx, by, shared);
+                    let o = (iy * side + ix) * 4;
+                    bytes[o..o + 4].copy_from_slice(&c);
+                }
+            }
+        };
+        match self.map.as_ref() {
+            Some(m) => m.with_shared(|s| fill(Some(s))),
+            None => fill(None),
+        }
+        egui::ColorImage::from_rgba_unmultiplied([side, side], &bytes)
+    }
+
+    /// Draw player markers (our own and every live remote player in this
+    /// dimension) onto a map, given a world-cell → screen-point transform and the
+    /// clip rect to keep them inside.
+    fn draw_map_markers(
+        &self,
+        painter: &egui::Painter,
+        g: &GameState,
+        clip: egui::Rect,
+        to_screen: impl Fn(f32, f32) -> egui::Pos2,
+    ) {
+        // Other players (from the relay): a coloured dot each.
+        if let Some(map) = self.map.as_ref() {
+            for (_id, x, y) in map.players_in(g.dim) {
+                let p = to_screen(x / TILE_SIZE, y / TILE_SIZE);
+                if !clip.contains(p) {
+                    continue;
+                }
+                painter.circle_filled(p, 4.0, egui::Color32::from_rgb(90, 170, 255));
+                painter.circle_stroke(p, 4.0, egui::Stroke::new(1.0, egui::Color32::BLACK));
+            }
+        }
+        // Our own avatar, drawn last so it sits on top.
+        let me = to_screen(g.pos.x / TILE_SIZE, g.pos.y / TILE_SIZE);
+        if clip.contains(me) {
+            painter.circle_filled(me, 4.0, egui::Color32::from_rgb(240, 220, 60));
+            painter.circle_stroke(me, 4.0, egui::Stroke::new(1.0, egui::Color32::BLACK));
+        }
+    }
+
+    /// The corner minimap (`H`): a small fixed-radius map around the player, with
+    /// live player markers. Rebuilt at a throttled rate from block colours.
+    fn minimap_overlay(&mut self, ui: &mut egui::Ui) {
+        if !self.game.as_ref().is_some_and(|g| g.minimap_open) {
+            return;
+        }
+        let now = Instant::now();
+        if self.minimap_tex.is_none() || now.duration_since(self.minimap_built) >= MAP_REBUILD {
+            let (img, _center) = {
+                let g = self.game.as_ref().unwrap();
+                let center = (
+                    (g.pos.x / TILE_SIZE).floor() as i32,
+                    (g.pos.y / TILE_SIZE).floor() as i32,
+                );
+                (
+                    self.build_map_image(g, center, MINIMAP_RADIUS_BLOCKS),
+                    center,
+                )
+            };
+            let ctx = ui.ctx();
+            match &mut self.minimap_tex {
+                Some(h) => h.set(img, egui::TextureOptions::NEAREST),
+                None => {
+                    self.minimap_tex =
+                        Some(ctx.load_texture("minimap", img, egui::TextureOptions::NEAREST))
+                }
+            }
+            self.minimap_built = now;
+        }
+
+        let Some(handle) = self.minimap_tex.as_ref() else {
+            return;
+        };
+        let g = self.game.as_ref().unwrap();
+        let ctx = ui.ctx();
+        let screen = ctx.content_rect();
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(screen.min.x + 12.0, screen.min.y + 44.0),
+            egui::vec2(MINIMAP_SIZE, MINIMAP_SIZE),
+        );
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("minimap_overlay"),
+        ));
+        // Parchment plate + border.
+        painter.rect_filled(
+            rect.expand(2.0),
+            egui::CornerRadius::same(3),
+            egui::Color32::from_black_alpha(180),
+        );
+        painter.image(
+            handle.id(),
+            rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+        // The minimap is centred on the player; its span is MINIMAP_RADIUS_BLOCKS
+        // cells from centre to edge. Map a world cell to a point inside `rect`.
+        let center_cell = (
+            (g.pos.x / TILE_SIZE).floor() as i32,
+            (g.pos.y / TILE_SIZE).floor() as i32,
+        );
+        let pts_per_block = MINIMAP_SIZE / (MINIMAP_RADIUS_BLOCKS as f32 * 2.0);
+        let rc = rect.center();
+        let to_screen = |cx: f32, cy: f32| {
+            egui::pos2(
+                rc.x + (cx - center_cell.0 as f32) * pts_per_block,
+                rc.y + (cy - center_cell.1 as f32) * pts_per_block,
+            )
+        };
+        self.draw_map_markers(&painter, g, rect, to_screen);
     }
 
     fn chat_ui(&mut self, ui: &mut egui::Ui) {
@@ -6294,6 +6572,10 @@ impl App {
             // nearest to them.
             KeyCode::KeyM if pressed => self.add_waypoint(),
             KeyCode::KeyN if pressed => self.remove_nearest_waypoint(),
+            // H toggles the corner minimap: the explored world drawn from block
+            // colours with every player's live position (multiplayer markers
+            // arrive over the map relay).
+            KeyCode::KeyH if pressed => self.toggle_minimap(),
             // = / + (and numpad +) zoom the camera in; - / _ (and numpad -) zoom out.
             // The two keys on the same physical button cover both with and without
             // Shift so they work regardless of layout.
@@ -6534,6 +6816,13 @@ impl App {
             if !g.inventory_open {
                 g.move_from = None;
             }
+        }
+    }
+
+    /// Show or hide the corner minimap.
+    fn toggle_minimap(&mut self) {
+        if let Some(g) = &mut self.game {
+            g.minimap_open = !g.minimap_open;
         }
     }
 }

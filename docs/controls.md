@@ -65,6 +65,22 @@ around the edges of the screen with a distance readout when they're off-screen.
 The home and death markers belong to the dimension they were set in, so they only
 show while you're in that same world — they won't haunt you across dimensions.
 
+## Map
+
+| Key | Action |
+|---|---|
+| <kbd>H</kbd> | Show / hide the corner **minimap** |
+
+The minimap draws the world you've explored from each block's average colour —
+like ink on paper. Chunks you haven't loaded (and open sky) stay blank
+**parchment**, so the map fills in as you wander; no item is needed to use it. It
+is pinned to the **top-left** corner and stays centred on you, your own position
+marked with a **yellow** dot.
+
+In multiplayer every other player is a **blue** dot that moves in real time, and
+the terrain anyone has explored is shared too, so the map reveals places you've
+never been yourself (see **[Multiplayer → Live map](multiplayer.md#live-map)**).
+
 ## Chat & UI
 
 | Key | Action |

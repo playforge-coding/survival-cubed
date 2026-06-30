@@ -1067,6 +1067,21 @@ impl RunningServer {
         Ok(port)
     }
 
+    /// Enable the live map sharing, which streams player positions and explored
+    /// chunks over the same relay (see [`crate::voice::map_broadcast_path`]) so
+    /// every client's in-game map shows the others. Unlike voice/webcam this
+    /// carries no privacy concern, so it's enabled for every hosted server;
+    /// starting the relay if it isn't already up and recording its coordinates in
+    /// [`Shared::map`] for joining clients.
+    ///
+    /// Returns the actual bound relay port. Errors as [`Self::enable_voice`] does.
+    pub fn enable_map(&mut self, bind: SocketAddr, upnp: bool) -> Result<u16> {
+        let info = self.ensure_relay(bind, upnp)?;
+        let port = info.port;
+        *self.shared.map.lock() = Some(info);
+        Ok(port)
+    }
+
     /// The server's tokio runtime handle (captured at startup in [`Shared`]).
     fn rt_handle(&self) -> tokio::runtime::Handle {
         self.shared.rt.clone()
@@ -1332,6 +1347,11 @@ struct Shared {
     /// [`Self::voice`] (so when both are on the coordinates match), but is a
     /// separate toggle. `None` means webcam is off.
     webcam: Mutex<Option<crate::voice::VoiceInfo>>,
+    /// The live-map relay's coordinates, present once the owner has enabled the
+    /// map via [`RunningServer::enable_map`] (done for every hosted server).
+    /// Shares the relay with [`Self::voice`]/[`Self::webcam`]. `None` means map
+    /// sharing is off (e.g. before the relay starts). See [`crate::client::map`].
+    map: Mutex<Option<crate::voice::VoiceInfo>>,
     /// Handle to the server's own tokio runtime, captured at startup. Lets
     /// [`RunningServer::enable_voice`] — called from the main thread, outside any
     /// runtime — spin up the MOQ relay's QUIC endpoint and accept loop on this
@@ -4591,6 +4611,7 @@ fn build_endpoint(
         shutdown: AtomicBool::new(false),
         voice: Mutex::new(None),
         webcam: Mutex::new(None),
+        map: Mutex::new(None),
         // Safe: build_endpoint runs inside the server's tokio runtime (via
         // `setup`'s `block_on`), so a runtime handle is current here.
         rt: tokio::runtime::Handle::current(),
@@ -12189,6 +12210,7 @@ async fn handle_connection(incoming: quinn::Incoming, shared: Arc<Shared>) -> Re
         creator_allowed,
         voice: shared.voice.lock().clone(),
         webcam: shared.webcam.lock().clone(),
+        map: shared.map.lock().clone(),
     });
     // Tell the owner its starting health (its own avatar is never mirrored via
     // EntitySpawn) and the current time of day.

@@ -197,6 +197,30 @@ For hosts:
 - Software AV1 encode/decode costs CPU; the tiny 128×96 ~10 fps preset keeps a
   handful of simultaneous cameras affordable.
 
+## Live map
+
+Every player has an in-game **minimap** — toggled with <kbd>H</kbd>, pinned to the
+top-left corner — that draws the explored world from each block's average colour,
+with your own position as a yellow dot (see **[Controls → Map](controls.md#map)**).
+Unlike voice and webcam, the map needs no host toggle: it is **always on** in
+multiplayer.
+
+It rides the **same [MOQ](https://moq.dev) relay** as voice and webcam (sharing
+the relay port), so it needs no extra port — and the relay starts for every hosted
+server even when voice and webcam are off. Each player continuously publishes two
+things over their own map broadcast:
+
+- their **live position**, so everyone else sees their blue dot move in real time —
+  even players far away or in chunks you haven't loaded; and
+- the **chunks they've explored** (block ids, coloured on the receiver), so the map
+  reveals terrain *anyone* has discovered, not just where you've personally been.
+
+Newly-loaded chunks are shared immediately, and a slow background rotor
+re-broadcasts known chunks so a player who joins later catches up over the next
+little while. Only the dimension you're in is shown — positions and terrain from
+other dimensions don't appear. As with voice/webcam, the relay only forwards this
+between connected players; nothing is recorded server-side.
+
 ## Under the hood
 
 - **Transport:** QUIC over UDP, encrypted with TLS 1.3 — lower latency than TCP
@@ -205,6 +229,9 @@ For hosts:
   own port, carrying Opus audio; entirely optional and off by default.
 - **Webcam:** [AV1](#webcam-video) video over the *same* relay (a separate toggle
   from voice), carrying tiny 128×96 thumbnails; also optional and off by default.
+- **Live map:** player positions and explored chunks over the *same* relay (see
+  [Live map](#live-map)); always on, so hosting starts the relay even with voice
+  and webcam off.
 - **Certificates:** each machine has a single stable self-signed certificate,
   stored in the user config dir and shared by every world it hosts; clients pin
   it on first connection or auto-trust it via LAN discovery.

@@ -160,6 +160,12 @@ impl World {
         self.chunks.get(&coord)
     }
 
+    /// Iterate every loaded chunk with its coordinate, for callers that mirror
+    /// the loaded world (e.g. the client's live-map sharing). Order is arbitrary.
+    pub fn loaded_chunks(&self) -> impl Iterator<Item = (ChunkCoord, &Chunk)> {
+        self.chunks.iter().map(|(&coord, chunk)| (coord, chunk))
+    }
+
     #[allow(dead_code)] // part of the world API surface; not yet used by callers
     pub fn get_chunk_mut(&mut self, coord: ChunkCoord) -> Option<&mut Chunk> {
         self.chunks.get_mut(&coord)

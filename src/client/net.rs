@@ -42,6 +42,9 @@ pub enum NetEvent {
         /// The optional webcam relay, when the server owner enabled it (separate
         /// toggle from `voice`, same relay endpoint).
         webcam: Option<crate::voice::VoiceInfo>,
+        /// The live-map relay (enabled for every hosted server), same relay
+        /// endpoint as `voice`/`webcam`.
+        map: Option<crate::voice::VoiceInfo>,
     },
     Chunk {
         dim: Dimension,
@@ -634,6 +637,7 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
             creator_allowed,
             voice,
             webcam,
+            map,
         } => NetEvent::Connected {
             entity_id,
             spawn_x,
@@ -641,6 +645,7 @@ fn dispatch(msg: ServerMessage, ev_tx: &Sender<NetEvent>) -> std::ops::ControlFl
             creator_allowed,
             voice,
             webcam,
+            map,
         },
         ServerMessage::Chunk {
             dim,

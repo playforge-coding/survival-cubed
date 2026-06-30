@@ -406,6 +406,12 @@ pub enum ServerMessage {
         /// when both are on this carries the *same* port/cert as `voice`. `None`
         /// means webcam is off: no webcam UI and no relay connection for video.
         webcam: Option<crate::voice::VoiceInfo>,
+        /// The live-map relay, enabled for every hosted server. Streams player
+        /// positions and explored chunks over the same relay endpoint as
+        /// `voice`/`webcam` (so when those are on, this carries the same
+        /// port/cert). `None` means no relay is up, so the client's map shows
+        /// only its own loaded chunks. See [`crate::client::map`].
+        map: Option<crate::voice::VoiceInfo>,
     },
     /// Full contents of a chunk (row-major, `CHUNK_AREA` entries) in dimension
     /// `dim`. The client ignores chunks for a dimension it is no longer in.
